@@ -204,6 +204,14 @@ run() { echo "== $1"; shift; "$@" || fail=1; }
 $CC -o "$OUT/slice_store_test" tests/slice_store_test.c
 run "SLICE metadata: dynamic samples and staging sectors are never accessed" "$OUT/slice_store_test"
 
+$CC -o "$OUT/storage_fault_gate_test" tests/storage_fault_gate_test.c
+run "storage backend: unresolved flash I/O blocks active transfers" "$OUT/storage_fault_gate_test"
+
+if [ -f build/gen/felucca_tables.h ]; then
+    $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
+    run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
+fi
+
 $CC -o "$OUT/storage_test" tests/storage_test.c
 $CC -Ibuild/gen -Ifirmware/src -o "$OUT/signed_audio_scaling_test" tests/signed_audio_scaling_test.c -lm
 run "DSP signed arithmetic: fixed DC/lowcut/FM6 vectors and phase wrap" "$OUT/signed_audio_scaling_test"

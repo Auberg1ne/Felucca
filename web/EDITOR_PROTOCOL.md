@@ -195,10 +195,10 @@ at 1..3 and hides 6 5 8: what it sets still plays the right kit, and the device 
 | 8 PRESET | engine, preset | engine, preset (applies the preset's sound to the selected track and sends; the steps and the track's own parameters stay, see "Sound loads and undo"). For another track, select it with `TRACK` first |
 | 9 PROJECT | op (0 load, 1 save, 2 query), slot 0..3 | op, slot, used (1/0). Save writes flash: allow ~2 s; it stops the transport first (see "Saves while playing") |
 | 10 NAMES | engine | engine, count, count preset-name strings, then the two edit-page titles |
-| 11 SMP_BEGIN | slot 0..2, audio data length (3 × 7 bit, LSB first) | slot, rc (0 ok, nonzero if arguments or a contiguous staging extent cannot be reserved). Reserves and erases only the sectors needed for the 512-byte header plus the declared audio data. Does not alter the currently published sample |
+| 11 SMP_BEGIN | slot 0..2, audio data length (3 × 7 bit, LSB first) | slot, rc (0 ok). Commits an ownership CLAIM before erasing a staged extent. Fails in read-only compatibility/quarantine mode or without journal/audio space |
 | 12 SMP_WRITE | slot, offset (3 × 7 bit, LSB first), pack7 data (≤ 256 bytes) | slot, offset, rc: 0 ok, nonzero on invalid arguments or write failure. Writes go to the temporary extent reserved by SMP_BEGIN; offset ≥ 512, a multiple of 256, and within that extent. Sectors are erased by SMP_BEGIN, not by individual writes |
-| 13 SMP_END | slot, pack7 header (480 bytes) | slot, rc: 0 committed, nonzero on invalid size/header, data CRC, flash write or extent verification failure. The header's data length must exactly match SMP_BEGIN. The descriptor commit marker is written last; the running sample map is unchanged until reboot, when recovery selects the newest valid committed generation |
-| 14 SMP_ERASE | slot | slot, rc (erases the whole slot, ~1 s) |
+| 13 SMP_END | slot, pack7 header (480 bytes) | slot, rc (0 committed). The length must match BEGIN. Verifies sample data/header/descriptor, then commits journal PUBLISH; activation occurs at reboot |
+| 14 SMP_ERASE | slot | slot, rc (0 durably deleted). Commits journal DELETE and cancels staging. No audio sectors are erased or released. Repeated deletion succeeds only while committed state is known. Fails in compatibility/quarantine mode or without journal space |
 | 15 SMP_INFO | — | slots, slot KiB, then per slot: zone count (0 = empty), name string, data KiB |
 | 16 UP_LIST | start, count (1..16) | start, count, total slots, then per slot: used (0/1), engine, name string ("" if unused); 1.2: then one category byte per slot listed (below; 0 if unused) |
 | 17 UP_GET | slot | slot, used, engine, name, P_COUNT × v14, 16 × (note, flags), then (v5) kind (0 a note pattern, 1 a drum grid) and for kind 1 16 × hi; 1.2: then the category |
@@ -239,20 +239,34 @@ reply.
 unused mask bits in the last group must be zero. Oversized or incomplete transfers
 are rejected; SMP_WRITE decodes at most 256 bytes, SMP_END exactly 480 bytes.
 
-**User sample storage** (three legacy logical slots currently exposed as USR1..USR3;
-the allocator supports eight logical slot identities). The user-sample pool is 240 KiB
-(60 × 4 KiB sectors), shared dynamically rather than divided into fixed 80 KiB allocations.
-Each sample extent contains a 512-byte header area followed by ADPCM data. The 480-byte
-sample header occupies bytes 0..479; the allocation descriptor occupies bytes 480..511.
+**User sample storage** exposes three legacy logical slots (USR1..USR3); eight
+identities remain reserved by the allocator. The pool remains 240 KiB, at
+`0xA0000..0xDBFFF`. New-format storage reserves its first 4 KiB sector for an
+anchored, append-only ownership journal; payload writes can never reach it.
 
-SMP_BEGIN reserves a contiguous temporary extent sized for the declared audio length and
-erases that extent without disturbing the published sample. SMP_WRITE fills the staged
-extent. SMP_END validates the header and audio CRC, writes and verifies the allocation
-descriptor, and writes its commit marker last. An interrupted or invalid upload therefore
-does not replace the previous committed sample. A successful commit is published by boot
-recovery on the next restart; the old extent remains reserved during the current session
-so active voices cannot be redirected to changing zone metadata. Unselected older extents
-are reclaimed by allocator recovery on boot.
+BEGIN commits an ownership CLAIM before erasing the staged extent. END verifies
+the header, SMA1 descriptor and audio before committing journal PUBLISH. Only
+this PUBLISH authorizes recovery. ERASE commits journal DELETE after the latest
+published generation, cancels staging, and hides the logical slot. It never
+erases audio sectors. Old zones and all claimed sectors remain reserved.
+
+Raw tombstones or complete sample descriptors embedded in audio have no authority.
+Recovery does not search payload sectors for metadata. CRCs and commit markers
+check integrity, while the fixed journal address establishes provenance.
+
+This conservative format has no journal compaction or extent recycling. Aborted,
+replaced and deleted claims remain reserved across reboots. Mutations fail when
+space is exhausted. Any uncertain flash operation disables persistent writes
+until restart. Invalid or ambiguous journal records quarantine the entire pool.
+
+The journal can be initialized only on an entirely erased pool. Existing valid
+legacy/SMA1 samples stay readable in compatibility mode, with all sectors pinned
+and mutations disabled. Experimental unanchored SMD1 never authorizes deletion.
+See [the provenance design](../docs/sample-journal.md) for format, migration,
+capacity limits and the interaction with the outstanding C3 issue.
+
+Each sample extent still has a 512-byte header area, with the 480-byte FSMP
+sample header at bytes 0..479 and its SMA1 descriptor at bytes 480..511:
 
 | Offset | Field |
 | --- | --- |
@@ -264,9 +278,9 @@ are reclaimed by allocator recovery on boot.
 Data is IMA ADPCM, 4 bit, low nibble first, starting from predictor 0 and step index 0.
 All little endian.
 
-The slot's last 4 KiB sector (offset 0x13000) holds SLICE's slices set by hand on the device (`src/slice_store.c`:
-magic `"SLM1"`, the sample's length and data CRC, the slice starts) when the data leaves it free (at most 77,312
-bytes). An upload writes over it like any other data; a record that is not the slot's sample's is ignored.
+Manual SLICE metadata persistence remains disabled by the C1 repair. Edits stay
+in RAM and save requests report `SLICES RAM ONLY`; no sample-tail sector is read,
+erased or programmed for manual-slice metadata.
 
 `fmt` values (`firmware/src/core.h`):
 

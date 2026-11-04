@@ -6,6 +6,7 @@
 static uint8_t flash_ok;                 /* JEDEC id matched at boot (persist_boot) */
 static int st_read(uint32_t off, void *dst, uint32_t n)   /* 256-byte IRQ-off windows: audio keeps up */
 {
+    if (!flash_ok) return -8;                   /* includes unresolved sample I/O: the chip may still be busy */
     uint8_t *d = dst;
     while (n) {
         uint32_t k = n > 256u ? 256u : n, f = irq_save();
@@ -29,7 +30,7 @@ static int st_erase(uint32_t off)
 {
     uint32_t took, f;
     int rc;
-    if (!FL_STORE_OK(off, 0x1000u))
+    if (!flash_ok || !FL_STORE_OK(off, 0x1000u))
         return -8;
     f = irq_save();
     audio_silence();
@@ -40,7 +41,7 @@ static int st_erase(uint32_t off)
 }
 static int st_prog(uint32_t off, const void *src, uint32_t n)
 {
-    if (!FL_STORE_OK(off, n))                   /* only inside the storage areas */
+    if (!flash_ok || !FL_STORE_OK(off, n))      /* fault latch also blocks already-active transfers */
         return -8;
     return fl_write(off, src, n);
 }

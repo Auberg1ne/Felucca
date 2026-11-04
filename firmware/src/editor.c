@@ -58,9 +58,10 @@ static void ed_send(void)
 static int32_t ed_rv(const uint8_t *p) { return (int32_t)(p[0] | p[1] << 7) - 8192; }
 
 /* ---- transactional user-sample upload ----
- * BEGIN reserves and erases a temporary extent. WRITE fills it. END verifies the
- * payload and writes the header plus allocation descriptor; the commit word is last.
- * The old extent remains reserved until reboot, so live voices cannot read erased data. */
+ * BEGIN journals ownership, then erases a temporary extent. WRITE fills it.
+ * END verifies the payload/header/descriptor, then journals publication.
+ * The anchored journal grants ownership and publication; all extents stay reserved
+ * even across reboot until a separate compaction/migration design is provided. */
 static uint32_t ed_unpack7(const uint8_t *a, uint32_t na, uint8_t *out, uint32_t max)
 {
     uint32_t n = 0;                                 /* groups: msb byte, then up to 7 bytes */
@@ -88,46 +89,38 @@ static void ed_smp_inval_phys(uint32_t phys, uint32_t size)
     fm1_irq_on();
 }
 
-/* Explicit ERASE is destructive; BEGIN is deliberately not. */
-static int ed_smp_erase(uint32_t k, uint32_t all)
-{
-    uint32_t i, took, phys, count;
-    int rc = 0;
-    if (k >= SMP_USER_LOGICAL_SLOTS)
-        return 1;
-    phys = smp_user_phys[k];
-    count = smp_user_sectors[k];
-    if (!phys || !count)
-        return 0;
-    fm1_irq_off();
-    usr_nz[k] = 0;
-    for (i = 0; i < 16u; i++)
-        usr_zone[k][i].n = 0;
-    fm1_irq_on();
-    if (!all)
-        count = 1u;
-    for (i = 0; i < count && !rc; i++) {
-        audio_silence();
-        rc = fl_erase4k(phys + i * SMP_USER_SECTOR_SIZE, &took);
-        fm1_wdt_feed();
-    }
-    ed_smp_inval_phys(phys, count * SMP_USER_SECTOR_SIZE);
-    if (!rc && all) {
-        uint32_t first = (phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
-        for (i = 0; i < smp_user_sectors[k]; i++)
-            smp_alloc_release(first + i);
-        smp_user_phys[k] = 0u;
-        smp_user_sectors[k] = 0u;
-        smp_user_generation[k] = 0u;
-        smp_user_scan(k);
-    }
-    return rc;
-}
 static int ed_flash_stop(void);
+
+static int ed_smp_blocked(uint32_t k)
+{
+    return k >= SMP_USER_LOGICAL_SLOTS || !flash_ok || smp_user_io_blocked || smp_user_unresolved[k] ||
+        (smp_journal_state != SMP_JOURNAL_READY && smp_journal_state != SMP_JOURNAL_BLANK);
+}
+
+/* An error may mean the command completed late, not that nothing was written.
+ * Retain all reservations and require recovery before any further chip writes.
+ * flash_ok=0 also prevents background persistence from issuing another command
+ * while a timed-out NOR operation may still be busy. Playback stays in RAM/XIP. */
+static int ed_smp_io_fail(uint32_t k)
+{
+    smp_user_unresolved[k] = 1u;
+    smp_user_io_blocked = 1u;
+    flash_ok = 0;
+    return 1;
+}
+
+static int ed_smp_erased(uint32_t phys, uint32_t size)
+{
+    const uint8_t *p = fm1_xip_ptr(phys);
+    for (uint32_t i = 0; i < size; i++)
+        if (p[i] != 0xFFu)
+            return 0;
+    return 1;
+}
 
 static void ed_smp_stage_abort(uint32_t k)
 {
-    if (k >= SMP_USER_LOGICAL_SLOTS)
+    if (ed_smp_blocked(k))
         return;
     smp_user_stage_abort(k);
     ed_smp_stage_phys[k] = 0u;
@@ -136,26 +129,99 @@ static void ed_smp_stage_abort(uint32_t k)
     ed_smp_stage_data_len[k] = 0u;
 }
 
+/* The only metadata writer targets the protected first sector. Callers never
+ * obtain this address from a sample header, audio bytes, or client arguments. */
+static int ed_smp_journal_write(uint32_t off, const smp_alloc_desc_t *entry)
+{
+    smp_alloc_desc_t d = *entry;
+    uint32_t commit = SMP_ALLOC_COMMITTED;
+    if (!flash_ok || smp_user_io_blocked ||
+        (off == 0u ? smp_journal_state != SMP_JOURNAL_BLANK : smp_journal_state != SMP_JOURNAL_READY) ||
+        off > SMP_USER_SECTOR_SIZE - SMP_ALLOC_SIZE || (off % SMP_ALLOC_SIZE))
+        return 1;
+    uint32_t phys = SMP_USER_BASE + off, k = d.logical_slot < SMP_USER_LOGICAL_SLOTS ? d.logical_slot : 0u;
+    if (!ed_smp_erased(phys, SMP_ALLOC_SIZE)) return ed_smp_io_fail(k);
+    d.commit = 0xFFFFFFFFu; d.record_crc = 0; d.record_crc = st_crc32(&d, 28u);
+    if (fl_write(phys, (const uint8_t *)&d, 28u)) return ed_smp_io_fail(k);
+    ed_smp_inval_phys(phys, SMP_ALLOC_SIZE);
+    if (memcmp(fm1_xip_ptr(phys), &d, 28u)) return ed_smp_io_fail(k);
+    if (fl_write(phys + 28u, (const uint8_t *)&commit, 4u)) return ed_smp_io_fail(k);
+    ed_smp_inval_phys(phys, SMP_ALLOC_SIZE); d.commit = commit;
+    if (memcmp(fm1_xip_ptr(phys), &d, sizeof d)) return ed_smp_io_fail(k);
+    return 0;
+}
+
+static int ed_smp_journal_ready(void)
+{
+    if (!flash_ok || smp_user_io_blocked) return 1;
+    if (smp_journal_state == SMP_JOURNAL_READY) return 0;
+    if (smp_journal_state != SMP_JOURNAL_BLANK) return 1;
+    /* Never migrate or erase existing samples to install the trust anchor. */
+    if (!ed_smp_erased(SMP_USER_BASE, SMP_USER_POOL_SIZE)) {
+        smp_journal_lock(); return 1;
+    }
+    smp_alloc_desc_t d = smp_journal_header();
+    if (ed_smp_journal_write(0u, &d)) return 1;
+    smp_journal_state = SMP_JOURNAL_READY; smp_journal_next = SMP_ALLOC_SIZE;
+    return 0;
+}
+
+static int ed_smp_journal_append(const smp_alloc_desc_t *entry)
+{
+    if (smp_journal_state != SMP_JOURNAL_READY ||
+        smp_journal_next > SMP_USER_SECTOR_SIZE - SMP_ALLOC_SIZE) return 1;
+    if (ed_smp_journal_write(smp_journal_next, entry)) return 1;
+    smp_journal_next += SMP_ALLOC_SIZE;
+    return 0;
+}
+
+/* No audio sector is erased on deletion. A journal DELETE follows the latest
+ * published generation, cancels staging, and survives every later reboot. */
+static int ed_smp_erase(uint32_t k)
+{
+    if (ed_smp_blocked(k) || ed_flash_stop() || ed_smp_journal_ready()) return 1;
+    ed_smp_stage_abort(k);
+    if (smp_user_deleted[k]) return 0;
+    smp_alloc_desc_t d = {0};
+    d.magic = SMP_JOURNAL_DELETE; d.version = 1u; d.logical_slot = (uint8_t)k;
+    d.generation = smp_user_generation[k] + 1u;
+    if (ed_smp_journal_append(&d)) return 1;
+    smp_generation_committed(k, d.generation); smp_user_deleted[k] = 1u;
+    /* Existing zone references and every claimed sector remain unchanged. */
+    fm1_irq_off(); usr_nz[k] = 0u; fm1_irq_on();
+    return 0;
+}
+
 static int ed_smp_begin(uint32_t k, uint32_t data_len)
 {
     uint32_t i, took;
-    if (data_len > SMP_USER_POOL_SIZE - SMP_USER_DATA || ed_flash_stop())
+    if (ed_smp_blocked(k) || !smp_generation_can_advance(k) ||
+        data_len > SMP_USER_POOL_SIZE - SMP_USER_DATA || ed_flash_stop() || ed_smp_journal_ready())
         return 1;
+    if (smp_journal_next > SMP_USER_SECTOR_SIZE - 2u * SMP_ALLOC_SIZE) return 1;
     ed_smp_stage_abort(k);
     if (smp_user_stage_begin(k, data_len, &ed_smp_stage_phys[k],
                              &ed_smp_stage_sectors[k],
                              &ed_smp_stage_capacity[k]))
         return 1;
     ed_smp_stage_data_len[k] = data_len;
+    smp_alloc_desc_t claim = {0};
+    claim.magic = SMP_JOURNAL_CLAIM; claim.version = 1u; claim.logical_slot = (uint8_t)k;
+    claim.sector_count = (uint8_t)ed_smp_stage_sectors[k]; claim.data_len = data_len;
+    claim.generation = smp_user_generation[k] + 1u;
+    claim.reserved = (ed_smp_stage_phys[k] - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
+    /* Persist ownership BEFORE the first erase or payload write. */
+    if (ed_smp_journal_append(&claim)) return 1;
     for (i = 0; i < ed_smp_stage_sectors[k]; i++) {
         audio_silence();
         if (fl_erase4k(ed_smp_stage_phys[k] + i * SMP_USER_SECTOR_SIZE, &took)) {
-            ed_smp_stage_abort(k);
-            return 1;
+            return ed_smp_io_fail(k);
         }
         fm1_wdt_feed();
     }
     ed_smp_inval_phys(ed_smp_stage_phys[k], ed_smp_stage_capacity[k]);
+    if (!ed_smp_erased(ed_smp_stage_phys[k], ed_smp_stage_capacity[k]))
+        return ed_smp_io_fail(k);
     return 0;
 }
 
@@ -163,11 +229,11 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
 {
     const smp_user_hdr_t *h = (const smp_user_hdr_t *)ed_smp_buf;
     smp_alloc_desc_t d;
-    uint32_t phys, reserved, needed, generation, commit;
+    uint32_t phys, needed, generation, commit;
     const uint8_t *base;
     const smp_alloc_desc_t *written;
 
-    if (k >= SMP_USER_LOGICAL_SLOTS || !ed_smp_stage_sectors[k])
+    if (ed_smp_blocked(k) || !smp_generation_can_advance(k) || !ed_smp_stage_sectors[k])
         return 1;
     if (ed_unpack7(a, na, ed_smp_buf, sizeof(smp_user_hdr_t)) != sizeof(smp_user_hdr_t))
         return 1;
@@ -183,12 +249,12 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
     }
 
     phys = ed_smp_stage_phys[k];
-    reserved = ed_smp_stage_sectors[k];
+
     needed = (SMP_USER_DATA + h->data_len + SMP_USER_SECTOR_SIZE - 1u) /
              SMP_USER_SECTOR_SIZE;
     if (!needed)
         needed = 1u;
-    if (needed > reserved) {
+    if (needed > ed_smp_stage_sectors[k]) {
         ed_smp_stage_abort(k);
         return 2;
     }
@@ -216,40 +282,42 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
     /* Header and descriptor body first; the commit word is the final flash write. */
     if (fl_write(phys, ed_smp_buf, SMP_ALLOC_OFFSET) ||
         fl_write(phys + SMP_ALLOC_OFFSET, (const uint8_t *)&d, 28u)) {
-        ed_smp_stage_abort(k);
+        ed_smp_io_fail(k);
         return 4;
     }
     ed_smp_inval_phys(phys, SMP_USER_DATA);
     if (memcmp(fm1_xip_ptr(phys), ed_smp_buf, SMP_ALLOC_OFFSET) ||
         memcmp(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET, &d, 28u)) {
-        ed_smp_stage_abort(k);
+        ed_smp_io_fail(k);
         return 4;
     }
 
     commit = SMP_ALLOC_COMMITTED;
     if (fl_write(phys + SMP_ALLOC_OFFSET + 28u,
                  (const uint8_t *)&commit, sizeof commit)) {
-        ed_smp_stage_abort(k);
+        ed_smp_io_fail(k);
         return 4;
     }
     ed_smp_inval_phys(phys, SMP_USER_DATA);
     written = (const smp_alloc_desc_t *)(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET);
     if (!smp_alloc_extent_valid(phys, k, written)) {
-        ed_smp_stage_abort(k);
+        ed_smp_io_fail(k);
         return 5;
     }
 
     /*
-     * The committed descriptor is now durable. Keep the current RAM map and
-     * zone table unchanged until reboot: active voices resolve their zone
-     * through that table on every render. Boot recovery will select this
-     * newer generation on the next start.
+     * The sample descriptor is durable but grants no recovery authority until
+     * journal PUBLISH below commits. Keep the RAM map and zones unchanged:
+     * active voices resolve their zone through that table on every render.
      */
-    smp_user_generation[k] = generation;
+    smp_alloc_desc_t publish = d;
+    publish.magic = SMP_JOURNAL_PUBLISH;
+    publish.reserved = (phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
+    if (ed_smp_journal_append(&publish)) return 1;
+    smp_generation_committed(k, generation);
+    smp_user_deleted[k] = 0u;
 
-    /* Keep the committed staging extent reserved; release only its unused tail. */
-    for (uint32_t i = needed; i < reserved; i++)
-        smp_alloc_release((phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE + i);
+    /* Claims are retained permanently in this bounded, non-compacting journal. */
     smp_stage_start[k] = 0u;
     smp_stage_count[k] = 0u;
     ed_smp_stage_phys[k] = 0u;
@@ -743,33 +811,35 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
             ed_str(ENGINES[a[0]]->page_title[i], 8);
         break;
     case ED_SMP_BEGIN:                                     /* slot, data length (3 x 7 bit) -> slot, rc */
-        if (na != 4u || a[0] >= SMP_USER_SLOTS || !flash_ok)
+        if (na != 4u || a[0] >= SMP_USER_SLOTS || (!flash_ok && !smp_user_io_blocked))
             return;
         ed_b(a[0]);
         ed_b((uint32_t)ed_smp_begin(a[0],
               (uint32_t)a[1] | (uint32_t)a[2] << 7 | (uint32_t)a[3] << 14));
         break;
     case ED_SMP_ERASE:
-        if (na != 1u || a[0] >= SMP_USER_SLOTS || !flash_ok)
+        if (na != 1u || a[0] >= SMP_USER_SLOTS || (!flash_ok && !smp_user_io_blocked))
             return;
         ed_b(a[0]);
-        ed_b((uint32_t)(ed_flash_stop() || ed_smp_erase(a[0], 1u)));
+        ed_b((uint32_t)ed_smp_erase(a[0]));
         break;
     case ED_SMP_WRITE: {                                   /* slot, off (3 x 7 bit), pack7 data -> slot, off, rc */
         uint32_t off, len, rc = 0;
-        if (na < 5u || a[0] >= SMP_USER_SLOTS || !flash_ok)
+        if (na < 5u || a[0] >= SMP_USER_SLOTS || (!flash_ok && !smp_user_io_blocked))
             return;
         off = (uint32_t)a[1] | (uint32_t)a[2] << 7 | (uint32_t)a[3] << 14;
         len = ed_unpack7(a + 4, na - 4u, ed_smp_buf, 256u);
-        if (!ed_smp_stage_sectors[a[0]] ||
+        if (ed_smp_blocked(a[0]) || !ed_smp_stage_sectors[a[0]] ||
             off < SMP_USER_DATA || (off & 0xFFu) || !len ||
             off > ed_smp_stage_capacity[a[0]] ||
             len > ed_smp_stage_capacity[a[0]] - off)
             rc = 1;
         else if (ed_flash_stop())
             rc = 1;
-        else if (fl_write(ed_smp_stage_phys[a[0]] + off, ed_smp_buf, len))
+        else if (fl_write(ed_smp_stage_phys[a[0]] + off, ed_smp_buf, len)) {
+            ed_smp_io_fail(a[0]);
             rc = 3;
+        }
         ed_b(a[0]);
         ed_b(off);
         ed_b(off >> 7);
@@ -778,7 +848,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         break;
     }
     case ED_SMP_END:                                       /* slot, pack7 header -> slot, rc */
-        if (na < 2u || a[0] >= SMP_USER_SLOTS || !flash_ok)
+        if (na < 2u || a[0] >= SMP_USER_SLOTS || (!flash_ok && !smp_user_io_blocked))
             return;
         ed_b(a[0]);
         ed_b((uint32_t)ed_smp_end(a[0], a + 1, na - 1u));
