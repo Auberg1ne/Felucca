@@ -237,9 +237,9 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
         return 1;
     if (ed_unpack7(a, na, ed_smp_buf, sizeof(smp_user_hdr_t)) != sizeof(smp_user_hdr_t))
         return 1;
-    if (h->magic != SMP_USER_MAGIC || h->version != 1u || !h->nz || h->nz > 16u ||
+    if (ed_smp_stage_capacity[k] < SMP_USER_DATA ||
         h->data_len != ed_smp_stage_data_len[k] ||
-        h->data_len > ed_smp_stage_capacity[k] - SMP_USER_DATA) {
+        !smp_user_header_valid(h, ed_smp_stage_capacity[k] - SMP_USER_DATA)) {
         ed_smp_stage_abort(k);
         return 2;
     }

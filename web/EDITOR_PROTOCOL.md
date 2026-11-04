@@ -270,6 +270,17 @@ unanchored SMD1 never authorizes deletion.
 See [the provenance design](../docs/sample-journal.md) for format, migration,
 capacity limits and C3 quarantine policy.
 
+SMP_END rejects invalid header/zone semantics with rc 2 before writing the header,
+descriptor or journal PUBLISH. Every active zone must have nonzero sample count,
+fit its ADPCM bytes within data length, index 0..88, rate 1..262144 (Q16), root
+0..2032 (MIDI 0..127 in sixteenths, fractional roots allowed), keys
+0 <= lo <= hi <= 127, inclusive loop bounds 0 <= start <= end < sample count,
+and looped 0 or 1. The signed 16-bit predictor has no additional restriction.
+Overlapping zones and unused zone bytes are allowed. Recovery and playback use
+the same semantic validator. Rejection preserves the previous committed sample;
+the BEGIN claim stays reserved under the existing journal policy. These checks
+do not add header integrity protection (H2 remains outstanding).
+
 Each sample extent still has a 512-byte header area, with the 480-byte FSMP
 sample header at bytes 0..479 and its SMA1 descriptor at bytes 480..511:
 
