@@ -1160,6 +1160,8 @@ static void persist_boot(void)                    /* before settings_init / pane
     persist_t p;
     uint32_t f = irq_save();
     flash_ok = FL_FAR(fl_jedec_ram)() == 0x856014u;       /* the expected 1 MiB part, else stay RAM-only */
+    if (flash_ok && (FL_FAR(fl_status_ram)() & 1u))
+        flash_ok = 0;                                /* warm reset during a NOR command: no recovery/writes while busy */
     irq_restore(f);
     if (!flash_ok)
         return;
