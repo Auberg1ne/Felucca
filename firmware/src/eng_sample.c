@@ -139,6 +139,31 @@ static void smp_alloc_reserve_legacy(void)
                                 SMP_USER_SECTORS_PER_LEGACY_SLOT);
 }
 
+/* Shared FSMP semantics, before publication and before any audio reader.
+ * capacity is the allocation's audio capacity (header excluded). This does not
+ * authenticate the header or replace the separate audio/descriptor CRC checks.
+ * Roots retain fractional semitones; key endpoints are inclusive MIDI notes.
+ * Overlapping data/key ranges and inactive zone bytes are permitted. */
+static int smp_user_header_valid(const smp_user_hdr_t *h, uint32_t capacity)
+{
+    if (h->magic != SMP_USER_MAGIC || h->version != 1u ||
+        !h->nz || h->nz > 16u || h->data_len > capacity)
+        return 0;
+    for (uint32_t i = 0; i < h->nz; i++) {
+        const smp_zone_t *z = &h->zone[i];
+        /* ceil(n / 2) without n + 1 overflowing. Subtract only after checking
+         * off, rather than adding off + bytes and trusting a wrapped result. */
+        uint32_t bytes = z->n / 2u + (z->n & 1u);
+        if (!z->n || z->off > h->data_len || bytes > h->data_len - z->off ||
+            z->idx > 88u || !z->rate || z->rate > (4u << 16) ||
+            z->root16 < 0 || z->root16 > 127 * 16 ||
+            z->lo > 127u || z->hi > 127u || z->lo > z->hi ||
+            z->ls > z->le || z->le >= z->n || z->looped > 1u)
+            return 0;
+    }
+    return 1;
+}
+
 /* Validate the descriptor record CRC (commit marker is deliberately excluded). */
 static int smp_alloc_desc_valid(const smp_alloc_desc_t *d, uint32_t slot)
 {
@@ -176,9 +201,8 @@ static int smp_alloc_extent_valid(uint32_t phys, uint32_t slot,
     base = fm1_xip_ptr(phys);
     h = (const smp_user_hdr_t *)base;
     capacity = (uint32_t)d->sector_count * SMP_USER_SECTOR_SIZE - SMP_USER_DATA;
-    if (h->magic != SMP_USER_MAGIC || h->version != 1u ||
-        !h->nz || h->nz > 16u || h->data_len != d->data_len ||
-        h->data_len > capacity || h->crc != d->data_crc)
+    if (!smp_user_header_valid(h, capacity) ||
+        h->data_len != d->data_len || h->crc != d->data_crc)
         return 0;
     if (st_crc32(base + SMP_USER_DATA, h->data_len) != h->crc)
         return 0;
@@ -342,27 +366,14 @@ static void smp_user_scan(uint32_t k)
     if (capacity < SMP_USER_DATA)
         goto empty;
     capacity -= SMP_USER_DATA;
-    if (h->magic == SMP_USER_MAGIC && h->version == 1u &&
-        h->nz && h->nz <= 16u && h->data_len <= capacity) {
-        base = (uint32_t)(uintptr_t)(smp_user_xip(k) + SMP_USER_DATA) -
-               (uint32_t)(uintptr_t)SMP_DATA;
-        for (nz = h->nz, i = 0; i < nz; i++) {
-            smp_zone_t *z = &zt[i];
-            uint32_t bytes;
-            *z = h->zone[i];
-            if (z->off > h->data_len) {
-                nz = 0;
-                break;
-            }
-            bytes = z->n / 2u + (z->n & 1u);
-            if (bytes > h->data_len - z->off ||
-                z->idx > 88u || !z->rate || z->rate > 4u << 16 ||
-                z->ls > z->le || z->le >= z->n || z->lo > z->hi) {
-                nz = 0;
-                break;
-            }
-            z->off += base;
-        }
+    if (!smp_user_header_valid(h, capacity))
+        goto empty;
+    base = (uint32_t)(uintptr_t)(smp_user_xip(k) + SMP_USER_DATA) -
+           (uint32_t)(uintptr_t)SMP_DATA;
+    nz = h->nz;
+    for (i = 0; i < nz; i++) {
+        zt[i] = h->zone[i];
+        zt[i].off += base;                          /* flat 32-bit XIP rebase, after bounds validation */
     }
     for (i = 0; i < 16u; i++)
         usr_zone[k][i] = i < nz ? zt[i] : (smp_zone_t){0};

@@ -560,6 +560,157 @@ static void journal_rejection_tests(void)
     check("full journal refuses deletion without erasing data", ed_smp_erase(2) != 0 && !writes);
     reboot(); check("full journal remains readable with durable deletions", gone(0) && gone(1) && smp_journal_state == SMP_JOURNAL_READY);
 }
+/* H1: drive the same headers through END, recovery, and playback. */
+typedef struct {
+    const char *name;
+    uint32_t offset, size, value;
+    int zone;
+} h1_case_t;
+#define H1_HEADER(f, v) {#f, __builtin_offsetof(smp_user_hdr_t, f), sizeof(((smp_user_hdr_t *)0)->f), (uint32_t)(v), 0}
+#define H1_ZONE(f, v) {#f, __builtin_offsetof(smp_zone_t, f), sizeof(((smp_zone_t *)0)->f), (uint32_t)(v), 1}
+static const h1_case_t h1_bad[] = {
+    H1_HEADER(magic, 0), H1_HEADER(version, 2), H1_HEADER(nz, 0), H1_HEADER(nz, 17),
+    H1_HEADER(data_len, 4096), H1_HEADER(data_len, 0),
+    H1_ZONE(n, 0), H1_ZONE(n, 513), H1_ZONE(n, UINT32_MAX),
+    H1_ZONE(off, 256), H1_ZONE(off, 257), H1_ZONE(off, UINT32_MAX),
+    H1_ZONE(off, UINT32_MAX - 255u),
+    H1_ZONE(idx, 89), H1_ZONE(idx, 255),
+    H1_ZONE(rate, 0), H1_ZONE(rate, (4u << 16) + 1u), H1_ZONE(rate, UINT32_MAX),
+    H1_ZONE(root16, -1), H1_ZONE(root16, 127 * 16 + 1),
+    H1_ZONE(root16, -32768), H1_ZONE(root16, 32767),
+    H1_ZONE(lo, 128), H1_ZONE(hi, 128), H1_ZONE(hi, 255),
+    H1_ZONE(ls, 512), H1_ZONE(ls, UINT32_MAX),
+    H1_ZONE(le, 512), H1_ZONE(le, UINT32_MAX), H1_ZONE(looped, 2), H1_ZONE(looped, 255)
+};
+#undef H1_HEADER
+#undef H1_ZONE
+static void h1_corrupt(smp_user_hdr_t *h, const h1_case_t *c, uint32_t zone)
+{
+    uint8_t *p = c->zone ? (uint8_t *)&h->zone[zone] : (uint8_t *)h;
+    p += c->offset;
+    if (c->size == 1) { uint8_t v = (uint8_t)c->value; memcpy(p, &v, 1); }
+    else if (c->size == 2) { uint16_t v = (uint16_t)c->value; memcpy(p, &v, 2); }
+    else { assert(c->size == 4); memcpy(p, &c->value, 4); }
+}
+static int h1_replacement_rejected(const smp_user_hdr_t *h)
+{
+    fresh(); assert(!upload(0, 0x11)); reboot();
+    uint32_t old = smp_user_phys[0], gen = smp_user_generation[0];
+    smp_zone_t zone = usr_zone[0][0];
+    assert(!ed_smp_begin(0, 256)); uint32_t stage = ed_smp_stage_phys[0];
+    uint8_t audio[256], packed[600]; memset(audio, 0x22, sizeof audio);
+    assert(!write_page(0, 512, audio, sizeof audio));
+    uint32_t w = writes, e = erases, next = smp_journal_next, stamp = smp_user_gen;
+    memcpy(saved, nor, sizeof nor);
+    int rc = ed_smp_end(0, packed, pack(h, sizeof *h, packed));
+    int ok = rc == 2 && writes == w && erases == e && smp_journal_next == next && smp_user_gen == stamp &&
+        smp_user_generation[0] == gen && smp_user_phys[0] == old && usr_nz[0] == 1 &&
+        !memcmp(&zone, &usr_zone[0][0], sizeof zone) && ed_smp_erased(stage, 512);
+    reboot();
+    return ok && smp_journal_state == SMP_JOURNAL_READY && !smp_user_unresolved[0] &&
+        smp_user_generation[0] == gen && smp_user_phys[0] == old && usr_nz[0] == 1 &&
+        !memcmp(&zone, &usr_zone[0][0], sizeof zone) &&
+        smp_alloc_test((stage - SMP_USER_BASE) / 4096) && !memcmp(saved, nor, sizeof nor);
+}
+static void h1_tests(void)
+{
+    char name[160];
+    for (uint32_t i = 0; i < NELEM(h1_bad); i++) {
+        const h1_case_t *c = &h1_bad[i];
+        smp_user_hdr_t h = header(0x22); h1_corrupt(&h, c, 0);
+        int ok = !smp_user_header_valid(&h, 4096 - 512) && h1_replacement_rejected(&h);
+        snprintf(name, sizeof name, "H1 invalid %s value 0x%08x never publishes or replaces old audio", c->name, c->value);
+        check(name, ok);
+        if (c->zone) {
+            h = header(0x22); h.nz = 16;
+            for (uint32_t z = 1; z < 16; z++) h.zone[z] = h.zone[0];
+            h1_corrupt(&h, c, 15);
+            snprintf(name, sizeof name, "H1 invalid final zone %s value 0x%08x rejects entire replacement", c->name, c->value);
+            check(name, !smp_user_header_valid(&h, 4096 - 512) && h1_replacement_rejected(&h));
+        }
+        /* Emulate an invalid record published by older firmware, with otherwise
+         * valid journal, descriptor and audio. Neither playback nor recovery may
+         * disagree with END, resurrect the older generation, or release claims. */
+        fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t old = smp_user_phys[0];
+        assert(!upload(0, 0x22)); reboot(); uint32_t latest = smp_user_phys[0];
+        h = header(0x22);
+        if (c->zone) { h.nz = 16; for (uint32_t z = 1; z < 16; z++) h.zone[z] = h.zone[0]; }
+        h1_corrupt(&h, c, c->zone ? 15 : 0); memcpy(nor + latest, &h, sizeof h);
+        const smp_alloc_desc_t *d = (const smp_alloc_desc_t *)(nor + latest + 480);
+        ok = !smp_alloc_extent_valid(latest, 0, d);
+        smp_user_scan(0); ok &= !usr_nz[0] && !usr_zone[0][0].n;
+#if FELUCCA_SLICE
+        ok &= !slc_get(1);
+#endif
+        memcpy(saved, nor, sizeof nor); reboot();
+        ok &= !smp_user_phys[0] && !usr_nz[0] && smp_user_unresolved[0] &&
+            smp_alloc_test((old - SMP_USER_BASE) / 4096) && smp_alloc_test((latest - SMP_USER_BASE) / 4096) &&
+            locked_mutations(0) && !memcmp(saved, nor, sizeof nor);
+        snprintf(name, sizeof name, "H1 recovery and playback reject %s value 0x%08x without fallback or reuse", c->name, c->value);
+        check(name, ok);
+    }
+    /* Reversed keys, where both individual endpoints are valid MIDI notes. */
+    smp_user_hdr_t h = header(0x22); h.zone[0].lo = 100; h.zone[0].hi = 99;
+    check("H1 reversed key range rejects replacement", h1_replacement_rejected(&h));
+    h = header(0x22); h.zone[0].ls = 200; h.zone[0].le = 199;
+    check("H1 reversed in-range loop boundaries reject replacement", h1_replacement_rejected(&h));
+    /* Length mismatch remains a transaction error even if its zones are valid. */
+    h = header(0x22); h.data_len = 255; h.zone[0].n = 510; h.zone[0].le = 509;
+    check("H1 semantic validity does not bypass BEGIN length agreement", smp_user_header_valid(&h, 3584) && h1_replacement_rejected(&h));
+    for (uint32_t variant = 0; variant < 7; variant++) {
+        fresh(); h = header(0x22);
+        if (variant == 0) { h.zone[0].n = 1; h.zone[0].off = 255; h.zone[0].ls = h.zone[0].le = 0;
+            h.zone[0].idx = 88; h.zone[0].rate = 1; h.zone[0].lo = h.zone[0].hi = 0;
+            h.zone[0].pred = -32768; h.zone[0].looped = 1; }
+        if (variant == 1) { h.zone[0].root16 = 127 * 16; h.zone[0].lo = h.zone[0].hi = 127;
+            h.zone[0].rate = 4u << 16; h.zone[0].ls = 511; h.zone[0].pred = 32767; h.zone[0].looped = 1; }
+        if (variant == 2) { h.zone[0].root16 = 15; h.zone[0].n = 511; h.zone[0].le = 510; }
+        if (variant == 3) { h.nz = 16; for (uint32_t z = 1; z < 16; z++) h.zone[z] = h.zone[0]; }
+        if (variant == 4) { h.nz = 2; h.zone[0].n = 400; h.zone[0].le = 399;
+            h.zone[1] = h.zone[0]; h.zone[1].off = 32; }  /* legitimate overlapping audio */
+        if (variant == 5) memset(&h.zone[1], 255, sizeof h.zone - sizeof h.zone[0]); /* inactive bytes ignored */
+        uint8_t audio[256], packed[600]; memset(audio, 0x22, sizeof audio);
+        if (variant == 6) { h.data_len = 1; h.crc = st_crc32(audio, 1); h.zone[0].n = 1; h.zone[0].le = 0; }
+        int ok = smp_user_header_valid(&h, 3584) && !ed_smp_begin(0, h.data_len) &&
+            !write_page(0, 512, audio, h.data_len) && !ed_smp_end(0, packed, pack(&h, sizeof h, packed));
+        reboot();
+        ok &= smp_user_phys[0] && usr_nz[0] == h.nz && !smp_user_unresolved[0] &&
+            smp_alloc_extent_valid(smp_user_phys[0], 0, (const smp_alloc_desc_t *)(nor + smp_user_phys[0] + 480));
+        snprintf(name, sizeof name, "H1 valid boundary variant %u accepted consistently by END recovery and playback", variant);
+        check(name, ok);
+    }
+    {
+        /* A running map and a newer committed map are distinct C2 states. */
+        fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t running = smp_user_phys[0];
+        smp_zone_t zone = usr_zone[0][0];
+        assert(!upload(0, 0x22)); uint32_t gen = smp_user_generation[0];
+        assert(!ed_smp_begin(0, 256)); uint32_t stage = ed_smp_stage_phys[0];
+        uint8_t audio[256], packed[600]; memset(audio, 0x33, sizeof audio);
+        assert(!write_page(0, 512, audio, sizeof audio)); h = header(0x33); h.zone[0].rate = 0;
+        int ok = ed_smp_end(0, packed, pack(&h, sizeof h, packed)) == 2 &&
+            smp_user_generation[0] == gen && smp_user_phys[0] == running &&
+            !memcmp(&zone, &usr_zone[0][0], sizeof zone);
+        reboot();
+        check("H1 invalid upload preserves pending committed replacement and running readers", ok &&
+            smp_user_generation[0] == gen && usr_nz[0] && smp_user_phys[0] != running &&
+            *fm1_xip_ptr(smp_user_phys[0] + 512) == 0x22 && smp_alloc_test((stage - SMP_USER_BASE) / 4096));
+        assert(!ed_smp_erase(0)); gen = smp_user_generation[0];
+        assert(!ed_smp_begin(0, 256)); assert(!write_page(0, 512, audio, sizeof audio));
+        ok = ed_smp_end(0, packed, pack(&h, sizeof h, packed)) == 2 && smp_user_deleted[0] &&
+            smp_user_generation[0] == gen;
+        reboot();
+        check("H1 invalid replacement cannot clear a committed deletion barrier", ok && gone(0) && smp_user_generation[0] == gen);
+    }
+    /* Bounds arithmetic stays defined even for arbitrary full-width metadata. */
+    h = header(0x22); h.zone[0].off = UINT32_MAX - 255u; h.zone[0].n = 512;
+    check("H1 wrapped off plus bytes is not a valid extent", !smp_user_header_valid(&h, SMP_USER_POOL_SIZE - 512));
+    h = header(0x22); h.data_len = 59u * 4096u - 512u;
+    h.zone[0].n = h.data_len * 2u; h.zone[0].le = h.zone[0].n - 1u;
+    int ok = smp_user_header_valid(&h, h.data_len);
+    h.zone[0].n++; h.zone[0].le++;
+    check("H1 full dynamic audio capacity is valid but one extra nibble is not", ok && !smp_user_header_valid(&h, h.data_len));
+}
+
 int main(void)
 {
     fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t old = smp_user_phys[0]; smp_zone_t zone = usr_zone[0][0];
@@ -577,6 +728,6 @@ int main(void)
     uint8_t packed[600]; smp_user_hdr_t h = header(0x11);
     check("ERASE cancels staging and END cannot revive it", !ed_smp_stage_sectors[0] && ed_smp_end(0, packed, pack(&h, sizeof h, packed)) != 0);
     reboot(); check("deletion of an unfinished slot is durable", gone(0));
-    payload_provenance(); fault_tests(); power_tests(); quarantine_tests(); anchored_visibility_tests(); journal_rejection_tests();
+    payload_provenance(); fault_tests(); power_tests(); quarantine_tests(); anchored_visibility_tests(); journal_rejection_tests(); h1_tests();
     return failures ? 1 : 0;
 }
