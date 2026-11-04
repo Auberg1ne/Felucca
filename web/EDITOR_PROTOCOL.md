@@ -195,9 +195,9 @@ at 1..3 and hides 6 5 8: what it sets still plays the right kit, and the device 
 | 8 PRESET | engine, preset | engine, preset (applies the preset's sound to the selected track and sends; the steps and the track's own parameters stay, see "Sound loads and undo"). For another track, select it with `TRACK` first |
 | 9 PROJECT | op (0 load, 1 save, 2 query), slot 0..3 | op, slot, used (1/0). Save writes flash: allow ~2 s; it stops the transport first (see "Saves while playing") |
 | 10 NAMES | engine | engine, count, count preset-name strings, then the two edit-page titles |
-| 11 SMP_BEGIN | slot 0..2 | slot, rc (0 ok). Erases the slot's header sector: the slot is empty from now on |
-| 12 SMP_WRITE | slot, offset (3 × 7 bit, LSB first), pack7 data (≤ 256 bytes) | slot, offset, rc: 0 ok, 1 arguments, 2 erase, 3 write, 4 slot in use (send SMP_BEGIN first). Offset ≥ 512 and a multiple of 256; writes go in increasing order (a write at a 4 KiB boundary erases that sector) |
-| 13 SMP_END | slot, pack7 header (480 bytes) | slot, rc: 0 ok, 1 size, 2 header, 3 data CRC, 4 flash, 5 zones |
+| 11 SMP_BEGIN | slot 0..2, audio data length (3 × 7 bit, LSB first) | slot, rc (0 ok, nonzero if arguments or a contiguous staging extent cannot be reserved). Reserves and erases only the sectors needed for the 512-byte header plus the declared audio data. Does not alter the currently published sample |
+| 12 SMP_WRITE | slot, offset (3 × 7 bit, LSB first), pack7 data (≤ 256 bytes) | slot, offset, rc: 0 ok, nonzero on invalid arguments or write failure. Writes go to the temporary extent reserved by SMP_BEGIN; offset ≥ 512, a multiple of 256, and within that extent. Sectors are erased by SMP_BEGIN, not by individual writes |
+| 13 SMP_END | slot, pack7 header (480 bytes) | slot, rc: 0 committed, nonzero on invalid size/header, data CRC, flash write or extent verification failure. The header's data length must exactly match SMP_BEGIN. The descriptor commit marker is written last; the running sample map is unchanged until reboot, when recovery selects the newest valid committed generation |
 | 14 SMP_ERASE | slot | slot, rc (erases the whole slot, ~1 s) |
 | 15 SMP_INFO | — | slots, slot KiB, then per slot: zone count (0 = empty), name string, data KiB |
 | 16 UP_LIST | start, count (1..16) | start, count, total slots, then per slot: used (0/1), engine, name string ("" if unused); 1.2: then one category byte per slot listed (below; 0 if unused) |
@@ -239,9 +239,20 @@ reply.
 unused mask bits in the last group must be zero. Oversized or incomplete transfers
 are rejected; SMP_WRITE decodes at most 256 bytes, SMP_END exactly 480 bytes.
 
-**User sample slot** (80 KiB each, SAMPLE engine sets USR1..USR3; reference uploader
-`tools/fm1_sample_upload.py`, slot builder `sampleio.user_slot`; the editor's port of it is
-checked byte for byte by `web/test_web.mjs`): header at 0, ADPCM data at 512.
+**User sample storage** (three legacy logical slots currently exposed as USR1..USR3;
+the allocator supports eight logical slot identities). The user-sample pool is 240 KiB
+(60 × 4 KiB sectors), shared dynamically rather than divided into fixed 80 KiB allocations.
+Each sample extent contains a 512-byte header area followed by ADPCM data. The 480-byte
+sample header occupies bytes 0..479; the allocation descriptor occupies bytes 480..511.
+
+SMP_BEGIN reserves a contiguous temporary extent sized for the declared audio length and
+erases that extent without disturbing the published sample. SMP_WRITE fills the staged
+extent. SMP_END validates the header and audio CRC, writes and verifies the allocation
+descriptor, and writes its commit marker last. An interrupted or invalid upload therefore
+does not replace the previous committed sample. A successful commit is published by boot
+recovery on the next restart; the old extent remains reserved during the current session
+so active voices cannot be redirected to changing zone metadata. Unselected older extents
+are reclaimed by allocator recovery on boot.
 
 | Offset | Field |
 | --- | --- |
@@ -506,9 +517,11 @@ grid lives in the steps themselves, so every engine has it:
   (op, slot, used); a failed PROJECT save gets no reply, allowing the editor to report
   a timeout instead of confirming the previous used slot. The previous slot is kept.
   A pending PLAY or SONG start also prevents a device save.
-- **Published samples.** SMP_END repeated with an identical committed header succeeds without
-  another write or zone scan. A different header is rejected (rc 2) until SMP_BEGIN,
-  so sounding sample voices cannot see their zone table change.
+- **Published samples.** SMP_BEGIN stages a replacement separately from the currently
+  published extent. SMP_END commits only after validation and a final descriptor commit
+  marker. The running RAM map is intentionally unchanged until reboot so sounding voices
+  continue using their existing zone table. Boot recovery selects the newest valid
+  committed generation and reclaims superseded extents in its allocation map.
 - **Safety.** `PROJECT` save, sample-slot commands, `UP_PUT` / `UP_STORE` / `UP_ERASE`, and the tagged preference writes below write flash, and only in
   Felucca's own storage; never the app or the update area.
 

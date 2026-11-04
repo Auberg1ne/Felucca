@@ -70,7 +70,7 @@ TR = 22050                                   # stored sample rate
 # from the web editor). TRANH was removed (66 KB of flash); its index 1 stays, an alias of PIANO
 # ("alias": the set named). PERC (the GM kit) was removed (66 KB); its index 4 stays, an alias of
 # PIANO too (PERC_SLOT; its sounds load as the DRUM engine)
-CC0_SETS = [("PIANO", "oneshot"), ("PIANO", "alias"), ("FLUTE", "sus"), ("SAX", "sus"), ("PIANO", "alias")]
+CC0_SETS = [("GUITAR", "oneshot"), ("GUITAR", "alias"), ("VOICE", "sus"), ("HIT", "oneshot"), ("GUITAR", "alias")]
 PERC_SLOT = 4                                # core.h SMP_SET_PERC: SAMPLE's factory presets end before it
 MEASURED_TUNING = ()                         # sets whose recordings are not at A440 (was TRANH, ~+35 ct)
 
@@ -277,7 +277,7 @@ class Builder:
     def slice_piano(self):
         """SLICE's PIANO: the PIANO set's SLC_PIANO_NOTE zone (its data, no copy); its slice table: decoder states
         at k * len / SLC_GRID, one AUTO slice at 0 (a single note has one attack)"""
-        z = next((z for name, z0, nz in self.sets if name == "PIANO"
+        z = next((z for name, z0, nz in self.sets if name == "GUITAR"
                   for z in self.zones[z0:z0 + nz] if z["root16"] == SLC_PIANO_NOTE * 16), None)
         if not z:
             return
@@ -471,7 +471,7 @@ def user_slot_file(setname, slotname, prefix):
     tools/fm1_sample_upload.py build writes them) and PREFIX.slot (the slot as stored in flash: header at 0, data at
     512). Each zone's ADPCM bytes, length, rate, root and key range are checked against that set as Builder.cc0_set
     builds it: from USR1..3 it plays the same (one-shot zones there; the slot has no loop)"""
-    kind = next((k for n, k in CC0_SETS if n == setname and k != "alias"), None)
+    kind = "oneshot" if setname == "PIANO" else next((k for n, k in CC0_SETS if n == setname and k != "alias"), None)
     if kind != "oneshot":
         raise SystemExit(f"{setname}: not a one-shot CC0 set")
     ent = cc0_entries(setname, kind)

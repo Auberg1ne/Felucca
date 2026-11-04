@@ -623,7 +623,7 @@ const req = {
       [op, arg.step & 63, arg.param & 127, ...(op === 3 ? v14enc(arg.value) : [])])]];
   },
   names: (e) => [CMD.NAMES, [e & 0x7F]],
-  smpBegin: (s) => [CMD.SMP_BEGIN, [s & 0x7F]],
+  smpBegin: (s, len) => [CMD.SMP_BEGIN, [s & 0x7F, len & 0x7F, (len >> 7) & 0x7F, (len >> 14) & 0x7F]],
   smpWrite: (s, off, bytes) => [CMD.SMP_WRITE, [s & 0x7F, off & 0x7F, (off >> 7) & 0x7F, (off >> 14) & 0x7F, ...pack7(bytes)]],
   smpEnd: (s, hdr) => [CMD.SMP_END, [s & 0x7F, ...pack7(hdr)]],
   smpErase: (s) => [CMD.SMP_ERASE, [s & 0x7F]],
@@ -1817,7 +1817,7 @@ function makeMockDevice(opt = {}) {
     tracks: [0, 1, 2, 3].map(newTrack), sel: 0, rec: 0,
     g: GP.map((d) => d.def),
     slots: [null, null, null, null], songRows: [], chainPlaying: false, chainRow: 0, chainRemaining: 0,
-    smp: [0, 1, 2].map(() => ({ flash: new Uint8Array(SMP.SLOT_SIZE).fill(0xFF), zones: 0, name: "", len: 0, next: SMP.DATA_OFF })),
+    smp: [0, 1, 2].map(() => ({ flash: new Uint8Array(SMP.SLOT_SIZE).fill(0xFF), stage: null, expectedLen: 0, zones: 0, name: "", len: 0, next: SMP.DATA_OFF })),
     bank: new Array(opt.slots || 32).fill(null),     /* user presets: {engine, name, p, pattern, grid, fm6 (FM6: its patch)} */
     uiCaps: opt.legacy || opt.v3 || opt.v5 ? 0 : opt.uiCaps ?? 9,
     palette: 0, font: 0, monitor: 0, filter: 0, bankSig: 0,
@@ -2232,19 +2232,34 @@ function makeMockDevice(opt = {}) {
       case CMD.SMP_BEGIN: case CMD.SMP_ERASE: {
         if (a.length < 1 || a[0] >= 3) return null;
         const u = st.smp[a[0]];
-        if (cmd === CMD.SMP_ERASE) u.flash.fill(0xFF); else u.flash.fill(0xFF, 0, 4096);
-        u.zones = 0; u.name = ""; u.len = 0; u.next = SMP.DATA_OFF;
-        b(a[0]); b(0);
+        let rc = 0;
+        if (cmd === CMD.SMP_ERASE) {
+          u.flash.fill(0xFF);
+          u.stage = null; u.expectedLen = 0;
+          u.zones = 0; u.name = ""; u.len = 0; u.next = SMP.DATA_OFF;
+        } else {
+          if (a.length !== 4) rc = 1;
+          else {
+            const len = a[1] | (a[2] << 7) | (a[3] << 14);
+            if (!len || len > SMP.MAX_DATA) rc = 1;
+            else {
+              u.stage = new Uint8Array(SMP.DATA_OFF + len).fill(0xFF);
+              u.expectedLen = len;
+              u.next = SMP.DATA_OFF;
+            }
+          }
+        }
+        b(a[0]); b(rc);
         break;
       }
       case CMD.SMP_WRITE: {
         if (a.length < 5 || a[0] >= 3) return null;
         const u = st.smp[a[0]], off = a[1] | (a[2] << 7) | (a[3] << 14), dat = unpack7(a.slice(4));
         let rc = 0;
-        if (off < SMP.DATA_OFF || (off & 0xFF) || !dat.length || off + dat.length > SMP.SLOT_SIZE || dat.length > 256) rc = 1;
+        if (!u.stage || off < SMP.DATA_OFF || (off & 0xFF) || !dat.length ||
+            off + dat.length > u.stage.length || dat.length > 256) rc = 1;
         else {
-          if (!(off & 0xFFF)) u.flash.fill(0xFF, off, off + 4096);
-          u.flash.set(dat, off);
+          u.stage.set(dat, off);
           u.next = off + dat.length;
         }
         b(a[0]); b(off); b(off >> 7); b(off >> 14); b(rc);
@@ -2258,10 +2273,13 @@ function makeMockDevice(opt = {}) {
         else if (!hd[6] || hd[6] > 16) rc = 5;
         else {
           const len = dv.getUint32(16, true);
-          if (len > SMP.MAX_DATA) rc = 1;
-          else if (crc32(u.flash.subarray(SMP.DATA_OFF, SMP.DATA_OFF + len)) !== dv.getUint32(20, true)) rc = 3;
+          if (!u.stage || len !== u.expectedLen || len > SMP.MAX_DATA) rc = 1;
+          else if (crc32(u.stage.subarray(SMP.DATA_OFF, SMP.DATA_OFF + len)) !== dv.getUint32(20, true)) rc = 3;
           else {
-            u.flash.set(hd, 0);
+            u.stage.set(hd, 0);
+            u.flash.fill(0xFF);
+            u.flash.set(u.stage);
+            u.stage = null; u.expectedLen = 0;
             u.zones = hd[6]; u.len = len;
             u.name = String.fromCharCode(...hd.slice(8, 16)).replace(/\0.*$/, "");
           }
@@ -3982,7 +4000,7 @@ async function smpUpload(k, prog) {
   prog.hidden = false;
   try {
     const t0 = performance.now();
-    let r = parse[CMD.SMP_BEGIN](await rq(req.smpBegin(k), { timeout: 1000, retries: 0 }));
+    let r = parse[CMD.SMP_BEGIN](await rq(req.smpBegin(k, data.length), { timeout: 1000, retries: 0 }));
     if (r.rc) throw new Error("begin rc " + r.rc);
     for (let off = 0; off < data.length; off += 256) {
       const a = SMP.DATA_OFF + off;

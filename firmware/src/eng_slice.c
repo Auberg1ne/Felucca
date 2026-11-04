@@ -60,7 +60,7 @@ typedef struct {
 
 static const slc_src_t SLC_BREAK = SLC_BREAK_INIT;
 static const slc_src_t SLC_PIANO = SLC_PIANO_INIT;
-static slc_src_t slc_usr[SMP_USER_SLOTS];
+static slc_src_t slc_usr[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
 typedef int16_t slc_rbuf_t[NVOICE][SLC_RB];           /* reverse windows, one per part voice (the part's eng_mem) */
 ENG_MEM_FITS("SLICE", sizeof(slc_rbuf_t));
 /* append-only: stored sounds keep their SRC numbers (1.0.4 added PIANO) */
@@ -84,8 +84,8 @@ typedef struct {
     uint32_t end;                    /* where the last slice ends (0 = the material's end) */
     uint32_t pos[SLC_AUTO], st[SLC_AUTO];     /* slice starts and their decoder states (as ast) */
 } slc_man_t;
-static slc_man_t slc_man[SMP_USER_SLOTS][2];
-static volatile uint8_t slc_man_cur[SMP_USER_SLOTS];
+static slc_man_t slc_man[SMP_USER_LOGICAL_SLOTS][2] __attribute__((section(".pool")));
+static volatile uint8_t slc_man_cur[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
 static void (*slc_man_load)(uint32_t k);        /* slice_store.c: a slot was read (smp_user_scan): its stored slices */
 static uint8_t slc_man_save;                     /* bit k: slot k's slices changed, to flash (slice_store.c) */
 

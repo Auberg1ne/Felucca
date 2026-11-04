@@ -37,7 +37,7 @@
  * PHASE WIRE 1510, TRIO CHIP CHOIR 1455, WHEEL FULL ORGAN 1413 (8 keys, no sends). State: per part the grain pool, the reverse windows and the index
  * (gr_part_t, in the part's engine memory: engines.c eng_mem), the random numbers outside it (gr_rng: they run on
  * over notes and engine switches); per voice s[0] the zone, s[1] the countdown to the next grain,
- * s[2] the low-pass, voice_t's phases are unused. */
+ * s[2] legacy low-pass state, s[3] HP state, s[4] LP state, voice_t's phases are unused. */
 #define GR_POLY 3                /* voices per part */
 #define GR_NG 12                 /* grains per part */
 #define GR_SEG_LOG2 8
@@ -97,6 +97,8 @@ typedef struct {
     uint32_t stamp;              /* what the index was built for (user slots: smp_user_gen) */
     uint8_t src;                 /* SRC + 1 the index holds, 0 = none */
     uint8_t nz;
+    uint32_t head[GR_POLY];      /* shared source position per voice, Q16 */
+    uint8_t head_zl[GR_POLY];    /* zone associated with each source head */
 } gr_part_t;
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
 static int32_t gr_rng[NPART];
@@ -222,7 +224,7 @@ static void gr_fill(const gr_part_t *P, gr_grain_t *g, int16_t *rb, uint32_t zl,
 }
 
 /* start a grain of voice vi (zone zl) */
-static void gr_spawn(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, uint32_t iv, const vmod_t *m)
+static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, uint32_t iv, const vmod_t *m, int32_t pitch_offset, int32_t gain_scale)
 {
     const int16_t *p = t->p;
     const smp_zone_t *z = gr_zone(P->src - 1u, zl);
@@ -234,11 +236,15 @@ static void gr_spawn(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, u
             g = &P->g[i];
     if (!g || n < 8u || !P->zcnt[zl])
         return;
-    /* length: 441 * 2^(SIZE / 24) output samples (10 ms .. 390 ms) */
+    /* Personality-specific grain length. */
     len = (441u * pow2_q16(p[P_E2] * 8)) >> 16;
+    if ((uint32_t)p[P_GTYPE] == 1u) {
+        uint32_t hold = (uint32_t)p[P_GA];
+        len = (len * (128u + hold * 3u)) / 128u;
+    }
     /* rate: the note against the zone's root, PITCH, the random detune (RAND^2, up to +-1 oct) */
     amt = p[P_E6] * p[P_E6] * 192 / (127 * 127);
-    d16 = m->pitch16 - z->root16 + p[P_E4] * 16 + (((int32_t)(r1 & 0xFFFFu) - 32768) * amt >> 15);
+    d16 = m->pitch16 - z->root16 + p[P_E4] * 16 + pitch_offset + (((int32_t)(r1 & 0xFFFFu) - 32768) * amt >> 15);
     step = (pow2_q16(clamp(d16, -1536, 576)) >> 8) * (z->rate >> 8);
     step = step > GR_STEP_MAX ? GR_STEP_MAX : step < 256u ? 256u : step;
     rev = ((r1 >> 16) & 255u) < (uint32_t)p[P_E6];  /* RAND 127: half of them */
@@ -252,7 +258,16 @@ static void gr_spawn(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, u
     /* position: POS (+ the SHP modulation) is the centre, SPRD the random spread */
     posq = clamp((p[P_E1] << 8) + m->shape - (64 << 8), 0, 127 << 8);
     c = gr_scale(n - 1u, (uint32_t)posq * 65535u / (127u << 8));
+    if (P->head_zl[vi] != zl) {
+        P->head[vi] = c << 16;
+        P->head_zl[vi] = (uint8_t)zl;
+    }
+    c = P->head[vi] >> 16;
     sp = gr_scale(n, (uint32_t)p[P_E5] * 516u);
+    if ((uint32_t)p[P_GTYPE] == 0u)
+        sp = gr_scale(n, (uint32_t)p[P_GB] * 516u);
+    else if ((uint32_t)p[P_GTYPE] == 1u)
+        sp = gr_scale(n, (uint32_t)p[P_GB] * (uint32_t)p[P_GB] * 4u);
     pos = (int32_t)c + (int32_t)gr_scale(sp, r2 & 0xFFFFu) - (int32_t)(sp >> 1);
     if (rev)
         pos = clamp(pos, (int32_t)span, (int32_t)n - 2);
@@ -275,6 +290,7 @@ static void gr_spawn(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, u
     g->zl = (uint8_t)zl;
     ov = len / (iv ? iv : 1u);
     g->gain = GR_NORM[ov < 1u ? 1u : ov > GR_NG ? GR_NG : ov];
+    g->gain = mulq15(g->gain, gain_scale);
     g->owner = (uint8_t)(vi + 1u);
     if (rev) {
         int16_t *rb = P->rb[g - P->g];
@@ -287,6 +303,16 @@ static void gr_spawn(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, u
         g->a = gr_dec(z, (uint32_t)pos, &g->pred, &g->idx);
         g->b = gr_dec(z, (uint32_t)pos + 1u, &g->pred, &g->idx);
         g->pos = (uint32_t)pos + 2u;
+    }
+}
+
+static void gr_spawn(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t zl, uint32_t iv, const vmod_t *m)
+{
+    const int16_t *p = t->p;
+    gr_spawn_one(P, t, vi, zl, iv, m, 0, 32767);
+    if ((uint32_t)p[P_GTYPE] == 3u && p[P_GB] > 0) {
+        int32_t interval = (7 + ((int32_t)p[P_GA] * 12 / 127)) * 16;
+        gr_spawn_one(P, t, vi, zl, iv, m, interval, (int32_t)p[P_GB] * 258);
     }
 }
 
@@ -357,6 +383,8 @@ static void grain_note_on(track_t *t, voice_t *v)
     gr_part_t *P = gr_of(t);
     uint32_t vi = (uint32_t)(v - t->v) % NVOICE, i;
     v->s[0] = gr_find((uint32_t)t->p[P_E0] % SMP_NALL, v->note);
+    P->head[vi] = 0;
+    P->head_zl[vi] = 0xFFu;
     v->s[1] = 0;                                    /* the first grain at once */
     v->ph[0] = 0;                                   /* (the sine's phase: no data) */
     if (!v->env) {                                  /* a fresh voice: no grains left from before */
@@ -392,43 +420,109 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
     gr_part_t *P = gr_of(t);
     const int16_t *p = t->p;
     uint32_t vi = (uint32_t)(v - t->v) % NVOICE, i, mine = 0, nact = 0, iv;
-    int32_t zl = v->s[0], acc[CTL], lp, y = v->s[2];
+    int32_t zl = v->s[0], acc[CTL];
+    int32_t ic1 = v->s[3], ic2 = v->s[4], y = v->s[2];
+    int32_t cutoff = p[P_GCUT], cut, k;
+    uint32_t fallback = (zl == GR_SINE);
+    tsvf_t fc;
+
     if (n > CTL)
         n = CTL;
-    if (zl == GR_SINE) {                            /* no data: a plain sine at the note's pitch + PTCH, TONE */
-        lp = 4000 + ((clamp((p[P_E7] << 8) + m->cutoff, 0, 127 << 8) * 28767) >> 15);
-        smp_sine(out, n, m, p[P_E4] * 16, lp, &v->ph[0], &v->s[2]);
-        return;
-    }
-    if (zl < 0 || zl >= P->nz || P->src != (uint32_t)p[P_E0] % SMP_NALL + 1u) {
-        if (zl < 0)
-            v->active = 0;                          /* a user slot key with no zone: silent */
-        return;
-    }
+
     for (i = 0; i < n; i++)
         acc[i] = 0;
-    for (i = 0; i < GR_POLY; i++)
-        nact += t->v[i].active;
-    for (i = 0; i < GR_NG; i++)
-        if (P->g[i].owner == vi + 1u)
-            mine += gr_run(P, &P->g[i], acc, n);
-    /* the next grain: DENS a second, 1..98 /s (SPRD jitters the interval) */
-    iv = (44100u * pow2_q16(-p[P_E3] * 10)) >> 16;
-    v->s[1] -= (int32_t)n;
-    if (v->s[1] <= 0) {
-        uint32_t r = gr_rnd(t);
-        int32_t j = (((int32_t)(r & 0xFFFFu) - 32768) * p[P_E5]) / 254;   /* +-SPRD / 2, Q15 */
-        v->s[1] += (int32_t)iv + mulq15((int32_t)iv, j);
-        if (v->s[1] < 0)
-            v->s[1] = 0;
-        if (mine < (nact > 1u ? (GR_NG / nact > 2u ? GR_NG / nact : 2u) : GR_NG))
-            gr_spawn(P, t, vi, (uint32_t)zl, iv, m);
+
+    if (fallback) {
+        uint32_t ph = v->ph[0];
+        uint32_t inc = pitch_inc((uint32_t)clamp(m->pitch16 + p[P_E4] * 16, 0, 2047));
+        for (i = 0; i < n; i++) {
+            acc[i] = sine_i(ph) >> 1;
+            ph += inc;
+        }
+        v->ph[0] = ph;
+    } else {
+        if (zl < 0 || zl >= P->nz || P->src != (uint32_t)p[P_E0] % SMP_NALL + 1u) {
+            if (zl < 0)
+                v->active = 0;
+            return;
+        }
+
+        for (i = 0; i < GR_POLY; i++)
+            nact += t->v[i].active;
+        for (i = 0; i < GR_NG; i++)
+            if (P->g[i].owner == vi + 1u)
+                mine += gr_run(P, &P->g[i], acc, n);
+
+        /* RATE slows the shared source head; grain playback pitch stays unchanged. */
+        if (P->head_zl[vi] == (uint8_t)zl) {
+            const smp_zone_t *hz = gr_zone(P->src - 1u, (uint32_t)zl);
+            int32_t hd16 = m->pitch16 - hz->root16 + p[P_E4] * 16;
+            uint32_t hs = (pow2_q16(clamp(hd16, -1536, 576)) >> 8) * (hz->rate >> 8);
+            uint32_t factor = pow2_q16(-(int32_t)p[P_GFILTER_RSVD1] * 10);
+            uint32_t move, maxhead = (hz->n - 3u) << 16;
+            if (hs > 65535u) hs = 65535u;
+            move = ((hs >> 8) * (factor >> 8)) * n;
+            if (maxhead) {
+                uint32_t next = P->head[vi] + move;
+                P->head[vi] = next >= maxhead ? next % maxhead : next;
+            }
+        }
+
+        /* The next grain: DENS a second, 1..98 /s (SPRD jitters the interval). */
+        iv = (44100u * pow2_q16(-p[P_E3] * 10)) >> 16;
+        if ((uint32_t)p[P_GTYPE] == 2u) {
+            uint32_t rate = (uint32_t)p[P_GA];
+            iv = (iv * (256u - rate * 3u / 2u)) / 256u;
+            if (iv < 64u) iv = 64u;
+        }
+        v->s[1] -= (int32_t)n;
+        if (v->s[1] <= 0) {
+            uint32_t r = gr_rnd(t);
+            int32_t j = (((int32_t)(r & 0xFFFFu) - 32768) * p[P_E5]) / 254;
+            v->s[1] += (int32_t)iv + mulq15((int32_t)iv, j);
+            if (v->s[1] < 0)
+                v->s[1] = 0;
+            if (mine < (nact > 1u ? (GR_NG / nact > 2u ? GR_NG / nact : 2u) : GR_NG))
+                gr_spawn(P, t, vi, (uint32_t)zl, iv, m);
+        }
+
+        /* STUTTER gate. */
+        if ((uint32_t)p[P_GTYPE] == 2u) {
+            uint32_t gate = (uint32_t)p[P_GB];
+            uint32_t period = 128u + (127u - (uint32_t)p[P_GA]) * 12u;
+            uint32_t on = (period * gate) / 127u;
+            for (i = 0; i < n; i++) {
+                uint32_t phase = (v->ph[1] + i) % period;
+                if (phase >= on) acc[i] = 0;
+            }
+            v->ph[1] += n;
+        }
     }
-    lp = 4000 + ((clamp((p[P_E7] << 8) + m->cutoff, 0, 127 << 8) * 28767) >> 15);
+
+    /* Zero is a genuine bypass; negative is HP, positive is LP. */
+    if (cutoff == 0) {
+        v->s[2] = 0;
+        v->s[3] = 0;
+        v->s[4] = 0;
+        return;
+    }
+
+    cut = cutoff < 0 ? ((50 + cutoff) * (127 << 8) / 50) : (cutoff * (127 << 8) / 50);
+    tsvf_coef(&fc, cut, p[P_GRES]);
+    k = 8192 - p[P_GRES] * 7600 / 127;
+
     for (i = 0; i < n; i++) {
-        y += mulq15(clamp(acc[i], -65535, 65535) - y, lp);
+        int32_t x = clamp(acc[i], -65535, 65535);
+        int32_t old_ic1 = ic1;
+        int32_t lp = tsvf_lp(&fc, x, &ic1, &ic2);
+        int32_t bp = (ic1 + old_ic1) >> 1;
+        int32_t hp = x - ((k * bp) >> 12) - lp;
+        y = cutoff > 0 ? lp : hp;
         out[i] += voice_amp(y, m, i) << 1;
     }
+
+    v->s[3] = ic1;
+    v->s[4] = ic2;
     v->s[2] = y;
 }
 
@@ -457,7 +551,7 @@ static const engine_t ENG_GRAIN = {
     .npresets = NELEM(GRAIN_PRESETS),
     .note_on = grain_note_on,
     .render = grain_render,
-    .knob = {P_E1, P_E2, P_E3, P_E5},
+    .knob = {P_E1, P_E2, P_GFILTER_RSVD1, P_E5},
     .poly = GR_POLY,
     .block = grain_block,
     .mem = sizeof(gr_part_t),

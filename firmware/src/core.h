@@ -69,6 +69,8 @@ enum {                          /* per-track parameters */
     P_ITYPE, P_IA, P_IB, P_IC, P_IMIX,         /* 1.5 (#78, #177): the INSERT, its TYPE, three values and MIX (fx.c) */
     P_FTYPE,                                   /* 1.5 (#104): ANALOG's filter TYPE, LP (as before) / BP / HP (eng_analog.c) */
     P_ESYNC,                                   /* 1.5 (#175): ENV SYNC: ATK DEC REL as note values of the tempo (voice.c) */
+    P_GTYPE, P_GA, P_GB,                       /* GRAIN personality and its two personality-specific controls */
+    P_GCUT, P_GRES, P_GFILTER_RSVD1, P_GFILTER_RSVD2,                /* GRAIN MS-20-inspired HP/LP filter controls */
     P_E0, P_E1, P_E2, P_E3, P_E4, P_E5, P_E6, P_E7,
     P_COUNT
 };
@@ -106,6 +108,7 @@ static void params_by_count(int16_t *out, const int16_t *in, uint32_t np, const 
 }
 
 /* engine indices the stores name (engines.c ENGINES[]: append-only) */
+#define ENGI_GRAIN 8u
 #define ENGI_PHYS 9u
 #define ENGI_DRUM 10u
 /* PHYS MODEL DRUM (MODEL 4, before 1.0) -> the DRUM engine, its E values in place: {MODEL, TUNE, TONE, DECY,
@@ -310,7 +313,7 @@ typedef struct track {
     uint8_t lfo_wrap;            /* the LFO's phase wrapped this block: its S&H is drawn after the parts (voice.c) */
     uint32_t esync_k[3];         /* ATK's step, DEC's and REL's coefficient (Q16) this block (voice.c esync_coef) */
     uint8_t spread_on;           /* SPREAD this block (fx.c mix_part, voice.c track_render) */
-    uint8_t rsv_sz[1];           /* (sizeof(track_t) a multiple of 16: below) */
+    uint8_t rsv_sz[7];           /* (sizeof(track_t) a multiple of 16: below) */
 #else
     uint8_t rsv_sz[14];          /* (sizeof(track_t) a multiple of 16: below) */
 #endif

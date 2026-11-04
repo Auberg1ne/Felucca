@@ -57,10 +57,10 @@ static void ed_send(void)
 }
 static int32_t ed_rv(const uint8_t *p) { return (int32_t)(p[0] | p[1] << 7) - 8192; }
 
-/* ---- user sample slots (eng_sample.c): flash SMP_USER_BASE + k * SMP_USER_SIZE ----
- * BEGIN erases the header sector (the slot is invalid from then on), WRITE fills the data
- * (offset >= 512, erasing each further sector when the write reaches its start), END sends
- * the header: the device checks the data CRC and writes the header last. */
+/* ---- transactional user-sample upload ----
+ * BEGIN reserves and erases a temporary extent. WRITE fills it. END verifies the
+ * payload and writes the header plus allocation descriptor; the commit word is last.
+ * The old extent remains reserved until reboot, so live voices cannot read erased data. */
 static uint32_t ed_unpack7(const uint8_t *a, uint32_t na, uint8_t *out, uint32_t max)
 {
     uint32_t n = 0;                                 /* groups: msb byte, then up to 7 bytes */
@@ -76,49 +76,188 @@ static uint32_t ed_unpack7(const uint8_t *a, uint32_t na, uint8_t *out, uint32_t
     return na ? 0u : n;
 }
 static uint8_t ed_smp_buf[512] __attribute__((aligned(4), section(".pool")));
-static uint32_t ed_smp_slot(uint32_t k) { return SMP_USER_BASE + k * SMP_USER_SIZE; }
-static void ed_smp_inval(uint32_t k)
+static uint32_t ed_smp_stage_phys[SMP_USER_LOGICAL_SLOTS];
+static uint32_t ed_smp_stage_sectors[SMP_USER_LOGICAL_SLOTS];
+static uint32_t ed_smp_stage_capacity[SMP_USER_LOGICAL_SLOTS];
+static uint32_t ed_smp_stage_data_len[SMP_USER_LOGICAL_SLOTS];
+
+static void ed_smp_inval_phys(uint32_t phys, uint32_t size)
 {
     fm1_irq_off();
-    fl_inval(ed_smp_slot(k), SMP_USER_SIZE);
+    fl_inval(phys, size);
     fm1_irq_on();
 }
-static int ed_smp_erase(uint32_t k, uint32_t all)  /* header sector, or the whole slot */
+
+/* Explicit ERASE is destructive; BEGIN is deliberately not. */
+static int ed_smp_erase(uint32_t k, uint32_t all)
 {
-    uint32_t i, took;
+    uint32_t i, took, phys, count;
     int rc = 0;
+    if (k >= SMP_USER_LOGICAL_SLOTS)
+        return 1;
+    phys = smp_user_phys[k];
+    count = smp_user_sectors[k];
+    if (!phys || !count)
+        return 0;
+    fm1_irq_off();
     usr_nz[k] = 0;
     for (i = 0; i < 16u; i++)
-        usr_zone[k][i].n = 0;                     /* a sounding voice ends instead of reading 0xFF */
-    for (i = 0; i < (all ? SMP_USER_SIZE / 0x1000u : 1u) && !rc; i++) {
+        usr_zone[k][i].n = 0;
+    fm1_irq_on();
+    if (!all)
+        count = 1u;
+    for (i = 0; i < count && !rc; i++) {
         audio_silence();
-        rc = fl_erase4k(ed_smp_slot(k) + i * 0x1000u, &took);
+        rc = fl_erase4k(phys + i * SMP_USER_SECTOR_SIZE, &took);
         fm1_wdt_feed();
     }
-    ed_smp_inval(k);
+    ed_smp_inval_phys(phys, count * SMP_USER_SECTOR_SIZE);
+    if (!rc && all) {
+        uint32_t first = (phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
+        for (i = 0; i < smp_user_sectors[k]; i++)
+            smp_alloc_release(first + i);
+        smp_user_phys[k] = 0u;
+        smp_user_sectors[k] = 0u;
+        smp_user_generation[k] = 0u;
+        smp_user_scan(k);
+    }
     return rc;
 }
 static int ed_flash_stop(void);
+
+static void ed_smp_stage_abort(uint32_t k)
+{
+    if (k >= SMP_USER_LOGICAL_SLOTS)
+        return;
+    smp_user_stage_abort(k);
+    ed_smp_stage_phys[k] = 0u;
+    ed_smp_stage_sectors[k] = 0u;
+    ed_smp_stage_capacity[k] = 0u;
+    ed_smp_stage_data_len[k] = 0u;
+}
+
+static int ed_smp_begin(uint32_t k, uint32_t data_len)
+{
+    uint32_t i, took;
+    if (data_len > SMP_USER_POOL_SIZE - SMP_USER_DATA || ed_flash_stop())
+        return 1;
+    ed_smp_stage_abort(k);
+    if (smp_user_stage_begin(k, data_len, &ed_smp_stage_phys[k],
+                             &ed_smp_stage_sectors[k],
+                             &ed_smp_stage_capacity[k]))
+        return 1;
+    ed_smp_stage_data_len[k] = data_len;
+    for (i = 0; i < ed_smp_stage_sectors[k]; i++) {
+        audio_silence();
+        if (fl_erase4k(ed_smp_stage_phys[k] + i * SMP_USER_SECTOR_SIZE, &took)) {
+            ed_smp_stage_abort(k);
+            return 1;
+        }
+        fm1_wdt_feed();
+    }
+    ed_smp_inval_phys(ed_smp_stage_phys[k], ed_smp_stage_capacity[k]);
+    return 0;
+}
+
 static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
 {
     const smp_user_hdr_t *h = (const smp_user_hdr_t *)ed_smp_buf;
+    smp_alloc_desc_t d;
+    uint32_t phys, reserved, needed, generation, commit;
+    const uint8_t *base;
+    const smp_alloc_desc_t *written;
+
+    if (k >= SMP_USER_LOGICAL_SLOTS || !ed_smp_stage_sectors[k])
+        return 1;
     if (ed_unpack7(a, na, ed_smp_buf, sizeof(smp_user_hdr_t)) != sizeof(smp_user_hdr_t))
         return 1;
-    if (h->magic != SMP_USER_MAGIC || h->version != 1 || !h->nz || h->nz > 16u ||
-        h->data_len > SMP_USER_SIZE - SMP_USER_DATA)
+    if (h->magic != SMP_USER_MAGIC || h->version != 1u || !h->nz || h->nz > 16u ||
+        h->data_len != ed_smp_stage_data_len[k] ||
+        h->data_len > ed_smp_stage_capacity[k] - SMP_USER_DATA) {
+        ed_smp_stage_abort(k);
         return 2;
-    if (usr_nz[k])                                     /* published zones may still be read by live voices */
-        return memcmp(h, smp_user_xip(k), sizeof *h) ? 2 : 0;
-    if (ed_flash_stop())                               /* (only a header that will be written stops the transport) */
+    }
+    if (ed_flash_stop()) {
+        ed_smp_stage_abort(k);
         return 1;
-    ed_smp_inval(k);
-    if (st_crc32(smp_user_xip(k) + SMP_USER_DATA, h->data_len) != h->crc)
+    }
+
+    phys = ed_smp_stage_phys[k];
+    reserved = ed_smp_stage_sectors[k];
+    needed = (SMP_USER_DATA + h->data_len + SMP_USER_SECTOR_SIZE - 1u) /
+             SMP_USER_SECTOR_SIZE;
+    if (!needed)
+        needed = 1u;
+    if (needed > reserved) {
+        ed_smp_stage_abort(k);
+        return 2;
+    }
+
+    ed_smp_inval_phys(phys, ed_smp_stage_capacity[k]);
+    base = fm1_xip_ptr(phys);
+    if (st_crc32(base + SMP_USER_DATA, h->data_len) != h->crc) {
+        ed_smp_stage_abort(k);
         return 3;
-    if (fl_write(ed_smp_slot(k), ed_smp_buf, sizeof(smp_user_hdr_t)))
+    }
+
+    generation = smp_user_generation[k] + 1u;
+    memset(&d, 0, sizeof d);
+    d.magic = SMP_ALLOC_MAGIC;
+    d.version = SMP_ALLOC_VERSION;
+    d.logical_slot = (uint8_t)k;
+    d.sector_count = (uint8_t)needed;
+    d.generation = generation;
+    d.data_len = h->data_len;
+    d.data_crc = h->crc;
+    d.commit = 0xFFFFFFFFu;
+    d.record_crc = 0u;
+    d.record_crc = st_crc32(&d, 28u);
+
+    /* Header and descriptor body first; the commit word is the final flash write. */
+    if (fl_write(phys, ed_smp_buf, SMP_ALLOC_OFFSET) ||
+        fl_write(phys + SMP_ALLOC_OFFSET, (const uint8_t *)&d, 28u)) {
+        ed_smp_stage_abort(k);
         return 4;
-    ed_smp_inval(k);
-    smp_user_scan(k);
-    return usr_nz[k] ? 0 : 5;
+    }
+    ed_smp_inval_phys(phys, SMP_USER_DATA);
+    if (memcmp(fm1_xip_ptr(phys), ed_smp_buf, SMP_ALLOC_OFFSET) ||
+        memcmp(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET, &d, 28u)) {
+        ed_smp_stage_abort(k);
+        return 4;
+    }
+
+    commit = SMP_ALLOC_COMMITTED;
+    if (fl_write(phys + SMP_ALLOC_OFFSET + 28u,
+                 (const uint8_t *)&commit, sizeof commit)) {
+        ed_smp_stage_abort(k);
+        return 4;
+    }
+    ed_smp_inval_phys(phys, SMP_USER_DATA);
+    written = (const smp_alloc_desc_t *)(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET);
+    if (!smp_alloc_extent_valid(phys, k, written)) {
+        ed_smp_stage_abort(k);
+        return 5;
+    }
+
+    /*
+     * The committed descriptor is now durable. Keep the current RAM map and
+     * zone table unchanged until reboot: active voices resolve their zone
+     * through that table on every render. Boot recovery will select this
+     * newer generation on the next start.
+     */
+    smp_user_generation[k] = generation;
+
+    /* Keep the committed staging extent reserved; release only its unused tail. */
+    for (uint32_t i = needed; i < reserved; i++)
+        smp_alloc_release((phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE + i);
+    smp_stage_start[k] = 0u;
+    smp_stage_count[k] = 0u;
+    ed_smp_stage_phys[k] = 0u;
+    ed_smp_stage_sectors[k] = 0u;
+    ed_smp_stage_capacity[k] = 0u;
+    ed_smp_stage_data_len[k] = 0u;
+
+    return 0;
 }
 
 /* the engine byte of DUMP / RELOAD / TRACK */
@@ -395,9 +534,11 @@ static int ed_args_ok(uint32_t cmd, const uint8_t *a, uint32_t n)
         return n == 2u || (cmd == ED_TRACK_PARAM && n == 4u);
     case ED_SET:
         return n == 4u;
-    case ED_STEP_GET: case ED_NAMES: case ED_SMP_BEGIN: case ED_SMP_ERASE:
+    case ED_STEP_GET: case ED_NAMES: case ED_SMP_ERASE:
     case ED_UP_GET: case ED_UP_LOAD: case ED_UP_ERASE: case ED_WATCH: case ED_TRACK_DUMP: case ED_MENU_DESC:
         return n == 1u;
+    case ED_SMP_BEGIN:
+        return n == 4u;
     case ED_MENU_SET:
         return n == 3u;
     case ED_STEP_SET:
@@ -601,33 +742,34 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         for (i = 0; i < 2u; i++)                           /* then the two edit-page titles */
             ed_str(ENGINES[a[0]]->page_title[i], 8);
         break;
-    case ED_SMP_BEGIN:                                     /* slot -> slot, rc */
-    case ED_SMP_ERASE:
-        if (na < 1u || a[0] >= SMP_USER_SLOTS || !flash_ok)
+    case ED_SMP_BEGIN:                                     /* slot, data length (3 x 7 bit) -> slot, rc */
+        if (na != 4u || a[0] >= SMP_USER_SLOTS || !flash_ok)
             return;
         ed_b(a[0]);
-        ed_b(ed_flash_stop() || ed_smp_erase(a[0], cmd == ED_SMP_ERASE) ? 1u : 0u);
+        ed_b((uint32_t)ed_smp_begin(a[0],
+              (uint32_t)a[1] | (uint32_t)a[2] << 7 | (uint32_t)a[3] << 14));
+        break;
+    case ED_SMP_ERASE:
+        if (na != 1u || a[0] >= SMP_USER_SLOTS || !flash_ok)
+            return;
+        ed_b(a[0]);
+        ed_b((uint32_t)(ed_flash_stop() || ed_smp_erase(a[0], 1u)));
         break;
     case ED_SMP_WRITE: {                                   /* slot, off (3 x 7 bit), pack7 data -> slot, off, rc */
-        uint32_t off, len, rc = 0, took;
+        uint32_t off, len, rc = 0;
         if (na < 5u || a[0] >= SMP_USER_SLOTS || !flash_ok)
             return;
         off = (uint32_t)a[1] | (uint32_t)a[2] << 7 | (uint32_t)a[3] << 14;
         len = ed_unpack7(a + 4, na - 4u, ed_smp_buf, 256u);
-        if (off < SMP_USER_DATA || (off & 0xFFu) || !len || off + len > SMP_USER_SIZE)
+        if (!ed_smp_stage_sectors[a[0]] ||
+            off < SMP_USER_DATA || (off & 0xFFu) || !len ||
+            off > ed_smp_stage_capacity[a[0]] ||
+            len > ed_smp_stage_capacity[a[0]] - off)
             rc = 1;
-        else if (usr_nz[a[0]])
-            rc = 4;                                        /* slot in use: SMP_BEGIN first (voices read it) */
         else if (ed_flash_stop())
             rc = 1;
-        else {
-            if (!(off & 0xFFFu)) {                         /* first write into a sector: erase it */
-                audio_silence();
-                rc = fl_erase4k(ed_smp_slot(a[0]) + off, &took) ? 2u : 0u;
-            }
-            if (!rc && fl_write(ed_smp_slot(a[0]) + off, ed_smp_buf, len))
-                rc = 3;
-        }
+        else if (fl_write(ed_smp_stage_phys[a[0]] + off, ed_smp_buf, len))
+            rc = 3;
         ed_b(a[0]);
         ed_b(off);
         ed_b(off >> 7);
@@ -643,16 +785,17 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         break;
     case ED_SMP_INFO:                                      /* -> per slot: zones (0 = empty), name, data KiB */
         ed_b(SMP_USER_SLOTS);
-        ed_b(SMP_USER_SIZE / 1024u);
+        ed_b(SMP_USER_SIZE / 1024u);                       /* protocol's legacy maximum; actual extents are dynamic */
         for (i = 0; i < SMP_USER_SLOTS; i++) {
-            const smp_user_hdr_t *h = (const smp_user_hdr_t *)smp_user_xip(i);
+            const smp_user_hdr_t *h = smp_user_phys[i] ?
+                (const smp_user_hdr_t *)smp_user_xip(i) : 0;
             char nm[9] = {0};
             uint32_t j;
             ed_b(usr_nz[i]);
-            for (j = 0; usr_nz[i] && j < 8u; j++)
+            for (j = 0; h && usr_nz[i] && j < 8u; j++)
                 nm[j] = h->name[j] >= 32 && h->name[j] < 127 ? h->name[j] : 0;
             ed_str(nm, 8);
-            ed_b(usr_nz[i] ? (h->data_len + 1023u) / 1024u : 0u);
+            ed_b(h && usr_nz[i] ? (h->data_len + 1023u) / 1024u : 0u);
         }
         break;
     case ED_UP_LIST: {                                     /* start, count -> start, count, total, per slot: used, engine, name;

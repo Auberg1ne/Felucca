@@ -305,7 +305,7 @@ async function editorMock() {
   /* sample upload as smpUpload() does it */
   const s = Int16Array.from({ length: 3000 }, (_, i) => Math.round(8000 * Math.sin(i / 7)));
   const { hdr, data } = E.buildSlot("test", [{ s, root: 60 }]);
-  let rc = E.parse[E.CMD.SMP_BEGIN](await rq(E.req.smpBegin(1), { timeout: 1000, retries: 0 })).rc;
+  let rc = E.parse[E.CMD.SMP_BEGIN](await rq(E.req.smpBegin(1, data.length), { timeout: 1000, retries: 0 })).rc;
   for (let off = 0; off < data.length && !rc; off += 256) {
     rc = E.parse[E.CMD.SMP_WRITE](await rq(E.req.smpWrite(1, E.SMP.DATA_OFF + off, data.subarray(off, off + 256)), { timeout: 1000 })).rc;
   }

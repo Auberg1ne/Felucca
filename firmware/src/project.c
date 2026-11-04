@@ -1165,6 +1165,7 @@ static void persist_boot(void)                    /* before settings_init / pane
         return;
     fl_plain_window_init();                        /* flash above 0x93000 reads as plaintext through XIP
                                                     * (user sample sets are played from there) */
+    smp_user_alloc_boot();                         /* rebuild user-sample extents before scanning slots */
 #if FELUCCA_SLICE
     slc_store_boot();                              /* (the scans read each slot's stored slices) */
 #endif

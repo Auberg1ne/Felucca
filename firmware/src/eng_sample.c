@@ -42,11 +42,10 @@ static uint32_t pow2_q16(int32_t d16)
  * window. Slot = header (magic, count, name, data length, CRC32) + up to 16 zones in the
  * smp_zone_t layout (off relative to the slot's data at +512) + IMA ADPCM data. */
 #include "../hal/fm1_xip.h"   /* relative: hostsim includes this file too */
-#define SMP_USER_SLOTS 3
-#define SMP_USER_BASE 0xA0000u
-#define SMP_USER_SIZE 0x14000u
-#define SMP_USER_DATA 512u
-#define SMP_USER_MAGIC 0x504D5346u                  /* "FSMP" */
+#include "sample_storage.h"
+#include "sample_alloc.h"
+
+static uint32_t st_crc32(const void *, uint32_t);
 #define SMP_NALL (SMP_NSETS + SMP_USER_SLOTS)
 typedef struct {
     uint32_t magic;
@@ -56,12 +55,329 @@ typedef struct {
     uint32_t data_len, crc, rsv2[2];
     smp_zone_t zone[16];
 } smp_user_hdr_t;                                   /* 32 + 16 x 28 = 480 B, data at +512 */
-static smp_zone_t usr_zone[SMP_USER_SLOTS][16];     /* RAM copy, off rebased onto SMP_DATA */
-static uint8_t usr_nz[SMP_USER_SLOTS];
-static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3"};
+static smp_zone_t usr_zone[SMP_USER_LOGICAL_SLOTS][16] __attribute__((section(".pool")));     /* RAM copy, off rebased onto SMP_DATA */
+static uint8_t usr_nz[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
+static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3"}; /* USR4-8 are appended when allocator support is enabled. */
+
+/* Logical-to-physical map. Legacy slots stay pinned at their original addresses;
+ * zero means unallocated. The allocator fills entries 3..7 after boot recovery. */
+static uint32_t smp_user_phys[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool"))) = {
+    SMP_USER_BASE,
+    SMP_USER_BASE + SMP_USER_SIZE,
+    SMP_USER_BASE + 2u * SMP_USER_SIZE,
+    0u, 0u, 0u, 0u, 0u
+};
+
+/* Dynamic allocation bookkeeping: 60 sectors in the user-sample pool. */
+static uint8_t smp_user_sectors[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool"))) = {
+    SMP_USER_SECTORS_PER_LEGACY_SLOT,
+    SMP_USER_SECTORS_PER_LEGACY_SLOT,
+    SMP_USER_SECTORS_PER_LEGACY_SLOT,
+    0u, 0u, 0u, 0u, 0u
+};
+static uint32_t smp_user_generation[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
+static uint8_t smp_user_occupied[(SMP_USER_SECTOR_COUNT + 7u) / 8u] __attribute__((section(".pool")));
+/* Temporary upload extents. These never change the active logical-slot map. */
+static uint8_t smp_stage_start[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
+static uint8_t smp_stage_count[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
+
+
+/* Sector bitmap helpers. Sector indices are relative to SMP_USER_BASE. */
+static int smp_alloc_test(uint32_t sector)
+{
+    if (sector >= SMP_USER_SECTOR_COUNT)
+        return 1;
+    return (smp_user_occupied[sector >> 3] >> (sector & 7u)) & 1u;
+}
+
+static void smp_alloc_mark(uint32_t sector)
+{
+    if (sector < SMP_USER_SECTOR_COUNT)
+        smp_user_occupied[sector >> 3] |= (uint8_t)(1u << (sector & 7u));
+}
+
+static void smp_alloc_release(uint32_t sector)
+{
+    if (sector < SMP_USER_SECTOR_COUNT)
+        smp_user_occupied[sector >> 3] &= (uint8_t)~(1u << (sector & 7u));
+}
+
+/* Reserve a complete contiguous extent, or leave the bitmap unchanged. */
+static int smp_alloc_reserve(uint32_t start, uint32_t count)
+{
+    uint32_t i;
+    if (!count || start >= SMP_USER_SECTOR_COUNT ||
+        count > SMP_USER_SECTOR_COUNT - start)
+        return -1;
+    for (i = 0; i < count; i++)
+        if (smp_alloc_test(start + i))
+            return -1;
+    for (i = 0; i < count; i++)
+        smp_alloc_mark(start + i);
+    return 0;
+}
+
+/* Rebuild the bitmap with the three original fixed slots pinned. */
+static void smp_alloc_reserve_legacy(void)
+{
+    uint32_t k, sector;
+    for (sector = 0; sector < SMP_USER_SECTOR_COUNT; sector++)
+        smp_alloc_release(sector);
+    for (k = 0; k < SMP_USER_LEGACY_SLOTS; k++)
+        (void)smp_alloc_reserve(k * SMP_USER_SECTORS_PER_LEGACY_SLOT,
+                                SMP_USER_SECTORS_PER_LEGACY_SLOT);
+}
+
+/* Validate the descriptor record CRC (commit marker is deliberately excluded). */
+static int smp_alloc_desc_valid(const smp_alloc_desc_t *d, uint32_t slot)
+{
+    smp_alloc_desc_t copy;
+    uint32_t crc;
+    if (d->magic != SMP_ALLOC_MAGIC ||
+        d->version != SMP_ALLOC_VERSION ||
+        d->logical_slot != slot ||
+        !d->sector_count ||
+        d->sector_count > SMP_USER_SECTOR_COUNT ||
+        d->data_len > (uint32_t)d->sector_count * SMP_USER_SECTOR_SIZE - SMP_USER_DATA ||
+        d->commit != SMP_ALLOC_COMMITTED)
+        return 0;
+    copy = *d;
+    copy.record_crc = 0u;
+    crc = st_crc32(&copy, 28u);
+    return crc == d->record_crc;
+}
+
+/* Validate a committed extent against its legacy sample header and audio. */
+static int smp_alloc_extent_valid(uint32_t phys, uint32_t slot,
+                                  const smp_alloc_desc_t *d)
+{
+    const uint8_t *base;
+    const smp_user_hdr_t *h;
+    uint32_t capacity;
+
+    if (phys < SMP_USER_BASE ||
+        phys - SMP_USER_BASE >= SMP_USER_POOL_SIZE ||
+        (uint32_t)d->sector_count * SMP_USER_SECTOR_SIZE >
+            SMP_USER_POOL_SIZE - (phys - SMP_USER_BASE) ||
+        !smp_alloc_desc_valid(d, slot))
+        return 0;
+
+    base = fm1_xip_ptr(phys);
+    h = (const smp_user_hdr_t *)base;
+    capacity = (uint32_t)d->sector_count * SMP_USER_SECTOR_SIZE - SMP_USER_DATA;
+    if (h->magic != SMP_USER_MAGIC || h->version != 1u ||
+        !h->nz || h->nz > 16u || h->data_len != d->data_len ||
+        h->data_len > capacity || h->crc != d->data_crc)
+        return 0;
+    if (st_crc32(base + SMP_USER_DATA, h->data_len) != h->crc)
+        return 0;
+    return 1;
+}
+
+/* Accept an old fixed-slot sample only when its unused descriptor area is erased. */
+static int smp_alloc_legacy_valid(uint32_t phys)
+{
+    const uint8_t *base = fm1_xip_ptr(phys);
+    const smp_user_hdr_t *h = (const smp_user_hdr_t *)base;
+    uint32_t i;
+
+    for (i = SMP_ALLOC_OFFSET; i < SMP_USER_DATA; i++)
+        if (base[i] != 0xFFu)
+            return 0;
+    if (h->magic != SMP_USER_MAGIC || h->version != 1u ||
+        !h->nz || h->nz > 16u ||
+        h->data_len > SMP_USER_SIZE - SMP_USER_DATA)
+        return 0;
+    return st_crc32(base + SMP_USER_DATA, h->data_len) == h->crc;
+}
+
+/* Return the first contiguous free run, or -1 if none fits. */
+static int smp_alloc_find(uint32_t count)
+{
+    uint32_t start, run = 0;
+    if (!count || count > SMP_USER_SECTOR_COUNT)
+        return -1;
+    for (start = 0; start < SMP_USER_SECTOR_COUNT; start++) {
+        if (!smp_alloc_test(start)) {
+            if (++run == count)
+                return (int)(start + 1u - count);
+        } else {
+            run = 0;
+        }
+    }
+    return -1;
+}
+
+/* Find and reserve the largest currently free contiguous run. */
+static int smp_alloc_find_largest(uint32_t *out_start, uint32_t *out_count)
+{
+    uint32_t i, run_start = 0, run_count = 0;
+    uint32_t best_start = 0, best_count = 0;
+
+    for (i = 0; i <= SMP_USER_SECTOR_COUNT; i++) {
+        if (i < SMP_USER_SECTOR_COUNT && !smp_alloc_test(i)) {
+            if (!run_count)
+                run_start = i;
+            run_count++;
+        } else {
+            if (run_count > best_count) {
+                best_start = run_start;
+                best_count = run_count;
+            }
+            run_count = 0;
+        }
+    }
+    if (!best_count)
+        return -1;
+    *out_start = best_start;
+    *out_count = best_count;
+    return 0;
+}
+
+/* Abandon a staging upload without affecting the active sample. */
+static void smp_user_stage_abort(uint32_t slot)
+{
+    uint32_t i, start, count;
+    if (slot >= SMP_USER_LOGICAL_SLOTS)
+        return;
+    start = smp_stage_start[slot];
+    count = smp_stage_count[slot];
+    for (i = 0; i < count; i++)
+        smp_alloc_release(start + i);
+    smp_stage_start[slot] = 0u;
+    smp_stage_count[slot] = 0u;
+}
+
+/* Reserve a temporary extent. Returns its physical base and byte capacity. */
+static int smp_user_stage_begin(uint32_t slot, uint32_t data_len,
+                                uint32_t *phys, uint32_t *sectors,
+                                uint32_t *capacity)
+{
+    uint32_t start, count;
+    if (slot >= SMP_USER_LOGICAL_SLOTS || !phys || !sectors || !capacity ||
+        data_len > SMP_USER_POOL_SIZE - SMP_USER_DATA)
+        return -1;
+
+    count = (SMP_USER_DATA + data_len + SMP_USER_SECTOR_SIZE - 1u) /
+            SMP_USER_SECTOR_SIZE;
+    if (!count)
+        count = 1u;
+    smp_user_stage_abort(slot);
+    if (smp_alloc_find(count) < 0)
+        return -1;
+    start = (uint32_t)smp_alloc_find(count);
+    if (smp_alloc_reserve(start, count))
+        return -1;
+
+    smp_stage_start[slot] = (uint8_t)start;
+    smp_stage_count[slot] = (uint8_t)count;
+    *phys = SMP_USER_BASE + start * SMP_USER_SECTOR_SIZE;
+    *sectors = count;
+    *capacity = count * SMP_USER_SECTOR_SIZE;
+    return 0;
+}
+
+/* Recover the committed user-sample map from flash. This routine is read-only. */
+static void smp_user_alloc_boot(void)
+{
+    uint8_t found[SMP_USER_LOGICAL_SLOTS] = {0};
+    uint8_t conflict[SMP_USER_LOGICAL_SLOTS] = {0};
+    uint8_t start[SMP_USER_LOGICAL_SLOTS] = {0};
+    uint8_t count[SMP_USER_LOGICAL_SLOTS] = {0};
+    uint32_t generation[SMP_USER_LOGICAL_SLOTS] = {0};
+    uint32_t sector, k, i;
+
+    for (sector = 0; sector < SMP_USER_SECTOR_COUNT; sector++)
+        smp_alloc_release(sector);
+    for (k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+        smp_user_phys[k] = 0u;
+        smp_user_sectors[k] = 0u;
+        smp_user_generation[k] = 0u;
+    }
+
+    /* First pass: find the newest fully valid committed extent per slot. */
+    for (sector = 0; sector < SMP_USER_SECTOR_COUNT; sector++) {
+        uint32_t phys = SMP_USER_BASE + sector * SMP_USER_SECTOR_SIZE;
+        const uint8_t *base = fm1_xip_ptr(phys);
+        const smp_alloc_desc_t *d =
+            (const smp_alloc_desc_t *)(base + SMP_ALLOC_OFFSET);
+        uint32_t slot;
+
+        slot = d->logical_slot;
+        if (slot >= SMP_USER_LOGICAL_SLOTS ||
+            !smp_alloc_extent_valid(phys, slot, d))
+            continue;
+
+        if (!found[slot]) {
+            found[slot] = 1u;
+            start[slot] = (uint8_t)sector;
+            count[slot] = d->sector_count;
+            generation[slot] = d->generation;
+        } else if ((int32_t)(d->generation - generation[slot]) > 0) {
+            /* A strictly newer generation supersedes any older ambiguity. */
+            start[slot] = (uint8_t)sector;
+            count[slot] = d->sector_count;
+            generation[slot] = d->generation;
+            conflict[slot] = 0u;
+        } else if (d->generation == generation[slot]) {
+            /* Duplicate newest generation: fail closed for this slot. */
+            conflict[slot] = 1u;
+        }
+    }
+
+    /* Second pass: reject any selected extents that overlap another slot. */
+    for (k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+        if (!found[k] || conflict[k])
+            continue;
+        for (i = k + 1u; i < SMP_USER_LOGICAL_SLOTS; i++) {
+            uint32_t a0, a1, b0, b1;
+            if (!found[i] || conflict[i])
+                continue;
+            a0 = start[k]; a1 = a0 + count[k];
+            b0 = start[i]; b1 = b0 + count[i];
+            if (a0 < b1 && b0 < a1) {
+                conflict[k] = 1u;
+                conflict[i] = 1u;
+            }
+        }
+    }
+
+    /* Reserve selected committed extents. */
+    for (k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+        if (!found[k] || conflict[k])
+            continue;
+        if (smp_alloc_reserve(start[k], count[k]))
+            continue;
+        smp_user_phys[k] = SMP_USER_BASE + (uint32_t)start[k] * SMP_USER_SECTOR_SIZE;
+        smp_user_sectors[k] = count[k];
+        smp_user_generation[k] = generation[k];
+    }
+
+    /* Legacy samples remain pinned at their original addresses unless replaced. */
+    for (k = 0; k < SMP_USER_LEGACY_SLOTS; k++) {
+        uint32_t legacy_sector = k * SMP_USER_SECTORS_PER_LEGACY_SLOT;
+        if (smp_user_phys[k] || !smp_alloc_legacy_valid(
+                SMP_USER_BASE + legacy_sector * SMP_USER_SECTOR_SIZE))
+            continue;
+        {
+            const smp_user_hdr_t *h = (const smp_user_hdr_t *)fm1_xip_ptr(
+                SMP_USER_BASE + legacy_sector * SMP_USER_SECTOR_SIZE);
+            uint32_t used = (SMP_USER_DATA + h->data_len +
+                             SMP_USER_SECTOR_SIZE - 1u) / SMP_USER_SECTOR_SIZE;
+            if (!used)
+                used = 1u;
+            if (used <= SMP_USER_SECTORS_PER_LEGACY_SLOT &&
+                !smp_alloc_reserve(legacy_sector, used)) {
+                smp_user_phys[k] = SMP_USER_BASE + legacy_sector * SMP_USER_SECTOR_SIZE;
+                smp_user_sectors[k] = (uint8_t)used;
+                smp_user_generation[k] = 0u;
+            }
+        }
+    }
+}
 
 #ifndef SMP_USER_XIP                                /* host tests: a RAM image of the slots */
-#define SMP_USER_XIP(k) fm1_xip_ptr(SMP_USER_BASE + (k) * SMP_USER_SIZE)
+#define SMP_USER_XIP(k) fm1_xip_ptr(smp_user_phys[k])
 #endif
 static const uint8_t *smp_user_xip(uint32_t k) { return SMP_USER_XIP(k); }
 #if FELUCCA_SLICE
@@ -76,21 +392,37 @@ static uint32_t smp_user_gen;                       /* + 1 per slot scan (GRAIN:
  * every zone of it empty (n 0: a voice still on it ends), never a half-checked one */
 static void smp_user_scan(uint32_t k)
 {
-    const smp_user_hdr_t *h = (const smp_user_hdr_t *)smp_user_xip(k);
+    const smp_user_hdr_t *h;
     smp_zone_t zt[16];
-    uint32_t i, base, nz = 0;
+    uint32_t i, base, nz = 0, capacity;
     smp_user_gen++;
     usr_nz[k] = 0;
     slc_user_scan(k, 0);
-    if (h->magic == SMP_USER_MAGIC && h->version == 1 && h->nz && h->nz <= 16u &&
-        h->data_len <= SMP_USER_SIZE - SMP_USER_DATA) {
-        base = (uint32_t)(uintptr_t)(smp_user_xip(k) + SMP_USER_DATA) - (uint32_t)(uintptr_t)SMP_DATA;
+    if (k >= SMP_USER_LOGICAL_SLOTS || !smp_user_phys[k] ||
+        !smp_user_sectors[k])
+        goto empty;
+    h = (const smp_user_hdr_t *)smp_user_xip(k);
+    capacity = (uint32_t)smp_user_sectors[k] * SMP_USER_SECTOR_SIZE;
+    if (capacity < SMP_USER_DATA)
+        goto empty;
+    capacity -= SMP_USER_DATA;
+    if (h->magic == SMP_USER_MAGIC && h->version == 1u &&
+        h->nz && h->nz <= 16u && h->data_len <= capacity) {
+        base = (uint32_t)(uintptr_t)(smp_user_xip(k) + SMP_USER_DATA) -
+               (uint32_t)(uintptr_t)SMP_DATA;
         for (nz = h->nz, i = 0; i < nz; i++) {
             smp_zone_t *z = &zt[i];
+            uint32_t bytes;
             *z = h->zone[i];
-            if (z->off > h->data_len || z->n > 2u * SMP_USER_SIZE || z->off + (z->n + 1u) / 2u > h->data_len ||
-                z->idx > 88u || !z->rate || z->rate > 4u << 16 || z->ls > z->le || z->le >= z->n || z->lo > z->hi) {
-                nz = 0;                             /* zone outside the data or malformed: slot unusable */
+            if (z->off > h->data_len) {
+                nz = 0;
+                break;
+            }
+            bytes = z->n / 2u + (z->n & 1u);
+            if (bytes > h->data_len - z->off ||
+                z->idx > 88u || !z->rate || z->rate > 4u << 16 ||
+                z->ls > z->le || z->le >= z->n || z->lo > z->hi) {
+                nz = 0;
                 break;
             }
             z->off += base;
@@ -102,6 +434,11 @@ static void smp_user_scan(uint32_t k)
         return;
     usr_nz[k] = (uint8_t)nz;
     slc_user_scan(k, 1);
+    return;
+
+empty:
+    for (i = 0; i < 16u; i++)
+        usr_zone[k][i] = (smp_zone_t){0};
 }
 
 /* A missing sample (SAMPLE, GRAIN, SLICE: an empty or invalid user slot, a set this build has no data for) plays
@@ -131,7 +468,7 @@ static int smp_set_missing(uint32_t si)
 /* zone index in a voice: < 0x8000 built-in, else 0x8000 | slot << 5 | zone */
 static inline const smp_zone_t *smp_zone(uint32_t zi)
 {
-    return zi < 0x8000u ? &SMP_ZONES[zi] : &usr_zone[(zi >> 5) & 3u][zi & 31u];
+    return zi < 0x8000u ? &SMP_ZONES[zi] : &usr_zone[(zi >> 5) & 7u][zi & 31u];
 }
 
 /* voice: ph[0] position (samples), ph[1] fraction Q16, s[0] predictor, s[1] step

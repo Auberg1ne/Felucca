@@ -20,6 +20,14 @@ static const char *const N_SCALE[] = {"CHR", "MAJ", "MIN", "DOR", "MIX", "PEN", 
 static const char *const N_ONOFF[] = {"OFF", "ON"};
 /* ANALOG's filter TYPE (1.5, #104; eng_analog.c): the SVF's low-pass (as always), band-pass, high-pass output */
 static const char *const N_FTYPE[] = {"LP", "BP", "HP"};
+/* GRAIN personalities: values are stored in projects/presets; append-only. */
+static const char *const N_GTYPE[] = {"CLOUD", "FREEZE", "STUTTER", "SHIMMER"};
+static const param_desc_t GRAIN_PERSONALITY_DESC[4][2] = {
+    {{"DRIFT", F_PCT, 0, 127, 64, 0, 0}, {"WIDTH", F_PCT, 0, 127, 64, 0, 0}},
+    {{"HOLD", F_PCT, 0, 127, 96, 0, 0}, {"MOTION", F_PCT, 0, 127, 8, 0, 0}},
+    {{"RATE", F_PCT, 0, 127, 64, 0, 0}, {"GATE", F_PCT, 0, 127, 64, 0, 0}},
+    {{"INTERVAL", F_INT, 0, 127, 80, 0, 0}, {"HARMONICS", F_PCT, 0, 127, 64, 0, 0}},
+};
 /* ENV SYNC (1.5, #175; voice.c esync_coef): ATK DEC REL as note values of the tempo, shortest first. 0..127 split
  * evenly over these 25 (param_format's F_INT name list: value v is ESYNC_NAMES[v * 25 / 128]); ESYNC_UNITS: each in
  * 1/384 of a bar of 4/4 (a quarter 96), 0 = the shortest time ATK / DEC / REL 0 has. 0-terminated (param_format) */
@@ -165,6 +173,13 @@ static const param_desc_t TP[P_COUNT] = {
     [P_IMIX] = PD("MIX", F_PCT, 0, 127, 127),
     [P_FTYPE] = PE("TYPE", N_FTYPE, 0),           /* 1.5 (#104): ANALOG's filter, LP = as before (eng_analog.c) */
     [P_ESYNC] = PE("ESYNC", N_ONOFF, 0),          /* 1.5 (#175): OFF = ATK DEC REL in ms, as before (voice.c esync) */
+    [P_GTYPE] = PE("TYPE", N_GTYPE, 0),
+    [P_GA] = PD("DRIFT", F_PCT, 0, 127, 64),
+    [P_GB] = PD("WIDTH", F_PCT, 0, 127, 64),
+    [P_GCUT] = PD("CUTOFF", F_INT, -50, 50, 50),
+    [P_GRES] = PD("RESONANCE", F_PCT, 0, 127, 0),
+    [P_GFILTER_RSVD1] = PD("G-F RSV1", F_INT, 0, 0, 0),
+    [P_GFILTER_RSVD2] = PD("G-F RSV2", F_INT, 0, 0, 0),
 };
 
 /* the INSERT's A B C as its TYPE means them (TP's ranges and defaults): the drives DRIVE TONE LEVEL, CRUSH BITS RATE
@@ -224,6 +239,19 @@ static const param_desc_t GP[G_COUNT] = {
 
 static const param_desc_t *track_desc(const track_t *t, uint32_t id)
 {
+    if (id == P_E3 && t->eng_req % NENGINES == ENGI_GRAIN) {
+        static const param_desc_t grain_dens = PD("DENS", F_PCT, 0, 127, 80);
+        return &grain_dens;
+    }
+    if (id == P_GFILTER_RSVD1 && t->eng_req % NENGINES == ENGI_GRAIN) {
+        static const param_desc_t grain_stretch = PD("STRETCH", F_INT, 0, 127, 0);
+        return &grain_stretch;
+    }
+    if (id == P_GA || id == P_GB) {
+        int32_t type = t->p[P_GTYPE];
+        if (type < 0 || type >= (int32_t)NELEM(GRAIN_PERSONALITY_DESC)) type = 0;
+        return &GRAIN_PERSONALITY_DESC[type][id - P_GA];
+    }
     if (id >= P_E0 && id <= P_E7) {                   /* the engine asked for (t->engine follows after a fade) */
         const engine_t *e = ENGINES[eng_idx(t->eng_req)];
         const param_desc_t *d = e->desc ? e->desc(t, id - P_E0) : 0;   /* a mode-dependent label / names */
@@ -461,7 +489,9 @@ static const page_t PAGES[] = {
     {"CHORD", FAM_SCL, SC_TRACK, GR_CHORD, {P_CHRD, P_VOIC, 0xFF, 0xFF}},   /* SCL again: the chord keys (chord.c) */
     {"EDIT 1", FAM_EDIT, SC_ENGINE, GR_NONE, {P_E0, P_E1, P_E2, P_E3}},
     {"EDIT 2", FAM_EDIT, SC_ENGINE, GR_NONE, {P_E4, P_E5, P_E6, P_E7}},
-    {"FILTER", FAM_EDIT, SC_TRACK, GR_NONE, {P_FTYPE, P_E4, P_E5, P_E7}},   /* ANALOG only (1.5, #104): TYPE CUT RES KTR */
+    {"PERS", FAM_EDIT, SC_TRACK, GR_NONE, {P_GTYPE, P_GA, P_GB, 0xFF}},  /* GRAIN personality */
+    {"FILTER", FAM_EDIT, SC_TRACK, GR_NONE, {P_GCUT, P_GRES, 0xFF, 0xFF}}, /* GRAIN: bipolar cutoff and resonance */
+    {"A-FILT", FAM_EDIT, SC_TRACK, GR_NONE, {P_FTYPE, P_E4, P_E5, P_E7}}, /* ANALOG only (1.5, #104) */
     {"LANES", FAM_EDIT, SC_TRACK, GR_NONE, {P_LN0, P_LN1, P_LN2, P_LN3}},   /* DRUM only: the lane levels */
     {"LANES 2", FAM_EDIT, SC_TRACK, GR_NONE, {P_LN4, P_LN5, P_LN6, P_LN7}},
     {"SLICES", FAM_EDIT, SC_TRACK, GR_SLICES, {0xFF, 0xFF, 0xFF, 0xFF}},   /* SLICE only: the slices by hand (ui_slice.c) */

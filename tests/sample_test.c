@@ -11,7 +11,8 @@
  *    piano): a user who installed it keeps it; in USR1 it is valid and renders bit for bit as SET 0 at every key.
  * (Bit identity with 1.1.5.1 itself: tests/golden.txt's SAMPLE / GRAIN PIANO renders are 1.1.5.1's hashes.) */
 #include <stdint.h>
-static uint32_t host_slots[3u * 0x14000u / 4u];          /* USR1..3, as the flash at 0xA0000 */
+#include "sample_storage.h"
+static uint32_t host_slots[SMP_USER_SECTOR_COUNT * SMP_USER_SECTOR_SIZE / 4u];          /* USR1..3, as the flash at 0xA0000 */
 #define SMP_USER_XIP(k) ((const uint8_t *)host_slots + (k) * SMP_USER_SIZE)
 #define main hostsim_main
 #include "hostsim.c"
