@@ -201,6 +201,9 @@ CC="${CC:-cc} -O1 -Wall -Wno-unused-function"
 fail=0
 run() { echo "== $1"; shift; "$@" || fail=1; }
 
+$CC -o "$OUT/slice_store_test" tests/slice_store_test.c
+run "SLICE metadata: dynamic samples and staging sectors are never accessed" "$OUT/slice_store_test"
+
 $CC -o "$OUT/storage_test" tests/storage_test.c
 $CC -Ibuild/gen -Ifirmware/src -o "$OUT/signed_audio_scaling_test" tests/signed_audio_scaling_test.c -lm
 run "DSP signed arithmetic: fixed DC/lowcut/FM6 vectors and phase wrap" "$OUT/signed_audio_scaling_test"
