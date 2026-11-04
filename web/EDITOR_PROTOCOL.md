@@ -259,11 +259,16 @@ replaced and deleted claims remain reserved across reboots. Mutations fail when
 space is exhausted. Any uncertain flash operation disables persistent writes
 until restart. Invalid or ambiguous journal records quarantine the entire pool.
 
-The journal can be initialized only on an entirely erased pool. Existing valid
-legacy/SMA1 samples stay readable in compatibility mode, with all sectors pinned
-and mutations disabled. Experimental unanchored SMD1 never authorizes deletion.
+The journal can be initialized only on an entirely erased pool. Unanchored
+legacy/SMA1 media is quarantined, with all 60 sectors pinned
+and sample-pool mutations disabled. No samples are automatically published from
+these bytes: SMP_INFO returns zero zones, blank names and zero data lengths,
+and sample backup objects have zero length (GET fails). Projects retain their
+source selections and use the existing missing-sample behavior. Legacy bytes
+remain unchanged; there is no automatic migration or formatting. Experimental
+unanchored SMD1 never authorizes deletion.
 See [the provenance design](../docs/sample-journal.md) for format, migration,
-capacity limits and the interaction with the outstanding C3 issue.
+capacity limits and C3 quarantine policy.
 
 Each sample extent still has a 512-byte header area, with the 480-byte FSMP
 sample header at bytes 0..479 and its SMA1 descriptor at bytes 480..511:

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* C2 regression: actual allocator, upload and ERASE handlers on physical NOR.
+/* C2/C3 regression: actual allocator, upload and ERASE handlers on physical NOR.
  * cc -O1 -w -Ibuild/gen -Ifirmware/src
  *    tests/sample_delete_test.c -lm -o build/host/sample_delete_test
  * Uses the same flat-memory XIP rebasing as the existing sample host tests. */
@@ -60,10 +60,11 @@ static uint32_t bad_phys, pending_phys, pending_len;
 static uint8_t bad_sector[4096], pending_data[32];
 static int bad_read_active, silent_erase, fault_mode, committed_write;
 static uint32_t fault_op, record_op, record_phys;
-static uint32_t writes, write_off[8], write_len[8], erased_phys, erases;
+static uint32_t writes, write_off[8], write_len[8], erased_phys, erases, xip_reads;
 static const uint8_t *host_sample_ptr(uint32_t off)
 {
     assert(off < sizeof nor);
+    xip_reads++;
     return bad_read_active && off == bad_phys ? bad_sector : nor + off;
 }
 static void fl_inval(uint32_t off, uint32_t n)
@@ -215,7 +216,7 @@ static int locked_mutations(uint32_t k)
     uint32_t w = writes, e = erases, p = ed_smp_stage_phys[k], c = smp_stage_count[k];
     uint8_t bits[sizeof smp_user_occupied], packed[600], payload[256] = {0};
     smp_user_hdr_t h = header(0x11); memcpy(bits, smp_user_occupied, sizeof bits);
-    int ok = ed_smp_begin(k, 256) != 0 && erase_request(k) != 0 &&
+    int ok = ed_smp_begin(k, 256) != 0 && erase_request(k) != 0 && ed_smp_erase(k) != 0 &&
         ed_smp_end(k, packed, pack(&h, sizeof h, packed)) != 0 && write_page(k, 512, payload, 256) != 0;
     ed_smp_stage_abort(k); smp_user_stage_abort(k);
     return ok && w == writes && e == erases && p == ed_smp_stage_phys[k] &&
@@ -356,34 +357,146 @@ static void power_tests(void)
     }
     check("33 anchor power cuts cannot manufacture a sample or free occupied data", ok);
 }
-static void compatibility_tests(void)
+/* C3: no raw byte pattern is sufficient authority to publish a sample. */
+static int quarantined(void)
 {
-    fresh(); legacy(0, 0x11); legacy(1, 0x22); legacy(2, 0x33); memcpy(saved, nor, sizeof nor); reboot();
-    check("existing legacy samples remain readable without migration", usr_nz[0] && usr_nz[1] && usr_nz[2] && smp_journal_state == SMP_JOURNAL_COMPAT);
-    check("compatibility mode refuses destructive journal initialization", locked_mutations(0) && locked_mutations(1) &&
-          !memcmp(saved, nor, sizeof nor));
-    int all = 1; for (uint32_t s = 0; s < 60; s++) all &= smp_alloc_test(s);
-    check("every pre-journal sector remains reserved", all);
-    /* Old-format dynamic descriptors still read, but have no provenance proof. */
-    fresh(); smp_user_hdr_t h = header(0x22); uint32_t phys = SMP_USER_BASE + 3 * 4096;
-    memcpy(nor + phys, &h, sizeof h); memset(nor + phys + 512, 0x22, 256);
-    smp_alloc_desc_t d = {0}; d.magic = SMP_ALLOC_MAGIC; d.version = 1; d.logical_slot = 0; d.sector_count = 1;
-    d.generation = 7; d.data_len = 256; d.data_crc = h.crc; d.commit = SMP_ALLOC_COMMITTED; d.record_crc = st_crc32(&d, 28);
-    memcpy(nor + phys + 480, &d, sizeof d); reboot();
-    check("existing relocated SMA1 samples remain readable in read-only mode", usr_nz[0] && smp_user_phys[0] == phys && locked_mutations(0));
-    d = fake_tomb(0, 8); memcpy(nor + SMP_USER_BASE + 6 * 4096 + 480, &d, sizeof d); reboot();
-    check("unanchored experimental SMD1 never deletes a compatibility sample", usr_nz[0] && smp_user_phys[0] == phys && !smp_user_deleted[0]);
-    /* Exact pre-journal crash image from the reported physical-sector sequence. */
-    fresh(); memcpy(nor + SMP_USER_BASE, &h, sizeof h); memset(nor + SMP_USER_BASE + 512, 0x22, 256);
-    memset(&d, 0, sizeof d); d.magic = SMP_ALLOC_MAGIC; d.version = 1; d.logical_slot = 0;
-    d.sector_count = 1; d.generation = 1; d.data_len = 256; d.data_crc = h.crc;
+    int ok = smp_journal_state == SMP_JOURNAL_QUARANTINED;
+    for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+        smp_user_scan(k);
+        ok &= !smp_user_phys[k] && !smp_user_sectors[k] && !usr_nz[k] && smp_user_unresolved[k];
+        for (uint32_t z = 0; z < 16; z++) ok &= !usr_zone[k][z].n;
+    }
+    for (uint32_t s = 0; s < 60; s++) ok &= smp_alloc_test(s);
+    return ok;
+}
+static int no_exports(void)
+{
+    uint32_t reads = xip_reads;
+    uint8_t info[] = {ED_HDR0, ED_HDR1, ED_HDR2, ED_SMP_INFO};
+    host_wire_n = 0; ed_handle(info, sizeof info); host_drain();
+    int ok = host_wire_n == 8 + SMP_USER_SLOTS * 3;
+    for (uint32_t i = 7; i + 1 < host_wire_n; i++) ok &= host_wire[i] == 0;
+    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) {
+        uint32_t len = 999;
+        ok &= ed_bk_object(32 + k, &len) == 0 && len == 0;
+        uint8_t get[] = {ED_HDR0, ED_HDR1, ED_HDR2, ED_BACKUP_GET, 32 + k, 0, 0, 0, 0, 0, 16, 0};
+        ed_bk_valid = 1; ed_bk_usb = usb.resets;
+        host_wire_n = 0; ed_handle(get, sizeof get); host_drain();
+        ok &= host_wire_n > 7 && host_wire_n < 24 && host_wire[6] != 0;
+    }
+    return ok && reads == xip_reads;
+}
+static void quarantine_tests(void)
+{
+    fresh(); legacy(0, 0x11); legacy(1, 0x22); legacy(2, 0x33);
+    smp_alloc_desc_t tomb = fake_tomb(0, 8);
+    memcpy(nor + SMP_USER_BASE + 6 * 4096 + 480, &tomb, sizeof tomb);
+    memcpy(saved, nor, sizeof nor); reboot();
+    check("C3 genuine legacy images quarantined without publication", quarantined());
+    check("C3 INFO and backup expose no quarantined content", no_exports());
+    int ok = 1;
+    for (uint32_t boot = 0; boot < 3; boot++) {
+        reboot(); ok &= quarantined();
+        for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+            /* Even a stale live handle cannot bypass the mutation gates. */
+            ed_smp_stage_phys[k] = SMP_USER_BASE + 4096;
+            ed_smp_stage_sectors[k] = smp_stage_count[k] = 1;
+            ed_smp_stage_capacity[k] = 4096;
+            ok &= locked_mutations(k);
+        }
+    }
+    check("C3 repeated boots and stale-handle mutations never write", ok && !writes && !erases && !memcmp(saved, nor, sizeof nor));
+    project_t project;
+    memset(&project, 0, sizeof project);
+    project.magic = PROJ_MAGIC; project.size = sizeof project;
+    project.parts = NPART; project.phys = PROJ_PHYS; chain_defaults(&project.chain);
+    for (uint32_t k = 0; k < NTRK; k++) {
+        uint32_t eng = k == 1 ? ENGI_GRAIN : ENGI_SAMPLE;
+#if FELUCCA_SLICE
+        if (k == 2) eng = 13;
+#endif
+        project.t[k].engine = eng;
+        for (uint32_t p = 0; p < P_COUNT; p++) project.t[k].p[p] = param_desc_of(eng, p)->def;
+        project.t[k].p[P_E0] = eng == 13 ? 1 : SMP_NSETS;
+        memcpy(project.fm6[k], FM6_INIT, FM6_PACKED);
+    }
+    project.sum = proj_sum(&project);
+    ok = !project_restore_runtime(&project);
+    for (uint32_t k = 0; k < NTRK; k++) {
+        uint32_t code;
+        ok &= snd_missing(&trk[k], &code) != 0;
+    }
+    check("C3 project restore cannot authorize quarantined engine sources", ok && quarantined() && !writes && !erases);
+    /* Completed old header, cut before any SMA1 byte: indistinguishable from legacy.
+     * Check every byte-prefix cut through header, descriptor body and COMT. */
+    uint8_t image[512]; smp_user_hdr_t h = header(0x22);
+    memset(image, 255, sizeof image); memcpy(image, &h, sizeof h);
+    smp_alloc_desc_t d = {0}; d.magic = SMP_ALLOC_MAGIC; d.version = 1; d.logical_slot = 7;
+    d.sector_count = 1; d.generation = 9; d.data_len = 256; d.data_crc = h.crc;
     d.commit = SMP_ALLOC_COMMITTED; d.record_crc = st_crc32(&d, 28);
-    memcpy(nor + SMP_USER_BASE + 480, &d, sizeof d);
-    d = fake_tomb(0, 2); memcpy(nor + SMP_USER_BASE + 2 * 4096 + 480, &d, sizeof d);
+    memcpy(image + 480, &d, sizeof d);
+    ok = 1;
+    for (uint32_t boundary = 0; boundary < 3; boundary++) {
+        for (uint32_t cut = 0; cut <= sizeof image; cut++) {
+            fresh(); uint32_t phys = SMP_USER_BASE + boundary * SMP_USER_SIZE;
+            memset(nor + phys + 512, 0x22, 256); memcpy(nor + phys, image, cut);
+            memcpy(saved, nor, sizeof nor); reboot();
+            ok &= (smp_journal_state == SMP_JOURNAL_QUARANTINED || smp_journal_state == SMP_JOURNAL_LOCKED) &&
+                !smp_user_phys[boundary] && !usr_nz[boundary] && !smp_user_phys[7] &&
+                !writes && !erases && !memcmp(saved, nor, sizeof nor);
+            for (uint32_t s = 0; s < 60; s++) ok &= smp_alloc_test(s);
+        }
+    }
+    check("C3 all legacy boundaries and 513 header/descriptor cuts fail closed", ok);
+    /* Complete counterfeit samples in an unfinished outer upload. */
+    ok = 1;
+    for (uint32_t k = 0; k < 8; k++) {
+        fresh(); legacy(0, 0x11);
+        d.logical_slot = k; d.generation = k & 1 ? 0x80000000u : 0xFFFFFFFFu;
+        d.record_crc = 0; d.record_crc = st_crc32(&d, 28);
+        memcpy(image + 480, &d, sizeof d);
+        for (uint32_t sector = 2; sector <= 6; sector += 2) {
+            memcpy(nor + SMP_USER_BASE + sector * 4096, image, sizeof image);
+            memset(nor + SMP_USER_BASE + sector * 4096 + 512, 0x22, 256);
+        }
+        memcpy(saved, nor, sizeof nor); reboot();
+        ok &= quarantined() && no_exports() && !memcmp(saved, nor, sizeof nor) && !writes && !erases;
+    }
+    check("C3 counterfeit committed SMA1 across slots and sector offsets stays quarantined", ok);
+    /* Defense in depth: consumer gates also reject stale RAM publication state. */
+    usr_nz[0] = 1; smp_user_phys[0] = SMP_USER_BASE; smp_user_sectors[0] = 1;
+    check("C3 export guards reject stale published metadata", no_exports());
+    smp_user_scan(0);
+    check("C3 scan clears stale SAMPLE GRAIN and SLICE publication", !usr_nz[0] && !usr_zone[0][0].n &&
+        smp_set_missing(SMP_NSETS) && !gr_nz(SMP_NSETS)
+#if FELUCCA_SLICE
+        && !slc_get(1)
+#endif
+    );
+}
+static void anchored_visibility_tests(void)
+{
+    fresh();
+    int ok = smp_journal_state == SMP_JOURNAL_BLANK;
+    for (uint32_t k = 0; k < 8; k++) ok &= !upload(k, 0x11 + k);
     reboot();
-    int pinned = 1; for (uint32_t s = 0; s < 60; s++) pinned &= smp_alloc_test(s);
-    check("reported old-image sector-0/unfinished-slot-1 sequence preserves slot 0", usr_nz[0] &&
-          smp_user_phys[0] == SMP_USER_BASE && !smp_user_deleted[0] && pinned && locked_mutations(0));
+    for (uint32_t k = 0; k < 8; k++) {
+        smp_user_scan(k);
+        ok &= usr_nz[k] == 1 && usr_zone[k][0].n == 512 && !smp_user_unresolved[k] &&
+            smp_user_phys[k] >= SMP_USER_BASE + 4096 && smp_alloc_test((smp_user_phys[k] - SMP_USER_BASE) / 4096) &&
+            *fm1_xip_ptr(smp_user_phys[k] + 512) == 0x11 + k;
+    }
+    track_t track = {0}; voice_t voice = {0};
+    track.p[P_E0] = SMP_NSETS; voice.note = 60;
+    sample_note_on(&track, &voice);
+    uint32_t len = 0;
+    const uint8_t *backup = ed_bk_object(32, &len);
+    ok &= !voice.s[6] && voice.s[4] == 0x8000 && gr_nz(SMP_NSETS) == 1 &&
+        backup == fm1_xip_ptr(smp_user_phys[0]) && len == 768;
+#if FELUCCA_SLICE
+    ok &= slc_get(1) != 0;
+#endif
+    check("C3 anchored publication for all eight slots retains engine and backup access", ok && smp_journal_state == SMP_JOURNAL_READY);
 }
 static int all_reserved(void)
 {
@@ -464,6 +577,6 @@ int main(void)
     uint8_t packed[600]; smp_user_hdr_t h = header(0x11);
     check("ERASE cancels staging and END cannot revive it", !ed_smp_stage_sectors[0] && ed_smp_end(0, packed, pack(&h, sizeof h, packed)) != 0);
     reboot(); check("deletion of an unfinished slot is durable", gone(0));
-    payload_provenance(); fault_tests(); power_tests(); compatibility_tests(); journal_rejection_tests();
+    payload_provenance(); fault_tests(); power_tests(); quarantine_tests(); anchored_visibility_tests(); journal_rejection_tests();
     return failures ? 1 : 0;
 }

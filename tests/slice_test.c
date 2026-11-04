@@ -381,6 +381,8 @@ int main(int argc, char **argv)
         printf("slice: the slot image must lie above SMP_DATA within 4 GiB (32-bit offsets)\n");
         return 1;
     }
+    /* Audio fixture bypasses journal recovery; model an authorized READY map. */
+    smp_journal_state = SMP_JOURNAL_READY;
     smp_user_scan(0);
     check("USR1: valid after smp_user_scan, slice table built", usr_nz[0] && slc_usr[0].len && slc_get(1) != 0,
           "%u zones, %u samples", usr_nz[0], slc_usr[0].len);

@@ -857,15 +857,16 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(SMP_USER_SLOTS);
         ed_b(SMP_USER_SIZE / 1024u);                       /* protocol's legacy maximum; actual extents are dynamic */
         for (i = 0; i < SMP_USER_SLOTS; i++) {
-            const smp_user_hdr_t *h = smp_user_phys[i] ?
+            uint32_t nz = smp_journal_state == SMP_JOURNAL_READY ? usr_nz[i] : 0u;
+            const smp_user_hdr_t *h = nz && smp_user_phys[i] ?
                 (const smp_user_hdr_t *)smp_user_xip(i) : 0;
             char nm[9] = {0};
             uint32_t j;
-            ed_b(usr_nz[i]);
-            for (j = 0; h && usr_nz[i] && j < 8u; j++)
+            ed_b(nz);
+            for (j = 0; h && nz && j < 8u; j++)
                 nm[j] = h->name[j] >= 32 && h->name[j] < 127 ? h->name[j] : 0;
             ed_str(nm, 8);
-            ed_b(h && usr_nz[i] ? (h->data_len + 1023u) / 1024u : 0u);
+            ed_b(h && nz ? (h->data_len + 1023u) / 1024u : 0u);
         }
         break;
     case ED_UP_LIST: {                                     /* start, count -> start, count, total, per slot: used, engine, name;

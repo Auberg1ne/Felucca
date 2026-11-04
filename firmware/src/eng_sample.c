@@ -59,8 +59,8 @@ static smp_zone_t usr_zone[SMP_USER_LOGICAL_SLOTS][16] __attribute__((section(".
 static uint8_t usr_nz[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
 static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3"}; /* USR4-8 are appended when allocator support is enabled. */
 
-/* Logical-to-physical map. Legacy slots stay pinned at their original addresses;
- * zero means unallocated. The allocator fills entries 3..7 after boot recovery. */
+/* Logical-to-physical map. Boot clears these defaults; only journal recovery
+ * authorizes a mapping. Zero means unpublished. */
 static uint32_t smp_user_phys[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool"))) = {
     SMP_USER_BASE,
     SMP_USER_BASE + SMP_USER_SIZE,
@@ -185,23 +185,6 @@ static int smp_alloc_extent_valid(uint32_t phys, uint32_t slot,
     return 1;
 }
 
-/* Accept an old fixed-slot sample only when its unused descriptor area is erased. */
-static int smp_alloc_legacy_valid(uint32_t phys)
-{
-    const uint8_t *base = fm1_xip_ptr(phys);
-    const smp_user_hdr_t *h = (const smp_user_hdr_t *)base;
-    uint32_t i;
-
-    for (i = SMP_ALLOC_OFFSET; i < SMP_USER_DATA; i++)
-        if (base[i] != 0xFFu)
-            return 0;
-    if (h->magic != SMP_USER_MAGIC || h->version != 1u ||
-        !h->nz || h->nz > 16u ||
-        h->data_len > SMP_USER_SIZE - SMP_USER_DATA)
-        return 0;
-    return st_crc32(base + SMP_USER_DATA, h->data_len) == h->crc;
-}
-
 /* Return the first contiguous free run, or -1 if none fits. */
 static int smp_alloc_find(uint32_t count)
 {
@@ -312,121 +295,19 @@ static void smp_generation_committed(uint32_t k, uint32_t generation)
 
 #include "sample_journal.c"
 
-/* Recover only an unambiguous committed state. A deletion barrier is retained
- * independently of a newer sample; conflicts never enable legacy fallback.
- * All extents belonging to a conflicted slot are quarantined, including older
- * generations. This routine is read-only and runs before any audio readers. */
+/* Only the fixed journal root can authorize sample publication. Unanchored
+ * media is preserved in full and never interpreted as sample ownership. */
 static void smp_user_alloc_boot(void)
 {
-    typedef struct {
-        uint32_t generation;
-        uint8_t start, count, slot, kind;       /* kind: 0 sample, 1 tombstone, 2 legacy */
-    } record_t;
-    record_t rec[SMP_USER_SECTOR_COUNT + SMP_USER_LEGACY_SLOTS];
-    uint8_t winner[SMP_USER_LOGICAL_SLOTS], barrier[SMP_USER_LOGICAL_SLOTS];
-    uint8_t has_barrier[SMP_USER_LOGICAL_SLOTS] = {0};
-    uint32_t n = 0, sector, k, i, j;
-
     memset(smp_user_occupied, 0, sizeof smp_user_occupied);
-    memset(winner, 0xFF, sizeof winner);
-    memset(barrier, 0xFF, sizeof barrier);
     smp_user_io_blocked = 0u;
-    for (k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+    for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
         smp_user_phys[k] = smp_user_generation[k] = smp_user_oldest_generation[k] = 0u;
         smp_user_sectors[k] = smp_user_deleted[k] = smp_user_unresolved[k] = 0u;
         smp_user_has_records[k] = 0u;
         smp_stage_start[k] = smp_stage_count[k] = 0u;
     }
-    if (smp_journal_boot() != SMP_JOURNAL_COMPAT)
-        return;
-    for (sector = 0; sector < SMP_USER_SECTOR_COUNT; sector++) {
-        uint32_t phys = SMP_USER_BASE + sector * SMP_USER_SECTOR_SIZE;
-        const smp_alloc_desc_t *d = (const smp_alloc_desc_t *)(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET);
-        k = d->logical_slot;
-        if (k >= SMP_USER_LOGICAL_SLOTS || !smp_alloc_extent_valid(phys, k, d))
-            continue;
-        rec[n++] = (record_t){d->generation, (uint8_t)sector, d->sector_count,
-                             (uint8_t)k, d->magic == SMP_ALLOC_DELETE_MAGIC};
-        smp_user_has_records[k] = 1u;
-        has_barrier[k] |= d->magic == SMP_ALLOC_DELETE_MAGIC;
-    }
-    /* Only slots with no committed dynamic history can fall back to legacy.
-     * Include those legacy extents in physical overlap checks and quarantine. */
-    for (k = 0; k < SMP_USER_LEGACY_SLOTS; k++) {
-        uint32_t phys = SMP_USER_BASE + k * SMP_USER_SIZE;
-        if (!smp_user_has_records[k] && smp_alloc_legacy_valid(phys)) {
-            const smp_user_hdr_t *h = (const smp_user_hdr_t *)fm1_xip_ptr(phys);
-            uint32_t count = (SMP_USER_DATA + h->data_len + SMP_USER_SECTOR_SIZE - 1u) / SMP_USER_SECTOR_SIZE;
-            rec[n++] = (record_t){0u, (uint8_t)(k * SMP_USER_SECTORS_PER_LEGACY_SLOT),
-                                 (uint8_t)count, (uint8_t)k, 2u};
-        }
-    }
-    /* Never skip a pair because a previous pair already conflicted: doing so
-     * would miss overlapping chains and expose occupied sectors for reuse. */
-    for (i = 0; i < n; i++) {
-        int newest = 1;
-        for (j = 0; j < n; j++) {
-            if (i == j)
-                continue;
-            if (rec[i].start < (uint32_t)rec[j].start + rec[j].count &&
-                rec[j].start < (uint32_t)rec[i].start + rec[i].count) {
-                smp_user_unresolved[rec[i].slot] = 1u;
-                smp_user_unresolved[rec[j].slot] = 1u;
-            }
-            if (rec[i].slot == rec[j].slot) {
-                uint32_t delta = rec[i].generation - rec[j].generation;
-                if (!delta || delta == 0x80000000u)
-                    smp_user_unresolved[rec[i].slot] = 1u;
-                if (!smp_generation_newer(rec[i].generation, rec[j].generation))
-                    newest = 0;
-            }
-        }
-        if (newest)
-            winner[rec[i].slot] = (uint8_t)i;
-    }
-    for (k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
-        uint32_t age = 0;
-        if (winner[k] == 0xFFu) {
-            for (i = 0; i < n; i++)
-                if (rec[i].slot == k)
-                    smp_user_unresolved[k] = 1u;  /* duplicate, half-range, or cyclic ordering */
-        }
-        if (smp_user_unresolved[k]) {
-            smp_user_deleted[k] = has_barrier[k];
-            continue;                          /* do not trust any generation for mutation */
-        }
-        if (winner[k] == 0xFFu)
-            continue;
-        smp_user_generation[k] = rec[winner[k]].generation;
-        smp_user_oldest_generation[k] = smp_user_generation[k];
-        for (i = 0; i < n; i++) {
-            if (rec[i].slot != k)
-                continue;
-            if (smp_user_generation[k] - rec[i].generation > age) {
-                age = smp_user_generation[k] - rec[i].generation;
-                smp_user_oldest_generation[k] = rec[i].generation;
-            }
-            if (rec[i].kind == 1u && (barrier[k] == 0xFFu ||
-                smp_generation_newer(rec[i].generation, rec[barrier[k]].generation)))
-                barrier[k] = (uint8_t)i;
-        }
-        smp_user_deleted[k] = rec[winner[k]].kind == 1u;
-        if (!smp_user_deleted[k]) {
-            smp_user_phys[k] = SMP_USER_BASE + (uint32_t)rec[winner[k]].start * SMP_USER_SECTOR_SIZE;
-            smp_user_sectors[k] = rec[winner[k]].count;
-        }
-    }
-    for (i = 0; i < n; i++) {
-        k = rec[i].slot;
-        if (smp_user_unresolved[k] || winner[k] == i || barrier[k] == i)
-            for (j = 0; j < rec[i].count; j++)
-                smp_alloc_mark((uint32_t)rec[i].start + j);
-    }
-    /* Old SMA1/FSMP has no provenance root. Preserve compatibility reads but
-     * never erase/reuse any sector or adopt untrusted audio as new metadata. */
-    for (sector = 0; sector < SMP_USER_SECTOR_COUNT; sector++) smp_alloc_mark(sector);
-    for (k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) smp_user_unresolved[k] = 1u;
-
+    (void)smp_journal_boot();
 }
 
 #ifndef SMP_USER_XIP                                /* host tests: a RAM image of the slots */
@@ -448,10 +329,12 @@ static void smp_user_scan(uint32_t k)
     const smp_user_hdr_t *h;
     smp_zone_t zt[16];
     uint32_t i, base, nz = 0, capacity;
+    if (k >= SMP_USER_LOGICAL_SLOTS)
+        return;
     smp_user_gen++;
     usr_nz[k] = 0;
     slc_user_scan(k, 0);
-    if (k >= SMP_USER_LOGICAL_SLOTS || smp_user_deleted[k] || !smp_user_phys[k] ||
+    if (smp_journal_state != SMP_JOURNAL_READY || smp_user_deleted[k] || !smp_user_phys[k] ||
         !smp_user_sectors[k])
         goto empty;
     h = (const smp_user_hdr_t *)smp_user_xip(k);

@@ -238,6 +238,8 @@ int main(int argc, char **argv)
     snprintf(path, sizeof path, "%s.bin", argv[1]);
     if (load(path, (uint8_t *)host_slots + SMP_USER_DATA, SMP_USER_SIZE - SMP_USER_DATA) <= 0)
         return 1;
+    /* Audio fixture bypasses journal recovery; model an authorized READY map. */
+    smp_journal_state = SMP_JOURNAL_READY;
     smp_user_scan(0);
     {
         /* both from the same state (a fork each: the mix keeps state from render to render) */

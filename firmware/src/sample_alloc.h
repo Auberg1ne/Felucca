@@ -30,7 +30,7 @@
 #define SMP_JOURNAL_DELETE    0x444A4D53u /* SMJD */
 #define SMP_JOURNAL_BLANK     0u
 #define SMP_JOURNAL_READY     1u
-#define SMP_JOURNAL_COMPAT    2u
+#define SMP_JOURNAL_QUARANTINED 2u /* unanchored media: preserved, unpublished, read-only */
 #define SMP_JOURNAL_LOCKED    3u
 
 typedef struct {

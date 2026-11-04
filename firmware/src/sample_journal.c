@@ -30,14 +30,19 @@ static int smp_journal_crc_valid(const smp_alloc_desc_t *p)
     return d.version == 1u && d.commit == SMP_ALLOC_COMMITTED && st_crc32(&d, 28u) == crc;
 }
 
-static int smp_journal_lock(void)
+static int smp_journal_quarantine(uint8_t state)
 {
-    smp_journal_state = SMP_JOURNAL_LOCKED;
+    smp_journal_state = state;
     for (uint32_t s = 0; s < SMP_USER_SECTOR_COUNT; s++) smp_alloc_mark(s);
     for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
         smp_user_phys[k] = 0; smp_user_sectors[k] = 0; smp_user_unresolved[k] = 1;
     }
     return smp_journal_state;
+}
+
+static int smp_journal_lock(void)
+{
+    return smp_journal_quarantine(SMP_JOURNAL_LOCKED);
 }
 
 static int smp_journal_boot(void)
@@ -57,8 +62,9 @@ static int smp_journal_boot(void)
         uint32_t magic; memcpy(&magic, root, sizeof magic);
         if (magic != SMP_USER_MAGIC && magic != 0xFFFFFFFFu)
             return smp_journal_lock();          /* corrupt/partial root: no fallback */
-        smp_journal_state = SMP_JOURNAL_COMPAT;
-        return smp_journal_state;               /* old samples readable, entire pool read-only */
+        /* FSMP/SMA1 bytes cannot prove ownership: an interrupted upload can
+         * look identical to legacy media. Never scan or publish those bytes. */
+        return smp_journal_quarantine(SMP_JOURNAL_QUARANTINED);
     }
     smp_journal_state = SMP_JOURNAL_READY;
     for (uint32_t off = SMP_ALLOC_SIZE; off < SMP_USER_SECTOR_SIZE; off += SMP_ALLOC_SIZE) {

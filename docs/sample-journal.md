@@ -63,19 +63,29 @@ When audio space or journal space is exhausted, mutations fail without erasing
 user data. DELETE needs journal space, but no free audio sector. A separate,
 reviewed compaction/migration design is needed to regain capacity.
 
-Existing valid FSMP legacy and relocated SMA1 images remain readable through
-compatibility recovery, with **all 60 sectors reserved and mutations disabled**.
-Experimental unanchored SMD1 records are never deletion authority. Old SMA1 has
-no provenance root and can itself be impersonated by crafted audio; compatibility
-reads retain the old validation/conflict checks, but never grant deletion or
-sector-reuse authority. No writable adoption of that history is attempted.
+Unanchored FSMP legacy and relocated SMA1 media are quarantined: **all 60
+sectors are reserved, no samples are published, and sample-pool mutations fail**.
+Every flash byte is preserved, including apparently erased gaps. Recovery never
+infers ownership from raw headers, CRCs, generations or commit markers. INFO and
+sample backup/export expose empty slots; project selections use the existing
+missing-sample behavior. There is no automatic migration or formatting.
 
-## C3 interaction
+## C3 containment
 
-The old header-first upload ordering and legacy migration format are unchanged.
-C3 remains an outstanding compatibility/migration issue. In the new anchored
-format a header without journal PUBLISH cannot become visible, incidentally
-containing that failure mode without implementing a legacy C3 migration repair.
+A completed FSMP header with an erased SMA1 descriptor can be an interrupted
+transaction in the wrong logical slot, byte-identical to a genuine legacy sample.
+Likewise, unfinished audio can contain a complete counterfeit SMA1 sample.
+Neither format proves ownership. Recovery therefore never scans unanchored
+media for publication, including genuine legacy images. Legacy availability is
+intentionally sacrificed to preserve data safely; migration is outside this repair.
+
+Only an exact SMJ1 anchor at the fixed pool root authorizes journal recovery.
+A nonblank pool with FSMP or erased root magic is quarantined; other invalid
+anchors and invalid journal records are locked. Both hide samples and reserve
+the entire pool. Only a completely erased pool can initialize a new journal.
+Detected I/O failures retain the existing write latch. XIP reads have no error
+status, so undetected hardware faults returning erased bytes remain outside
+this software guarantee. Journal transaction layout and ordering are unchanged.
 
 Deletion is logical, not secure erasure. Downgrading to a firmware that scans raw
 SMA1/SMD1 and does not honor this journal is unsupported and can resurrect data.
