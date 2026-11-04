@@ -17,8 +17,8 @@
  * 6. MAN, the slices set by hand (the SLICES page; ported from hugelton/Felucca#27 by andreahaku): none set = AUTO,
  *    move / end / split / join within their limits, the decoder states, keys / bounds / REV after a commit, a slot
  *    scan clearing them, restore == save, bad tables refused, a start moved past a reverse voice, no room.
- * 7. the store (slice_store.c) on the slot image: written when asked and stopped (not while playing or on the
- *    page), read back at a scan, kept for the same sample only, junk and torn writes ignored, a long sample. */
+ * 7. the store (slice_store.c): persistence explicitly refused after STOP and leaving the page,
+ *    manual edits remain usable in RAM; scans do not restore unsafe legacy metadata. */
 #include <stdarg.h>
 #include <stdint.h>
 static uint32_t host_slots[3u * 0x14000u / 4u];          /* USR1..3, as the flash at 0xA0000 */
@@ -31,8 +31,8 @@ static uint32_t host_slots[3u * 0x14000u / 4u];          /* USR1..3, as the flas
 #endif
 #define SLC_ENG 13u                                      /* SLICE's engine number (engines.c, the protocol's) */
 
-/* 7: the store (src/slice_store.c) on the slot image: storage.c's hooks over host_slots, the UI's stubs */
-static uint8_t flash_ok = 1, host_busy, host_page, host_torn;
+/* 7: RAM-only metadata store, with observable flash hooks and UI stubs. */
+static uint8_t host_busy, host_page, host_torn;
 static char host_msg[32];
 static int transport_busy(void) { return host_busy; }
 static int slice_page_on(void) { return host_page; }
@@ -686,116 +686,48 @@ int main(int argc, char **argv)
         }
     }
 
-    /* 7: the store, in the slot's last sector (slice_store.c) */
+    /* 7: persistence is disabled; the real MAN table remains playable in RAM. */
     {
-        const smp_user_hdr_t *h = (const smp_user_hdr_t *)smp_user_xip(0);
-        const slc_rec_t *r = (const slc_rec_t *)(smp_user_xip(0) + SLC_REC_OFF);
         const slc_src_t *s;
         slc_man_t *m, keep;
-        smp_user_hdr_t h0;
-        uint32_t ok = 1, e0;
-        slc_store_boot();                                  /* (persist_boot: the scans read the record) */
+        uint32_t ok = 1, e0 = host_erases;
+        slc_store_boot();
         smp_user_scan(0);
         s = slc_get(1);
-        ok &= !slc_man_of(s) && slc_rec_room(0) && h->data_len + SMP_USER_DATA <= SLC_REC_OFF;
         m = slc_man_begin(0);
         slc_man_move(s, m, 1, 777);
         slc_man_split(s, m, 3);
         slc_man_move_end(s, m, -1234);
         slc_man_commit(0);
         keep = *slc_man_of(s);
-        slc_man_save |= 1u;
-        host_busy = 1;
+        slc_man_save = 1u;
         host_msg[0] = 0;
-        e0 = host_erases;
+        host_busy = 1;
         slc_store_poll();
-        ok &= host_erases == e0 && slc_man_save == 1u;     /* playing: waits */
+        ok &= slc_man_save == 1u && !host_msg[0];
         host_busy = 0;
         host_page = 1;
         slc_store_poll();
-        ok &= host_erases == e0 && slc_man_save == 1u;     /* the page still open: waits */
+        ok &= slc_man_save == 1u && !host_msg[0];
         host_page = 0;
         slc_store_poll();
-        ok &= host_erases == e0 + 1u && !slc_man_save && str_eq(host_msg, "SLICES SAVED") && r->magic == SLC_REC_MAGIC &&
-              r->n == keep.n && r->end == keep.end && r->len == s->len && r->crc == h->crc;
-        slc_man_save |= 1u;                                /* the same again: no erase */
-        slc_store_poll();
-        ok &= host_erases == e0 + 1u;
-        check("store: written once stopped and off the page, only when it changed (\"SLICES SAVED\")", ok, 0);
-
-        ok = 1;
-        smp_user_scan(0);                                  /* boot / the same sample uploaded again */
-        s = slc_get(1);
-        ok &= slc_man_of(s) && slc_man_of(s)->n == keep.n && slc_man_of(s)->end == keep.end &&
-              !memcmp(slc_man_of(s)->pos, keep.pos, keep.n * 4u) && !memcmp(slc_man_of(s)->st, keep.st, keep.n * 4u);
-        check("store: a slot scan puts the stored slices back (starts, end, states)", ok, 0);
-
-        ok = 1;
-        h0 = *h;
-        ((smp_user_hdr_t *)host_slots)->crc ^= 1u;         /* another sample in the slot */
-        smp_user_scan(0);
-        ok &= !slc_man_of(slc_get(1));
-        *(smp_user_hdr_t *)host_slots = h0;
-        ((uint8_t *)host_slots)[SLC_REC_OFF + 20] ^= 4u;    /* a start changed: the record's CRC fails */
-        smp_user_scan(0);
-        ok &= !slc_man_of(slc_get(1));
-        ((uint8_t *)host_slots)[SLC_REC_OFF + 20] ^= 4u;
-        smp_user_scan(0);
-        ok &= slc_man_of(slc_get(1)) != 0;
-        check("store: another sample's record or a broken one is ignored", ok, 0);
-
-        ok = 1;
-        {   /* a record with a valid CRC but starts that do not fit: refused by slc_man_restore */
-            slc_rec_t c = *r;
-            c.pos[1] = c.pos[0] + 1u;
-            c.rcrc = st_crc32(&c, sizeof c - 4u);
-            st_erase(SMP_USER_BASE + SLC_REC_OFF);
-            st_prog(SMP_USER_BASE + SLC_REC_OFF, &c, sizeof c);
-            smp_user_scan(0);
-            ok &= !slc_man_of(slc_get(1));
-        }
-        s = slc_get(1);                                    /* a save torn after the erase: no slices, the sample stays */
-        m = slc_man_begin(0);
-        slc_man_split(s, m, 0);
-        slc_man_commit(0);
-        slc_man_save |= 1u;
-        host_torn = 1;
-        slc_store_poll();
-        host_torn = 0;
-        ok &= str_eq(host_msg, "SAVE ERROR");
-        smp_user_scan(0);
-        ok &= usr_nz[0] && !slc_man_of(slc_get(1));
-        check("store: bad starts with a good CRC refused; a torn save loses the slices, not the sample", ok, 0);
-
-        ok = 1;
-        h0 = *h;
-        ((smp_user_hdr_t *)host_slots)->data_len = SLC_REC_OFF - SMP_USER_DATA + 1u;   /* into the last sector */
-        s = slc_get(1);
-        m = slc_man_begin(0);
-        slc_man_split(s, m, 0);
-        slc_man_commit(0);
-        e0 = host_erases;
-        slc_man_save |= 1u;
-        slc_store_poll();
-        ok &= host_erases == e0 && str_eq(host_msg, "TOO LONG TO SAVE") && !slc_rec_room(0);
-        *(smp_user_hdr_t *)host_slots = h0;
-        smp_user_scan(0);
-        check("store: a sample reaching the last sector keeps its slices in RAM only (TOO LONG TO SAVE)", ok, 0);
-
-        ok = 1;                                            /* a save pending for a slot emptied / being uploaded: */
-        m = slc_man_begin(0);                              /* dropped without a word */
-        slc_man_split(slc_get(1), m, 0);
-        slc_man_commit(0);
-        slc_man_save |= 1u;
-        usr_nz[0] = 0;                                     /* (ED_SMP_BEGIN) */
+        ok &= !slc_man_save && str_eq(host_msg, "SLICES RAM ONLY") && host_erases == e0 &&
+              !memcmp(slc_man_of(s), &keep, sizeof keep) && !man_check(s, slc_man_of(s));
+        check("store: save refused explicitly, MAN edits and decoder states stay in RAM", ok, 0);
         host_msg[0] = 0;
-        e0 = host_erases;
         slc_store_poll();
-        ok &= host_erases == e0 && !host_msg[0] && !slc_man_save;
+        check("store: refusal does not repeat without a new save request", !host_msg[0], 0);
+        slc_store_load(0);
+        check("store: load does not replace the current RAM edits",
+              !memcmp(slc_man_of(s), &keep, sizeof keep), 0);
+        usr_nz[0] = 0;
+        slc_man_save = 1u;
+        slc_store_poll();
+        check("store: empty slot drops the request without touching flash",
+              !slc_man_save && !host_msg[0] && host_erases == e0, 0);
         smp_user_scan(0);
-        check("store: a slot emptied or being uploaded: the save is dropped (no TOO LONG TO SAVE)", ok, "msg '%s'", host_msg);
-        slc_man_load = 0;
-        smp_user_scan(0);                                  /* (the demos: no MAN slices) */
+        check("store: rescan leaves sample valid, manual edits do not persist",
+              usr_nz[0] && !slc_man_of(slc_get(1)), 0);
     }
 
     /* 5 */
