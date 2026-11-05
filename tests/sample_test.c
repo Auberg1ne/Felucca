@@ -17,6 +17,11 @@ static uint32_t host_slots[SMP_USER_SECTOR_COUNT * SMP_USER_SECTOR_SIZE / 4u];  
 #define main hostsim_main
 #include "hostsim.c"
 #undef main
+/* Real CRC implementation for the explicitly bound audio fixture. */
+static int st_read(uint32_t off, void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
+static int st_prog(uint32_t off, const void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
+static int st_erase(uint32_t off) { (void)off; return -1; }
+#include "../firmware/src/storage.c"
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -240,6 +245,8 @@ int main(int argc, char **argv)
         return 1;
     /* Audio fixture bypasses journal recovery; model an authorized READY map. */
     smp_journal_state = SMP_JOURNAL_READY;
+    smp_user_header_crc[0] = st_crc32(host_slots, sizeof(smp_user_hdr_t));
+    smp_user_header_bound[0] = 1;
     smp_user_scan(0);
     {
         /* both from the same state (a fork each: the mix keeps state from render to render) */

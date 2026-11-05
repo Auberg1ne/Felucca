@@ -183,7 +183,7 @@ static int ed_smp_erase(uint32_t k)
     ed_smp_stage_abort(k);
     if (smp_user_deleted[k]) return 0;
     smp_alloc_desc_t d = {0};
-    d.magic = SMP_JOURNAL_DELETE; d.version = 1u; d.logical_slot = (uint8_t)k;
+    d.magic = SMP_JOURNAL_DELETE; d.version = SMP_JOURNAL_V1; d.logical_slot = (uint8_t)k;
     d.generation = smp_user_generation[k] + 1u;
     if (ed_smp_journal_append(&d)) return 1;
     smp_generation_committed(k, d.generation); smp_user_deleted[k] = 1u;
@@ -206,7 +206,7 @@ static int ed_smp_begin(uint32_t k, uint32_t data_len)
         return 1;
     ed_smp_stage_data_len[k] = data_len;
     smp_alloc_desc_t claim = {0};
-    claim.magic = SMP_JOURNAL_CLAIM; claim.version = 1u; claim.logical_slot = (uint8_t)k;
+    claim.magic = SMP_JOURNAL_CLAIM; claim.version = SMP_JOURNAL_V1; claim.logical_slot = (uint8_t)k;
     claim.sector_count = (uint8_t)ed_smp_stage_sectors[k]; claim.data_len = data_len;
     claim.generation = smp_user_generation[k] + 1u;
     claim.reserved = (ed_smp_stage_phys[k] - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
@@ -275,6 +275,7 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
     d.generation = generation;
     d.data_len = h->data_len;
     d.data_crc = h->crc;
+    d.reserved = st_crc32(h, sizeof *h);
     d.commit = 0xFFFFFFFFu;
     d.record_crc = 0u;
     d.record_crc = st_crc32(&d, 28u);
@@ -300,7 +301,7 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
     }
     ed_smp_inval_phys(phys, SMP_USER_DATA);
     written = (const smp_alloc_desc_t *)(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET);
-    if (!smp_alloc_extent_valid(phys, k, written)) {
+    if (!smp_alloc_extent_valid(phys, k, written, d.reserved)) {
         ed_smp_io_fail(k);
         return 5;
     }
@@ -312,6 +313,8 @@ static int ed_smp_end(uint32_t k, const uint8_t *a, uint32_t na)
      */
     smp_alloc_desc_t publish = d;
     publish.magic = SMP_JOURNAL_PUBLISH;
+    publish.version = SMP_JOURNAL_PUBLISH_VERSION;
+    publish.data_crc = d.reserved;                    /* authoritative full-header CRC */
     publish.reserved = (phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
     if (ed_smp_journal_append(&publish)) return 1;
     smp_generation_committed(k, generation);
@@ -857,9 +860,10 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(SMP_USER_SLOTS);
         ed_b(SMP_USER_SIZE / 1024u);                       /* protocol's legacy maximum; actual extents are dynamic */
         for (i = 0; i < SMP_USER_SLOTS; i++) {
+            smp_user_hdr_t header;
             uint32_t nz = smp_journal_state == SMP_JOURNAL_READY ? usr_nz[i] : 0u;
-            const smp_user_hdr_t *h = nz && smp_user_phys[i] ?
-                (const smp_user_hdr_t *)smp_user_xip(i) : 0;
+            const smp_user_hdr_t *h = nz && smp_user_running_header(i, &header) ? &header : 0;
+            if (!h) nz = 0;
             char nm[9] = {0};
             uint32_t j;
             ed_b(nz);

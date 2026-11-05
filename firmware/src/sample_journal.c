@@ -9,7 +9,7 @@ _Static_assert((SMP_JOURNAL_MAGIC & SMP_USER_MAGIC) != SMP_JOURNAL_MAGIC &&
 static smp_alloc_desc_t smp_journal_header(void)
 {
     smp_alloc_desc_t d = {0};
-    d.magic = SMP_JOURNAL_MAGIC; d.version = 1u;
+    d.magic = SMP_JOURNAL_MAGIC; d.version = SMP_JOURNAL_V1;
     d.logical_slot = SMP_USER_LOGICAL_SLOTS; d.sector_count = SMP_USER_SECTOR_COUNT;
     d.data_len = SMP_USER_SECTOR_SIZE; d.data_crc = SMP_ALLOC_SIZE;
     d.commit = 0xFFFFFFFFu; d.record_crc = st_crc32(&d, 28u);
@@ -27,7 +27,7 @@ static int smp_journal_crc_valid(const smp_alloc_desc_t *p)
     smp_alloc_desc_t d = *p;
     uint32_t crc = d.record_crc;
     d.record_crc = 0;
-    return d.version == 1u && d.commit == SMP_ALLOC_COMMITTED && st_crc32(&d, 28u) == crc;
+    return d.commit == SMP_ALLOC_COMMITTED && st_crc32(&d, 28u) == crc;
 }
 
 static int smp_journal_quarantine(uint8_t state)
@@ -36,6 +36,7 @@ static int smp_journal_quarantine(uint8_t state)
     for (uint32_t s = 0; s < SMP_USER_SECTOR_COUNT; s++) smp_alloc_mark(s);
     for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
         smp_user_phys[k] = 0; smp_user_sectors[k] = 0; smp_user_unresolved[k] = 1;
+        smp_user_header_bound[k] = 0;
     }
     return smp_journal_state;
 }
@@ -50,7 +51,7 @@ static int smp_journal_boot(void)
     const uint8_t *root = fm1_xip_ptr(SMP_USER_BASE);
     smp_alloc_desc_t expected = smp_journal_header();
     uint16_t pending[SMP_USER_LOGICAL_SLOTS] = {0}, latest[SMP_USER_LOGICAL_SLOTS] = {0};
-    uint8_t had_delete[SMP_USER_LOGICAL_SLOTS] = {0};
+    uint8_t had_delete[SMP_USER_LOGICAL_SLOTS] = {0}, old_publication = 0;
     smp_alloc_mark(0);                         /* never allocate payload over the root */
     smp_journal_next = SMP_ALLOC_SIZE;
     expected.commit = SMP_ALLOC_COMMITTED;
@@ -76,6 +77,11 @@ static int smp_journal_boot(void)
         }
         if (!smp_journal_crc_valid(d) || d->logical_slot >= SMP_USER_LOGICAL_SLOTS)
             return smp_journal_lock();
+        /* Version is operation-specific. Unknown formats never fall back. */
+        if ((d->magic == SMP_JOURNAL_PUBLISH && d->version != SMP_JOURNAL_V1 &&
+             d->version != SMP_JOURNAL_PUBLISH_VERSION) ||
+            (d->magic != SMP_JOURNAL_PUBLISH && d->version != SMP_JOURNAL_V1))
+            return smp_journal_lock();
         uint32_t k = d->logical_slot;
         if (d->generation != smp_user_generation[k] + 1u)
             return smp_journal_lock();          /* journal order, never guessed serial order */
@@ -91,6 +97,7 @@ static int smp_journal_boot(void)
             }
             pending[k] = (uint16_t)off;
         } else if (d->magic == SMP_JOURNAL_PUBLISH) {
+            if (d->version == SMP_JOURNAL_V1) old_publication = 1;
             if (!pending[k]) return smp_journal_lock();
             const smp_alloc_desc_t *claim = (const smp_alloc_desc_t *)(root + pending[k]);
             if (d->reserved != claim->reserved || d->sector_count != claim->sector_count ||
@@ -108,17 +115,21 @@ static int smp_journal_boot(void)
         } else return smp_journal_lock();
         smp_journal_next = (uint16_t)(off + SMP_ALLOC_SIZE);
     }
+    /* Even deleted v1 history cannot be endorsed by hashing it retrospectively.
+     * Preserve the ENTIRE pool; no automatic migration, deletion or reuse. */
+    if (old_publication) return smp_journal_quarantine(SMP_JOURNAL_QUARANTINED);
     for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
         if (!latest[k]) continue;
         const smp_alloc_desc_t *p = (const smp_alloc_desc_t *)(root + latest[k]);
         uint32_t phys = SMP_USER_BASE + p->reserved * SMP_USER_SECTOR_SIZE;
         const smp_alloc_desc_t *d = (const smp_alloc_desc_t *)(fm1_xip_ptr(phys) + SMP_ALLOC_OFFSET);
-        if (!smp_alloc_extent_valid(phys, k, d) || d->generation != p->generation ||
-            d->sector_count != p->sector_count || d->data_len != p->data_len || d->data_crc != p->data_crc) {
+        if (!smp_alloc_extent_valid(phys, k, d, p->data_crc) || d->generation != p->generation ||
+            d->sector_count != p->sector_count || d->data_len != p->data_len || d->reserved != p->data_crc) {
             smp_user_unresolved[k] = 1; smp_user_deleted[k] = had_delete[k];
             continue;                          /* never fall back to raw historical audio */
         }
         smp_user_phys[k] = phys; smp_user_sectors[k] = d->sector_count;
+        smp_user_header_crc[k] = p->data_crc; smp_user_header_bound[k] = 1;
     }
     return smp_journal_state;
 }

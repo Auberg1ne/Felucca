@@ -278,8 +278,8 @@ fit its ADPCM bytes within data length, index 0..88, rate 1..262144 (Q16), root
 and looped 0 or 1. The signed 16-bit predictor has no additional restriction.
 Overlapping zones and unused zone bytes are allowed. Recovery and playback use
 the same semantic validator. Rejection preserves the previous committed sample;
-the BEGIN claim stays reserved under the existing journal policy. These checks
-do not add header integrity protection (H2 remains outstanding).
+the BEGIN claim stays reserved under the existing journal policy. Header semantics are checked separately from the version-2
+publication integrity described below.
 
 Each sample extent still has a 512-byte header area, with the 480-byte FSMP
 sample header at bytes 0..479 and its SMA1 descriptor at bytes 480..511:
@@ -290,6 +290,32 @@ sample header at bytes 0..479 and its SMA1 descriptor at bytes 480..511:
 | 8 | name, 8 ASCII bytes (0-padded) |
 | 16 | u32 data length (bytes), u32 CRC-32 (zlib) of the data, 8 bytes 0 |
 | 32 | 16 zones × 28 bytes: u32 off (in the data), n (samples), loop start, loop end, rate (Hz / 44100 × 65536); i16 root × 16 (MIDI note), ADPCM predictor at the loop start; u8 step index at the loop start, lo note, hi note, looped (0/1) |
+
+The upload remains FSMP version 1 and exactly 480 bytes. Firmware computes CRC-32
+(zlib) over all 480 bytes without normalization, including name, reserved and
+inactive-zone bytes. SMA1 descriptor version 2 stores this CRC at descriptor
++24; its +16 field remains the audio CRC. Journal SMJP PUBLISH version 2 stores
+the header CRC at record +16 and the extent index at +24. Both records remain
+32 bytes, with their existing record CRC at +20 and final commit word at +28.
+Anchor, CLAIM and DELETE remain version 1. Unknown operation/version combinations
+lock recovery; CRC 0 and FFFFFFFF are valid protected values.
+
+END checks H1 semantics and audio integrity, then verifies and commits the
+physical header/descriptor before the final authoritative PUBLISH. Recovery and
+metadata exposure verify the complete header against its running publication.
+Publishing a replacement does not replace the active sample's CRC before reboot.
+Corrupt latest samples are hidden and unresolved; older samples never reappear
+and sectors are never released. I/O uncertainty preserves the existing write latch.
+
+Any historical version-1 PUBLISH quarantines the entire pool, even if later
+deleted/superseded or mixed with version-2 records. All bytes and 60 sectors are
+preserved; sample mutations fail, INFO is empty and sample backup exports nothing.
+There is no automatic migration or formatting. Version-1 anchor/CLAIM/DELETE
+without an old PUBLISH remain supported. Older v1-only journal readers lock on
+v2 PUBLISH; firmware downgrade is unsupported. CRC-32 is corruption detection,
+not cryptographic authentication. See [storage design](../docs/sample-journal.md).
+The browser JS protocol mock does not simulate this durable journal, and the
+separate WASM fixed-address sample implementation is unchanged by H2.
 
 Data is IMA ADPCM, 4 bit, low nibble first, starting from predictor 0 and step index 0.
 All little endian.

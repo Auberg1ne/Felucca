@@ -250,10 +250,14 @@ static void payload_provenance(void)
     fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t old = smp_user_phys[0];
     assert(!ed_smp_begin(1, 8192)); uint8_t nested[768]; memset(nested, 255, sizeof nested);
     smp_user_hdr_t h = header(0x22); memcpy(nested, &h, sizeof h); memset(nested + 512, 0x22, 256);
-    smp_alloc_desc_t d = {0}; d.magic = SMP_ALLOC_MAGIC; d.version = 1; d.logical_slot = 0;
+    smp_alloc_desc_t d = {0}; d.magic = SMP_ALLOC_MAGIC; d.version = SMP_ALLOC_VERSION; d.logical_slot = 0;
     d.sector_count = 1; d.generation = 99; d.data_len = 256; d.data_crc = h.crc;
+    d.reserved = st_crc32(nested, 480);
     d.commit = SMP_ALLOC_COMMITTED; d.record_crc = st_crc32(&d, 28); memcpy(nested + 480, &d, sizeof d);
     for (uint32_t p = 0; p < sizeof nested; p += 256) assert(!write_page(1, 4096 + p, nested + p, 256));
+    uint32_t nested_phys = ed_smp_stage_phys[1] + 4096;
+    check("H2 nested counterfeit v2 descriptor and header are internally CRC-valid", smp_alloc_extent_valid(nested_phys, 0,
+        (const smp_alloc_desc_t *)(nor + nested_phys + 480), d.reserved));
     reboot(); check("complete SMA1 header embedded in unfinished audio has no authority", usr_nz[0] && smp_user_phys[0] == old && !usr_nz[1]);
     /* Journal-shaped payload is not in the anchored metadata sector. */
     assert(!ed_smp_begin(1, 8192)); d = fake_tomb(0, 99); d.magic = SMP_JOURNAL_DELETE;
@@ -369,7 +373,7 @@ static int quarantined(void)
     for (uint32_t s = 0; s < 60; s++) ok &= smp_alloc_test(s);
     return ok;
 }
-static int no_exports(void)
+static int no_exports_allow_reads(int allow_reads)
 {
     uint32_t reads = xip_reads;
     uint8_t info[] = {ED_HDR0, ED_HDR1, ED_HDR2, ED_SMP_INFO};
@@ -384,8 +388,9 @@ static int no_exports(void)
         host_wire_n = 0; ed_handle(get, sizeof get); host_drain();
         ok &= host_wire_n > 7 && host_wire_n < 24 && host_wire[6] != 0;
     }
-    return ok && reads == xip_reads;
+    return ok && (allow_reads || reads == xip_reads);
 }
+static int no_exports(void) { return no_exports_allow_reads(0); }
 static void quarantine_tests(void)
 {
     fresh(); legacy(0, 0x11); legacy(1, 0x22); legacy(2, 0x33);
@@ -636,8 +641,12 @@ static void h1_tests(void)
         h = header(0x22);
         if (c->zone) { h.nz = 16; for (uint32_t z = 1; z < 16; z++) h.zone[z] = h.zone[0]; }
         h1_corrupt(&h, c, c->zone ? 15 : 0); memcpy(nor + latest, &h, sizeof h);
-        const smp_alloc_desc_t *d = (const smp_alloc_desc_t *)(nor + latest + 480);
-        ok = !smp_alloc_extent_valid(latest, 0, d);
+        smp_alloc_desc_t *d = (smp_alloc_desc_t *)(nor + latest + 480);
+        /* Keep H2 integrity valid so this remains an independent H1 oracle. */
+        d->reserved = st_crc32(&h, sizeof h); seal_record(d);
+        smp_alloc_desc_t *pub = (smp_alloc_desc_t *)(nor + SMP_USER_BASE + smp_journal_next - 32);
+        pub->data_crc = d->reserved; seal_record(pub); smp_user_header_crc[0] = d->reserved;
+        ok = !smp_alloc_extent_valid(latest, 0, d, smp_user_header_crc[0]);
         smp_user_scan(0); ok &= !usr_nz[0] && !usr_zone[0][0].n;
 #if FELUCCA_SLICE
         ok &= !slc_get(1);
@@ -675,7 +684,7 @@ static void h1_tests(void)
             !write_page(0, 512, audio, h.data_len) && !ed_smp_end(0, packed, pack(&h, sizeof h, packed));
         reboot();
         ok &= smp_user_phys[0] && usr_nz[0] == h.nz && !smp_user_unresolved[0] &&
-            smp_alloc_extent_valid(smp_user_phys[0], 0, (const smp_alloc_desc_t *)(nor + smp_user_phys[0] + 480));
+            smp_alloc_extent_valid(smp_user_phys[0], 0, (const smp_alloc_desc_t *)(nor + smp_user_phys[0] + 480), smp_user_header_crc[0]);
         snprintf(name, sizeof name, "H1 valid boundary variant %u accepted consistently by END recovery and playback", variant);
         check(name, ok);
     }
@@ -711,6 +720,146 @@ static void h1_tests(void)
     check("H1 full dynamic audio capacity is valid but one extra nibble is not", ok && !smp_user_header_valid(&h, h.data_len));
 }
 
+/* H2 integrity: tests operate on the physical RAM-NOR journal, never the
+ * browser's fixed-slot protocol mock. Fixture edits model corruption/old media. */
+static int h2_upload(uint32_t k, smp_user_hdr_t *h, uint8_t byte)
+{
+    uint8_t audio[256], packed[600]; memset(audio, byte, sizeof audio);
+    assert(h->data_len == sizeof audio); h->crc = st_crc32(audio, sizeof audio);
+    if (ed_smp_begin(k, sizeof audio) || write_page(k, 512, audio, sizeof audio)) return 1;
+    return ed_smp_end(k, packed, pack(h, sizeof *h, packed));
+}
+/* Force a chosen CRC using the four reserved bytes at offset 24. This avoids
+ * assuming CRC 0 or FFFFFFFF means 'absent' in descriptor or running state. */
+static void h2_force_crc(smp_user_hdr_t *h, uint32_t target)
+{
+    uint32_t basis[32] = {0}, mask[32] = {0}, original = st_crc32(h, sizeof *h);
+    uint8_t *p = (uint8_t *)h + 24;
+    for (uint32_t i = 0; i < 32; i++) {
+        p[i / 8] ^= 1u << (i % 8); uint32_t v = st_crc32(h, sizeof *h) ^ original, m = 1u << i;
+        p[i / 8] ^= 1u << (i % 8);
+        for (int b = 31; b >= 0; b--) if (v & (1u << b)) {
+            if (basis[b]) { v ^= basis[b]; m ^= mask[b]; }
+            else { basis[b] = v; mask[b] = m; break; }
+        }
+    }
+    uint32_t v = target ^ original, m = 0;
+    for (int b = 31; b >= 0; b--) if (v & (1u << b)) { assert(basis[b]); v ^= basis[b]; m ^= mask[b]; }
+    assert(!v);
+    for (uint32_t i = 0; i < 32; i++) if (m & (1u << i)) p[i / 8] ^= 1u << (i % 8);
+    assert(st_crc32(h, sizeof *h) == target);
+}
+static void h2_tests(void)
+{
+    fresh(); int ok = 1;
+    for (uint32_t k = 0; k < 8; k++) assert(!upload(k, 0x11 + k));
+    reboot();
+    for (uint32_t k = 0; k < 8; k++) {
+        smp_user_scan(k);
+        const smp_alloc_desc_t *d = (const smp_alloc_desc_t *)(nor + smp_user_phys[k] + 480);
+        const smp_alloc_desc_t *p = (const smp_alloc_desc_t *)(nor + SMP_USER_BASE + 64 + k * 64);
+        ok &= d->version == 2 && p->version == 2 && p->data_crc == d->reserved &&
+            d->reserved == st_crc32(nor + smp_user_phys[k], 480) && smp_user_header_bound[k] &&
+            smp_user_header_crc[k] == d->reserved && usr_nz[k] && d->data_crc != 0;
+    }
+    check("H2 all eight v2 publications bind descriptor journal and running CRC", ok);
+    for (uint32_t i = 0; i < 2; i++) {
+        fresh(); smp_user_hdr_t h = header(0x33); h2_force_crc(&h, i ? UINT32_MAX : 0);
+        assert(!h2_upload(0, &h, 0x33)); reboot();
+        uint32_t len; const uint8_t *p = ed_bk_object(32, &len);
+        check("H2 CRC zero and FFFFFFFF are valid protected publications", usr_nz[0] && smp_user_header_bound[0] &&
+            smp_user_header_crc[0] == (i ? UINT32_MAX : 0) && p && len == 768);
+    }
+    /* Exhaust all 3840 bit positions, including inactive zones and reserved bytes. */
+    fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t old = smp_user_phys[0];
+    smp_user_hdr_t h = header(0x22); h.zone[0].root16 = 960;
+    assert(!h2_upload(0, &h, 0x22)); reboot(); uint32_t latest = smp_user_phys[0];
+    memcpy(saved, nor, sizeof nor); ok = 1;
+    for (uint32_t bit = 0; bit < 480 * 8; bit++) {
+        memcpy(nor, saved, sizeof nor); reboot(); smp_zone_t zone = usr_zone[0][0];
+        uint32_t w = writes, e = erases;
+        nor[latest + bit / 8] ^= 1u << (bit % 8);
+        ok &= no_exports_allow_reads(1) && smp_user_unresolved[0] && !smp_user_header_bound[0] &&
+            !memcmp(&zone, &usr_zone[0][0], sizeof zone); /* exposure must not disrupt retained readers */
+        reboot();
+        ok &= !smp_user_phys[0] && !usr_nz[0] && smp_user_unresolved[0] && locked_mutations(0) &&
+            smp_alloc_test((old - SMP_USER_BASE) / 4096) && smp_alloc_test((latest - SMP_USER_BASE) / 4096) &&
+            !memcmp(nor + old, saved + old, 4096) && writes == w && erases == e;
+    }
+    check("H2 all 3840 single-bit header mutations block exposure recovery and sector reuse", ok);
+    memcpy(nor, saved, sizeof nor); reboot();
+    nor[latest + 52] &= ~0x40u; /* root 960 -> 896: semantically valid, one NOR bit cleared */
+    check("H2 valid tuning corruption passes H1 but fails publication integrity", smp_user_header_valid((const smp_user_hdr_t *)(nor + latest), 3584) && no_exports_allow_reads(1));
+    reboot(); check("H2 tuning corruption never falls back to original audio", !usr_nz[0] && !smp_user_phys[0] && smp_user_unresolved[0]);
+    /* CRC disagreement is tested with repaired record CRCs: no accidental
+     * reliance on record corruption rather than the independent journal binding. */
+    for (uint32_t mode = 0; mode < 5; mode++) {
+        fresh(); assert(!upload(0, 0x11)); reboot(); old = smp_user_phys[0];
+        assert(!upload(0, 0x22)); assert(!upload(1, 0x33)); reboot(); latest = smp_user_phys[0];
+        smp_alloc_desc_t *d = (smp_alloc_desc_t *)(nor + latest + 480);
+        smp_alloc_desc_t *p = (smp_alloc_desc_t *)(nor + SMP_USER_BASE + 128);
+        if (mode == 0) d->reserved ^= 1;
+        if (mode == 1) p->data_crc ^= 1;
+        if (mode == 2) { nor[latest + 52] ^= 0x40; d->reserved = st_crc32(nor + latest, 480); }
+        if (mode == 3) d->version = 1;  /* v1 descriptor under protected v2 PUBLISH */
+        if (mode == 4) d->version = 3;
+        seal_record(d); seal_record(p); reboot();
+        check("H2 descriptor journal disagreement or non-v2 descriptor hides only affected slot", !usr_nz[0] && !smp_user_phys[0] &&
+            smp_user_unresolved[0] && usr_nz[1] && smp_journal_state == SMP_JOURNAL_READY &&
+            smp_alloc_test((old - SMP_USER_BASE) / 4096) && smp_alloc_test((latest - SMP_USER_BASE) / 4096) &&
+            !ed_smp_begin(2, 256) && ed_smp_stage_phys[2] != old && ed_smp_stage_phys[2] != latest);
+    }
+    /* Current, deleted and superseded v1 history all quarantine the whole pool. */
+    for (uint32_t mode = 0; mode < 3; mode++) {
+        fresh(); assert(!upload(0, 0x11)); reboot(); old = smp_user_phys[0];
+        if (mode == 1) assert(!ed_smp_erase(0));
+        if (mode == 2) assert(!upload(0, 0x22));
+        assert(!upload(1, 0x33));
+        smp_alloc_desc_t *d = (smp_alloc_desc_t *)(nor + old + 480);
+        smp_alloc_desc_t *p = (smp_alloc_desc_t *)(nor + SMP_USER_BASE + 64);
+        p->version = 1; p->data_crc = d->data_crc; seal_record(p);
+        d->version = 1; d->reserved = 0; seal_record(d);
+        memcpy(saved, nor, sizeof nor); reboot();
+        ok = quarantined() && no_exports() && !memcmp(saved, nor, sizeof nor);
+        for (uint32_t k = 0; k < 8; k++) ok &= locked_mutations(k);
+        reboot();
+        check("H2 mixed journals quarantine all v1 history including deleted and superseded records", ok && quarantined() && !memcmp(saved, nor, sizeof nor));
+    }
+    fresh(); assert(!ed_smp_begin(0, 256)); assert(!ed_smp_erase(0)); reboot();
+    check("H2 v1 CLAIM DELETE and anchor without old PUBLISH remain usable", gone(0) && smp_journal_state == SMP_JOURNAL_READY && !upload(0, 0x11));
+    for (uint32_t mode = 0; mode < 4; mode++) {
+        fresh(); assert(!upload(0, 0x11));
+        smp_alloc_desc_t *p = (smp_alloc_desc_t *)(nor + SMP_USER_BASE + (mode == 0 ? 64 : mode == 1 ? 32 : 0));
+        if (mode == 2) { assert(!ed_smp_erase(0)); p = (smp_alloc_desc_t *)(nor + SMP_USER_BASE + smp_journal_next - 32); }
+        p->version = mode == 0 ? 3 : 2; seal_record(p); memcpy(saved, nor, sizeof nor); reboot();
+        check("H2 unknown PUBLISH CLAIM DELETE or anchor versions lock all sectors", smp_journal_state == SMP_JOURNAL_LOCKED &&
+            all_reserved() && !usr_nz[0] && locked_mutations(0) && !memcmp(saved, nor, sizeof nor));
+    }
+    /* Running A must retain its expected CRC while B awaits reboot, even for INFO/backup. */
+    fresh(); assert(!upload(0, 0x11)); reboot(); old = smp_user_phys[0]; uint32_t crc = smp_user_header_crc[0];
+    smp_zone_t zone = usr_zone[0][0]; assert(!upload(0, 0x22));
+    smp_user_hdr_t snapshot; uint32_t len;
+    ok = smp_user_running_header(0, &snapshot) && snapshot.crc == st_crc32(nor + old + 512, 256) &&
+        smp_user_header_crc[0] == crc && ed_bk_object(32, &len) == nor + old && len == 768;
+    smp_user_scan(0);
+    check("H2 pending B never replaces running A CRC map zones or backup", ok && smp_user_phys[0] == old && usr_nz[0] && !memcmp(&zone, &usr_zone[0][0], sizeof zone));
+    ed_smp_io_fail(1);
+    check("H2 uncertain I/O hides metadata without XIP reads or invalidating running A", no_exports() &&
+        smp_user_header_bound[0] && smp_user_header_crc[0] == crc && usr_nz[0] && !memcmp(&zone, &usr_zone[0][0], sizeof zone));
+    reboot(); check("H2 B activates with its own expected CRC after reboot", usr_nz[0] && smp_user_phys[0] != old && smp_user_header_crc[0] != crc);
+    assert(!ed_smp_erase(0)); assert(!upload(0, 0x33)); reboot(); latest = smp_user_phys[0];
+    nor[latest + 24] ^= 1; reboot();
+    check("H2 corrupted replacement preserves deletion barrier with no historical fallback", gone(0) && smp_user_unresolved[0]);
+    /* An uncertain physical header readback never commits PUBLISH. */
+    fresh(); assert(!upload(0, 0x11)); reboot(); old = smp_user_phys[0]; assert(!ed_smp_begin(0, 256));
+    uint8_t audio[256], packed[600]; memset(audio, 0x22, sizeof audio);
+    assert(!write_page(0, 512, audio, sizeof audio)); h = header(0x22);
+    bad_phys = ed_smp_stage_phys[0]; memcpy(bad_sector, nor + bad_phys, sizeof bad_sector); bad_read_active = 1;
+    uint32_t next = smp_journal_next;
+    ok = ed_smp_end(0, packed, pack(&h, sizeof h, packed)) != 0 && !flash_ok && smp_user_io_blocked && smp_journal_next == next;
+    reboot(); check("H2 physical header readback failure preserves old publication and reservation", ok && usr_nz[0] && smp_user_phys[0] == old && smp_alloc_test((bad_phys - SMP_USER_BASE) / 4096));
+}
+
 int main(void)
 {
     fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t old = smp_user_phys[0]; smp_zone_t zone = usr_zone[0][0];
@@ -728,6 +877,6 @@ int main(void)
     uint8_t packed[600]; smp_user_hdr_t h = header(0x11);
     check("ERASE cancels staging and END cannot revive it", !ed_smp_stage_sectors[0] && ed_smp_end(0, packed, pack(&h, sizeof h, packed)) != 0);
     reboot(); check("deletion of an unfinished slot is durable", gone(0));
-    payload_provenance(); fault_tests(); power_tests(); quarantine_tests(); anchored_visibility_tests(); journal_rejection_tests(); h1_tests();
+    payload_provenance(); fault_tests(); power_tests(); quarantine_tests(); anchored_visibility_tests(); journal_rejection_tests(); h1_tests(); h2_tests();
     return failures ? 1 : 0;
 }

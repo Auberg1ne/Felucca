@@ -13,7 +13,9 @@
  */
 #define SMP_ALLOC_MAGIC       0x31414D53u  /* "SMA1" */
 #define SMP_ALLOC_DELETE_MAGIC 0x31444D53u /* rejected experimental SMD1; never authoritative */
-#define SMP_ALLOC_VERSION     1u
+#define SMP_ALLOC_VERSION     2u /* reserved stores CRC32 of all 480 FSMP bytes */
+#define SMP_JOURNAL_PUBLISH_VERSION 2u /* data_crc stores the same header CRC */
+#define SMP_JOURNAL_V1        1u /* anchor, CLAIM, DELETE; old PUBLISH is quarantine-only */
 #define SMP_ALLOC_COMMITTED   0x434F4D54u  /* "COMT" */
 #define SMP_ALLOC_OFFSET      480u
 #define SMP_ALLOC_SIZE        32u
@@ -30,7 +32,7 @@
 #define SMP_JOURNAL_DELETE    0x444A4D53u /* SMJD */
 #define SMP_JOURNAL_BLANK     0u
 #define SMP_JOURNAL_READY     1u
-#define SMP_JOURNAL_QUARANTINED 2u /* unanchored media: preserved, unpublished, read-only */
+#define SMP_JOURNAL_QUARANTINED 2u /* unanchored or v1 publication media: preserved, unpublished, read-only */
 #define SMP_JOURNAL_LOCKED    3u
 
 typedef struct {
@@ -40,9 +42,9 @@ typedef struct {
     uint8_t sector_count;
     uint32_t generation;
     uint32_t data_len;
-    uint32_t data_crc;
+    uint32_t data_crc;        /* SMA v2: audio CRC; SMJP v2: header CRC */
     uint32_t record_crc;
-    uint32_t reserved;
+    uint32_t reserved;        /* SMA v2: header CRC; journal CLAIM/PUBLISH: sector index */
     uint32_t commit;
 } smp_alloc_desc_t;
 
