@@ -54,7 +54,9 @@ static const uint8_t *ed_bk_object(uint32_t id, uint32_t *len)
         uint32_t k = id - 32u;
         if (smp_journal_state != SMP_JOURNAL_READY || !usr_nz[k] || !smp_user_phys[k])
             return 0;
-        const smp_user_hdr_t *h = (const smp_user_hdr_t *)smp_user_xip(k);
+        smp_user_hdr_t header;
+        if (!smp_user_running_header(k, &header)) return 0;
+        const smp_user_hdr_t *h = &header;
         if (usr_nz[k] && h->magic == SMP_USER_MAGIC && h->data_len <= SMP_USER_SIZE - SMP_USER_DATA)
             *len = SMP_USER_DATA + h->data_len;
         return smp_user_xip(k);

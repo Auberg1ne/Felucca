@@ -55,6 +55,8 @@ typedef struct {
     uint32_t data_len, crc, rsv2[2];
     smp_zone_t zone[16];
 } smp_user_hdr_t;                                   /* 32 + 16 x 28 = 480 B, data at +512 */
+_Static_assert(sizeof(smp_user_hdr_t) == 480u && sizeof(smp_user_hdr_t) == SMP_ALLOC_OFFSET,
+               "header integrity must cover exactly all 480 FSMP bytes");
 static smp_zone_t usr_zone[SMP_USER_LOGICAL_SLOTS][16] __attribute__((section(".pool")));     /* RAM copy, off rebased onto SMP_DATA */
 static uint8_t usr_nz[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
 static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3"}; /* USR4-8 are appended when allocator support is enabled. */
@@ -82,6 +84,10 @@ static uint32_t smp_user_generation[SMP_USER_LOGICAL_SLOTS] __attribute__((secti
 static uint8_t smp_user_deleted[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
 /* Unresolved I/O or recovery conflicts must never use stale RAM generations. */
 static uint8_t smp_user_unresolved[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
+/* Expected integrity belongs to the RUNNING map, not the latest generation.
+ * END must never replace A's expected CRC when B publishes pending reboot. */
+static uint32_t smp_user_header_crc[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
+static uint8_t smp_user_header_bound[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
 static uint8_t smp_user_io_blocked;
 static uint8_t smp_journal_state;
 static uint16_t smp_journal_next;
@@ -164,6 +170,35 @@ static int smp_user_header_valid(const smp_user_hdr_t *h, uint32_t capacity)
     return 1;
 }
 
+/* Read one snapshot: consumers must use the same bytes whose integrity and
+ * semantics were checked. Header CRC lives outside the FSMP bytes themselves. */
+static int smp_user_header_read(const uint8_t *base, uint32_t capacity, uint32_t expected,
+                                smp_user_hdr_t *out)
+{
+    memcpy(out, base, sizeof *out);
+    return st_crc32(out, sizeof *out) == expected && smp_user_header_valid(out, capacity);
+}
+
+/* Metadata exposure never authorizes itself from an unbound descriptor. A
+ * mismatch hides metadata and blocks mutations, retaining existing RAM voices. */
+static const uint8_t *smp_user_xip(uint32_t k);
+static int smp_user_running_header(uint32_t k, smp_user_hdr_t *out)
+{
+    if (k >= SMP_USER_LOGICAL_SLOTS || smp_user_io_blocked || smp_journal_state != SMP_JOURNAL_READY ||
+        smp_user_deleted[k] || !smp_user_header_bound[k] || !smp_user_phys[k] || !smp_user_sectors[k])
+        return 0;
+    uint32_t size = (uint32_t)smp_user_sectors[k] * SMP_USER_SECTOR_SIZE;
+    uint32_t phys = smp_user_phys[k];
+    if (size < SMP_USER_DATA || phys < SMP_USER_BASE ||
+        phys - SMP_USER_BASE > SMP_USER_POOL_SIZE - SMP_USER_DATA ||
+        size > SMP_USER_POOL_SIZE - (phys - SMP_USER_BASE) ||
+        !smp_user_header_read(smp_user_xip(k), size - SMP_USER_DATA, smp_user_header_crc[k], out)) {
+        smp_user_header_bound[k] = 0; smp_user_unresolved[k] = 1;
+        return 0;
+    }
+    return 1;
+}
+
 /* Validate the descriptor record CRC (commit marker is deliberately excluded). */
 static int smp_alloc_desc_valid(const smp_alloc_desc_t *d, uint32_t slot)
 {
@@ -185,10 +220,13 @@ static int smp_alloc_desc_valid(const smp_alloc_desc_t *d, uint32_t slot)
 
 /* Validate a committed extent against its legacy sample header and audio. */
 static int smp_alloc_extent_valid(uint32_t phys, uint32_t slot,
-                                  const smp_alloc_desc_t *d)
+                                  const smp_alloc_desc_t *d, uint32_t expected_header_crc)
 {
     const uint8_t *base;
-    const smp_user_hdr_t *h;
+    smp_user_hdr_t header;
+    const smp_user_hdr_t *h = &header;
+    smp_alloc_desc_t descriptor = *d;
+    d = &descriptor;
     uint32_t capacity;
 
     if (phys < SMP_USER_BASE ||
@@ -199,9 +237,9 @@ static int smp_alloc_extent_valid(uint32_t phys, uint32_t slot,
         return 0;
 
     base = fm1_xip_ptr(phys);
-    h = (const smp_user_hdr_t *)base;
     capacity = (uint32_t)d->sector_count * SMP_USER_SECTOR_SIZE - SMP_USER_DATA;
-    if (!smp_user_header_valid(h, capacity) ||
+    if (d->reserved != expected_header_crc ||
+        !smp_user_header_read(base, capacity, expected_header_crc, &header) ||
         h->data_len != d->data_len || h->crc != d->data_crc)
         return 0;
     if (st_crc32(base + SMP_USER_DATA, h->data_len) != h->crc)
@@ -329,6 +367,7 @@ static void smp_user_alloc_boot(void)
         smp_user_phys[k] = smp_user_generation[k] = smp_user_oldest_generation[k] = 0u;
         smp_user_sectors[k] = smp_user_deleted[k] = smp_user_unresolved[k] = 0u;
         smp_user_has_records[k] = 0u;
+        smp_user_header_crc[k] = 0u; smp_user_header_bound[k] = 0u;
         smp_stage_start[k] = smp_stage_count[k] = 0u;
     }
     (void)smp_journal_boot();
@@ -350,9 +389,9 @@ static uint32_t smp_user_gen;                       /* + 1 per slot scan (GRAIN:
  * every zone of it empty (n 0: a voice still on it ends), never a half-checked one */
 static void smp_user_scan(uint32_t k)
 {
-    const smp_user_hdr_t *h;
-    smp_zone_t zt[16];
-    uint32_t i, base, nz = 0, capacity;
+    smp_user_hdr_t header;
+    const smp_user_hdr_t *h = &header;
+    uint32_t i, base, nz = 0;
     if (k >= SMP_USER_LOGICAL_SLOTS)
         return;
     smp_user_gen++;
@@ -361,22 +400,16 @@ static void smp_user_scan(uint32_t k)
     if (smp_journal_state != SMP_JOURNAL_READY || smp_user_deleted[k] || !smp_user_phys[k] ||
         !smp_user_sectors[k])
         goto empty;
-    h = (const smp_user_hdr_t *)smp_user_xip(k);
-    capacity = (uint32_t)smp_user_sectors[k] * SMP_USER_SECTOR_SIZE;
-    if (capacity < SMP_USER_DATA)
-        goto empty;
-    capacity -= SMP_USER_DATA;
-    if (!smp_user_header_valid(h, capacity))
+    if (!smp_user_running_header(k, &header))
         goto empty;
     base = (uint32_t)(uintptr_t)(smp_user_xip(k) + SMP_USER_DATA) -
            (uint32_t)(uintptr_t)SMP_DATA;
     nz = h->nz;
     for (i = 0; i < nz; i++) {
-        zt[i] = h->zone[i];
-        zt[i].off += base;                          /* flat 32-bit XIP rebase, after bounds validation */
+        header.zone[i].off += base;                          /* flat 32-bit XIP rebase, after bounds validation */
     }
     for (i = 0; i < 16u; i++)
-        usr_zone[k][i] = i < nz ? zt[i] : (smp_zone_t){0};
+        usr_zone[k][i] = i < nz ? header.zone[i] : (smp_zone_t){0};
     if (!nz)
         return;
     usr_nz[k] = (uint8_t)nz;

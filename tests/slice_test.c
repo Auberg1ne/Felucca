@@ -383,6 +383,8 @@ int main(int argc, char **argv)
     }
     /* Audio fixture bypasses journal recovery; model an authorized READY map. */
     smp_journal_state = SMP_JOURNAL_READY;
+    smp_user_header_crc[0] = st_crc32(host_slots, sizeof(smp_user_hdr_t));
+    smp_user_header_bound[0] = 1;
     smp_user_scan(0);
     check("USR1: valid after smp_user_scan, slice table built", usr_nz[0] && slc_usr[0].len && slc_get(1) != 0,
           "%u zones, %u samples", usr_nz[0], slc_usr[0].len);
