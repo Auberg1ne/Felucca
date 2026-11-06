@@ -19,6 +19,9 @@
  * crash / UBOOT paths. Nothing of the firmware changes for this file.
  *   web/emu/build.sh  ->  build/emu/{felucca.wasm, worklet.js, index.html} */
 #include <stdint.h>
+/* Define the hardware helper once before the simulator-local name override.
+ * eng_sample.c includes this header again through hostsim.c (#pragma once). */
+#include "../../firmware/hal/fm1_xip.h"
 
 #define FELUCCA_WEB 1
 #ifndef FELUCCA_CDC
@@ -33,7 +36,16 @@
 #endif
 
 static uint8_t nor[0x100000];            /* the SPI NOR (erased: 0xFF) */
-#define SMP_USER_XIP(k) ((const uint8_t *)nor + SMP_USER_BASE + (k) * SMP_USER_SIZE)   /* eng_sample.c */
+/* Physical flash offsets, including the fixed journal root, map into NOR.
+ * Leave SMP_USER_XIP undefined: firmware resolves logical slots via its recovered
+ * smp_user_phys[] map. Never wrap/clamp invalid offsets or return fabricated data. */
+static const uint8_t *web_xip_ptr(uint32_t off)
+{
+    if (off >= sizeof nor)
+        __builtin_trap();
+    return nor + off;
+}
+#define fm1_xip_ptr web_xip_ptr
 #define main hostsim_main
 #include "../../tests/hostsim.c"
 #undef main
@@ -171,6 +183,10 @@ static void lcd_init(void) {}
 /* ------------------------------------------------------------ the flash --- */
 static uint32_t web_flash_writes;
 static uint8_t flash_ok;
+/* NOR operations below are synchronous. The WIP input can be held by tests to
+ * model a warm reset while a chip command is still busy; startup must refuse it. */
+static uint8_t web_flash_status;
+static uint32_t fl_status_ram(void) { return web_flash_status; }
 static int st_read(uint32_t off, void *dst, uint32_t n)
 {
     if (off >= sizeof nor || n > sizeof nor - off)
@@ -365,6 +381,8 @@ EXPORT uint8_t *web_nor(void) { return nor; }
 EXPORT uint32_t web_nor_size(void) { return sizeof nor; }
 EXPORT void web_nor_erase(void) { memset(nor, 0xFF, sizeof nor); }
 EXPORT uint32_t web_flash_writes_count(void) { return web_flash_writes; }
+/* Test input only: does not erase NOR, restart the device or bypass recovery. */
+EXPORT void web_test_flash_busy(uint32_t busy) { web_flash_status = busy ? 1u : 0u; }
 EXPORT void web_boot(void)
 {
     if (!web_booted)
