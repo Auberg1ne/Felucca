@@ -522,9 +522,17 @@ const parse = {
   [CMD.SMP_END](a) { return parse[CMD.SMP_BEGIN](a); },
   [CMD.SMP_ERASE](a) { return parse[CMD.SMP_BEGIN](a); },
   [CMD.SMP_INFO](a) {
+    if (!Array.from(a).every((v) => Number.isInteger(v) && v >= 0 && v < 128)) throw new Error("Invalid sample INFO");
     const r = new Reader(a);
     const o = { nslots: r.b(), slotKiB: r.b(), slots: [] };
-    for (let i = 0; i < o.nslots; i++) o.slots.push({ zones: r.b(), name: r.s(), kib: r.b() });
+    if (![3, 8].includes(o.nslots) || !o.slotKiB || o.slotKiB > 80) throw new Error("Unsupported sample INFO");
+    for (let i = 0; i < o.nslots; i++) {
+      const u = { zones: r.b(), name: r.s(), kib: r.b() };
+      if (u.zones > 16 || u.name.length > 8 || /[^\x20-\x7e]/.test(u.name) || u.kib > o.slotKiB ||
+          (!u.zones && (u.name || u.kib)) || (u.zones && !u.kib)) throw new Error("Invalid sample INFO entry");
+      o.slots.push(u);
+    }
+    if (r.i !== a.length) throw new Error("Trailing sample INFO");
     return o;
   },
   [CMD.UP_LIST](a) {
@@ -808,6 +816,10 @@ function fmtValue(d, v) {
 /* ---------------------------------------------------------- user samples --- */
 /* A port of tools/sampleio.py (read_any_wav, resample, to_int16, ima_encode, user_slot),
    byte for byte: web/test_web.mjs compares them. */
+/* Public slot identities, independent of the shared physical flash pool. */
+const makeSampleDrafts = () => Array.from({ length: 8 }, () => ({ name: "", files: [] }));
+const sampleSlotValid = (info, k) => !!info && [3, 8].includes(info.nslots) && info.slots?.length === info.nslots &&
+  Number.isInteger(k) && k >= 0 && k < info.nslots;
 const SMP = { SLOT_SIZE: 0x14000, DATA_OFF: 512, RATE: 22050, HDR_LEN: 32 + 16 * 28, MAX_ZONES: 16 };
 SMP.MAX_DATA = SMP.SLOT_SIZE - SMP.DATA_OFF;
 
@@ -1659,6 +1671,9 @@ function fromPerc(pt, engines, pe0) {
 const engineLabel = (engines, e) => (e === 1 && (engines || [])[1] === "-" ? "FM6" : (engines || [])[e] ?? String(e));
 
 function makeMockDevice(opt = {}) {
+  const sampleSlots = opt.sampleSlots ?? 8;
+  if (![3, 8].includes(sampleSlots)) throw new Error("Unsupported mock sample count");
+  const userNames = Array.from({ length: sampleSlots }, (_, k) => `USR${k + 1}`);
   const NONOFF = ["OFF", "ON"], NDIV = ["1/4", "1/8", "1/16", "1/32", "8T", "16T", "1/2", "1/1", "2BAR", "4BAR"], NGO = ["--", "GO"], NDASH = ["--"];
   const D = (label, fmt, min, max, def, names = null, unit = "") => ({ label, fmt, min, max, def, names, unit });
   const E = (label, names, def) => D(label, F.ENUM, 0, names.length - 1, def, names);
@@ -1719,7 +1734,7 @@ function makeMockDevice(opt = {}) {
       presets: [P("PULSE LD", [0, 0, 32, 0, 0, 20, 0, 127], [0, 60, 90, 30], 1, 4), P("WAVE BASS", [1, 1, 0, 0, 0, 0, 0, 90], [0, 50, 70, 20], 1, 2),
         P("ARP 8BIT", [2, 0, 96, 0, 0, 0, 2, 110], [0, 60, 80, 40], 0, 13), P("WAVE LEAD", [0, 4, 92, 0, 0, 18, 0, 110], [0, 70, 90, 30], 1, 3),
         P("STEP LEAD", [4, 0, 40, 34, 0, 16, 0, 127], [0, 64, 127, 55], 1, 4)] },
-    { name: "SAMPLE", titles: ["SET", "TONE"], edit: [E("SET", ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", "USR1", "USR2", "USR3"], 0), D("TUNE", F.SEMI, -24, 24, 0), D("BITS", F.INT, 0, 127, 0),
+    { name: "SAMPLE", titles: ["SET", "TONE"], edit: [E("SET", ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", ...userNames], 0), D("TUNE", F.SEMI, -24, 24, 0), D("BITS", F.INT, 0, 127, 0),
         E("LOOP", NONOFF, 1), D("CUT", F.INT, 0, 127, 127), NONE, D("DRV", F.PCT, 0, 127, 0), NONE],
       presets: [P("PIANO", [0, 0, 0, 1, 127, 0, 0, 0], [0, 127, 127, 70]), P("PIANO", [0, 0, 0, 1, 127, 0, 0, 0], [0, 127, 127, 70]),
         P("FLUTE", [2, 0, 0, 1, 127, 0, 0, 0], [12, 80, 120, 60]), P("SAX", [3, 0, 0, 1, 127, 0, 0, 0], [12, 80, 120, 60])] },
@@ -1739,7 +1754,7 @@ function makeMockDevice(opt = {}) {
       presets: [P("FULL ORGAN", [15, 0, 0, 0, 0, 30, 20, 1], [0, 64, 127, 45], 0, 5), P("JAZZ PERC", [4, 0, 0, 0, 2, 50, 8, 1], [0, 64, 127, 40], 0, 3),
         P("GOSPEL", [6, 0, 0, 0, 1, 60, 40, 2], [0, 64, 127, 45], 0, 6), P("SOFT FLUTE", [1, 0, -2, 0, 0, 10, 0, 1], [0, 64, 127, 55], 0, 5),
         P("ROCK DRIVE", [7, 0, 0, 0, 0, 70, 100, 2], [0, 64, 127, 40], 0, 4)] },
-    { name: "GRAIN", titles: ["GRAN", "SPRY"], edit: [E("SRC", ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", "USR1", "USR2", "USR3"], 0),
+    { name: "GRAIN", titles: ["GRAN", "SPRY"], edit: [E("SRC", ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", ...userNames], 0),
         D("POS", F.PCT, 0, 127, 32), D("SIZE", F.PCT, 0, 127, 80), D("DENS", F.PCT, 0, 127, 80),
         D("PTCH", F.SEMI, -24, 24, 0), D("SPRD", F.PCT, 0, 127, 30), D("RAND", F.PCT, 0, 127, 10), D("TONE", F.PCT, 0, 127, 127)],
       presets: [P("CLOUD PAD", [2, 50, 92, 88, 0, 40, 14, 100], [70, 90, 120, 90], 0, 5), P("GLITCH", [3, 64, 24, 112, 0, 100, 90, 127], [0, 70, 100, 30], 0, 4),
@@ -1770,7 +1785,7 @@ function makeMockDevice(opt = {}) {
         P("FM BASS", [0, 0, 0, 0, 0, 0, 0, 2], [0, 0, 127, 0], 1, 2), P("BRASS", [0, 0, 0, 0, 0, 0, 0, 3], [0, 0, 127, 0], 0, 4),
         P("PAD", [0, 0, 0, 0, 0, 0, 30, 4], [0, 0, 127, 0], 0, 5), P("MARIMBA", [0, 0, 0, 0, 0, 0, 0, 5], [0, 0, 127, 0], 0, 3),
         P("ORGAN", [0, 0, 0, 0, 0, 0, 0, 6], [0, 0, 127, 0], 0, 6), P("PLUCK", [0, 0, 0, 0, 0, 0, 0, 7], [0, 0, 127, 0], 0, 13)] },
-    { name: "SLICE", titles: ["SLCE", "PLAY"], edit: [E("SRC", ["BREAK", "USR1", "USR2", "USR3", "PIANO"], 0),
+    { name: "SLICE", titles: ["SLCE", "PLAY"], edit: [E("SRC", ["BREAK", ...userNames.slice(0, 3), "PIANO", ...userNames.slice(3)], 0),
         E("DIV", ["4", "8", "16", "32", "AUTO", "MAN"], 2), D("START", F.INT, 0, 31, 0), D("PTCH", F.SEMI, -24, 24, 0),
         E("MODE", ["ONE", "GATE", "LOOP"], 0), E("REV", ["OFF", "ON"], 0), D("DCAY", F.TIME, 0, 127, 127), D("TONE", F.INT, 0, 127, 127)],
       presets: [P("CHOP", [0, 2, 0, 0, 0, 0, 127, 127], [0, 127, 127, 30], 0, 9), P("STUTTER", [0, 1, 0, 0, 1, 0, 90, 110], [0, 127, 127, 12], 0, 10)] },
@@ -1817,7 +1832,7 @@ function makeMockDevice(opt = {}) {
     tracks: [0, 1, 2, 3].map(newTrack), sel: 0, rec: 0,
     g: GP.map((d) => d.def),
     slots: [null, null, null, null], songRows: [], chainPlaying: false, chainRow: 0, chainRemaining: 0,
-    smp: [0, 1, 2].map(() => ({ flash: new Uint8Array(SMP.SLOT_SIZE).fill(0xFF), stage: null, expectedLen: 0, zones: 0, name: "", len: 0, next: SMP.DATA_OFF })),
+    smp: Array.from({ length: sampleSlots }, () => ({ flash: new Uint8Array(SMP.SLOT_SIZE).fill(0xFF), stage: null, expectedLen: 0, zones: 0, name: "", len: 0, next: SMP.DATA_OFF })),
     bank: new Array(opt.slots || 32).fill(null),     /* user presets: {engine, name, p, pattern, grid, fm6 (FM6: its patch)} */
     uiCaps: opt.legacy || opt.v3 || opt.v5 ? 0 : opt.uiCaps ?? 9,
     palette: 0, font: 0, monitor: 0, filter: 0, bankSig: 0,
@@ -2230,7 +2245,7 @@ function makeMockDevice(opt = {}) {
         break;
       /* user sample slots: the header is checked like the firmware's ed_smp_end() */
       case CMD.SMP_BEGIN: case CMD.SMP_ERASE: {
-        if (a.length < 1 || a[0] >= 3) return null;
+        if (a.length < 1 || a[0] >= sampleSlots) return null;
         const u = st.smp[a[0]];
         let rc = 0;
         if (cmd === CMD.SMP_ERASE) {
@@ -2253,7 +2268,7 @@ function makeMockDevice(opt = {}) {
         break;
       }
       case CMD.SMP_WRITE: {
-        if (a.length < 5 || a[0] >= 3) return null;
+        if (a.length < 5 || a[0] >= sampleSlots) return null;
         const u = st.smp[a[0]], off = a[1] | (a[2] << 7) | (a[3] << 14), dat = unpack7(a.slice(4));
         let rc = 0;
         if (!u.stage || off < SMP.DATA_OFF || (off & 0xFF) || !dat.length ||
@@ -2266,7 +2281,7 @@ function makeMockDevice(opt = {}) {
         break;
       }
       case CMD.SMP_END: {
-        if (a.length < 2 || a[0] >= 3) return null;
+        if (a.length < 2 || a[0] >= sampleSlots) return null;
         const u = st.smp[a[0]], hd = unpack7(a.slice(1)), dv = new DataView(hd.buffer);
         let rc = 0;
         if (hd.length < SMP.HDR_LEN || dv.getUint32(0, true) !== 0x504D5346 || dv.getUint16(4, true) !== 1) rc = 2;
@@ -2288,7 +2303,7 @@ function makeMockDevice(opt = {}) {
         break;
       }
       case CMD.SMP_INFO:
-        b(3); b(SMP.SLOT_SIZE / 1024);
+        b(sampleSlots); b(SMP.SLOT_SIZE / 1024);
         st.smp.forEach((u) => { b(u.zones); s(u.zones ? u.name : ""); b(u.zones ? Math.ceil(u.len / 1024) : 0); });
         break;
       default:
@@ -2538,7 +2553,7 @@ const TEXT = {
     fm6NeedDevice: "FM-1 を接続すると 6-OP FM の音色を編集してトラックへ送れます。",
     fm6NoFw: "このファームウェアには 6-OP FM（FM6）がありません。Felucca 1.0 以降に更新すると使えます。",
     motion: "オートメーション", motionOn: "再生", motionClear: "オートメーションを消去", motionConfirm: "選択トラックのオートメーションを消しますか？", chance: "確率 %", ratchet: "ラチェット", motionStep: "ステップ", motionParam: "パラメーター", motionValue: "値",
-    backupTitle: "全体バックアップ", backupExport: "バックアップ保存", backupImport: "バックアップ復元", backupHelp: "現在の曲・A〜D・音色バンク・ユーザーサンプル・設定を、このパソコンへ保存。", backupOld: "全体バックアップには対応版への更新が必要です。", backupConfirm: "全体バックアップを復元しますか？ 現在の曲、保存データとサンプルを置き換えます。USBを抜かないでください。", backupWorking: "バックアップ処理中 ", backupDone: "バックアップを保存しました", backupRestored: "全体バックアップを復元しました",
+    backupTitle: "全体バックアップ", backupExport: "バックアップ保存", backupImport: "バックアップ復元", backupHelp: "現在の曲・A〜D・音色バンク・ユーザーサンプル・設定を、このパソコンへ保存。", backupOld: "全体バックアップには対応版への更新が必要です。", backupConfirm: "全体バックアップを復元しますか？ 現在の曲、保存データとサンプルを置き換えます。USBを抜かないでください。", backupWorking: "バックアップ処理中 ", backupDone: "バックアップを保存しました", backupRestored: "復元済み・サンプルは再起動で有効",
     deviceDisplay: "本体の画面",
     deviceDisplayHelp: "FM-1 の画面に反映し、保存します。再生中の変更は停止後に保存されます。",
     devicePresets: "本体のプリセット",
@@ -2580,12 +2595,12 @@ const TEXT = {
     savedSlot: "保存しました: スロット ", loadedSlot: "読み込みました: スロット ", emptySlot: "空のスロットです: ",
     confirmSave: "スロット {n} に上書き保存しますか？", confirmLoad: "スロット {n} を読み込みますか？ 4 トラックすべての音色とシーケンスが置き換わります（元に戻せません）。",
     confirmClear: "シーケンスを全部消しますか？", confirmInit: "音色を初期化しますか？ シーケンスはそのままです（本体の SAVE 長押しで元に戻せます）。",
-    samples: "サンプル", smpHelp: "ファイルを選択、または入力から録音。波形の両端でトリム、ホイールで拡大。1枠に16音、合計約7秒。",
+    samples: "サンプル", smpHelp: "ファイルを選択、または入力から録音。波形の両端でトリム、ホイールで拡大。1回16音、上限80 KiB。全枠で240 KiB（管理領域4 KiBを含む）を共有。削除しても空き容量は増えません。空欄は使用不可・隔離中の場合もあります。",
     zones: "ゾーン", smpName: "名前", chooseFiles: "ファイルを選ぶ", upload: "書き込む", erase: "消去", clearList: "リストを消す",
     file: "ファイル", root: "ルート", keys: "鍵盤", length: "長さ", remove: "外す",
     record: "録音", stopRec: "停止", recInput: "入力", recDenied: "録音できません", recFull: "スロットがいっぱいです", recSilent: "無音でした。入力を確かめてください",
     preview: "試聴", autoTrim: "自動トリム", trim: "切り取り",
-    smpTooBig: "大きすぎます", smpDecodeFail: "読み込めません: ", smpUploading: "書き込み中 USR", smpDone: "書き込みました USR",
+    smpUnavailable: "空欄・使用不可", smpTooBig: "大きすぎます", smpDecodeFail: "読み込めません: ", smpUploading: "書き込み中 USR", smpDone: "確定済み・再起動で有効 USR",
     smpFail: "サンプルの書き込みに失敗しました: ", smpErased: "消去しました USR",
     confirmErase: "USR{n} を消去しますか？", confirmUpload: "USR{n} に書き込みますか？ 今の内容は消えます。",
     layout: "（ファームウェアのパラメーター数が想定と違うため、簡易表示にしています）",
@@ -2641,7 +2656,7 @@ const TEXT = {
     fm6NeedDevice: "Connect the FM-1 to edit 6-OP FM voices and send them to a track.",
     fm6NoFw: "This firmware has no 6-OP FM (FM6). Update to Felucca 1.0 or later to use it.",
     motion: "Automation", motionOn: "Play automation", motionClear: "Clear automation", motionConfirm: "Clear this track's automation?", chance: "Chance %", ratchet: "Ratchet", motionStep: "Step", motionParam: "Parameter", motionValue: "Value",
-    backupTitle: "Complete backup", backupExport: "Save backup", backupImport: "Restore backup", backupHelp: "Save the current music, A–D, sound banks, user samples and settings to this computer.", backupOld: "Complete backups need firmware with archive support.", backupConfirm: "Restore this complete backup? Current music, saved data and samples will be replaced. Keep USB connected.", backupWorking: "Backing up / restoring ", backupDone: "Backup saved", backupRestored: "Complete backup restored",
+    backupTitle: "Complete backup", backupExport: "Save backup", backupImport: "Restore backup", backupHelp: "Save the current music, A–D, sound banks, user samples and settings to this computer.", backupOld: "Complete backups need firmware with archive support.", backupConfirm: "Restore this complete backup? Current music, saved data and samples will be replaced. Keep USB connected.", backupWorking: "Backing up / restoring ", backupDone: "Backup saved", backupRestored: "Archive restored; reboot to activate samples",
     deviceDisplay: "Device display",
     deviceDisplayHelp: "Changes apply to the FM-1 screen and save. Changes made while playing save after STOP.",
     devicePresets: "Device presets",
@@ -2683,12 +2698,12 @@ const TEXT = {
     savedSlot: "Saved to slot ", loadedSlot: "Loaded slot ", emptySlot: "Empty slot: ",
     confirmSave: "Overwrite slot {n}?", confirmLoad: "Load slot {n}? The sounds and sequences of all four tracks are replaced (no undo).",
     confirmClear: "Clear the whole sequence?", confirmInit: "Reset the sound to the engine defaults? The sequence stays (hold SAVE on the device to undo).",
-    samples: "Samples", smpHelp: "Choose files or record an input. Drag waveform ends to trim; wheel to zoom. Up to 16 sounds and about 7 s per slot.",
+    samples: "Samples", smpHelp: "Choose files or record an input. Drag waveform ends to trim; wheel to zoom. Up to 16 sounds per upload. 80 KiB is a per-upload ceiling; all slots share 240 KiB, including a 4 KiB journal. Deleting does not reclaim space. Empty may mean unavailable or quarantined storage.",
     zones: "zones", smpName: "Name", chooseFiles: "Choose files", upload: "Upload", erase: "Erase", clearList: "Clear list",
     file: "File", root: "Root", keys: "Keys", length: "Length", remove: "Remove",
     record: "Record", stopRec: "Stop", recInput: "Input", recDenied: "Cannot record", recFull: "The slot is full", recSilent: "Silence: check the input",
     preview: "Play", autoTrim: "Auto trim", trim: "Trim",
-    smpTooBig: "too large", smpDecodeFail: "Cannot read: ", smpUploading: "Uploading USR", smpDone: "Uploaded USR",
+    smpUnavailable: "Empty / unavailable", smpTooBig: "too large", smpDecodeFail: "Cannot read: ", smpUploading: "Uploading USR", smpDone: "Committed; reboot to activate USR",
     smpFail: "Sample upload failed: ", smpErased: "Erased USR",
     confirmErase: "Erase USR{n}?", confirmUpload: "Write to USR{n}? Its current contents will be replaced.",
     layout: "(The firmware has a different parameter count; showing a plain list.)",
@@ -3092,7 +3107,7 @@ function renderSysinfo() {
   const rows = [
     ["firmware", i.version], ["sync", t(dev.watch ? "live" : "polling")], ["enginesL", i.engines.join(", ")],
     ["tracksN", i.ntrk ? String(i.ntrk) : "1"], ["stepsN", String(i.nstep)],
-    ["smpSlots", dev.smp ? `${dev.smp.nslots} × ${dev.smp.slotKiB} KiB` : t("none")],
+    ["smpSlots", dev.smp ? `${dev.smp.nslots} / ≤${dev.smp.slotKiB} KiB` : t("none")],
     ["userBank", dev.bank ? String(dev.bank.total) : t("none")],
   ];
   box.replaceChildren(...rows.map(([k, v]) => el("tr", {}, el("th", { text: t(k) }), el("td", { text: v }))));
@@ -3599,7 +3614,7 @@ $("clearseq").addEventListener("click", async () => {
 });
 
 /* ---------------------------------------------------------- samples --- */
-const smpDraft = [0, 1, 2].map(() => ({ name: "", files: [] }));
+const smpDraft = makeSampleDrafts();
 let smpBusy = false;
 const SMP_RC = { 1: "size", 2: "header", 3: "data CRC", 4: "flash", 5: "zones" };
 const kib = (n) => (n / 1024).toFixed(1);
@@ -3657,8 +3672,8 @@ async function listInputs() {
 let recStarting = false, recEpoch = 0;               /* cancel a pending permission / worklet on leave */
 const recActive = () => !!rec || recStarting;       /* the draft must not change: Upload, files, trims off */
 async function recStart(k) {
-  const d = smpDraft[k], left = SMP.MAX_DATA - draftBytes(d);   /* bytes: two samples each */
-  if (!dev || tab !== "samples" || rec || recStarting || smpBusy) return;
+  if (!sampleSlotValid(dev?.smp, k) || tab !== "samples" || rec || recStarting || smpBusy) return;
+  const d = smpDraft[k], left = Math.min(SMP.MAX_DATA, dev.smp.slotKiB * 1024 - SMP.DATA_OFF) - draftBytes(d);   /* bytes: two samples each */
   const session = dev, epoch = ++recEpoch;
   const current = () => epoch === recEpoch && dev === session && tab === "samples";
   const check = () => { if (!current()) throw new Error("closed"); };
@@ -3887,6 +3902,7 @@ function preview(f) {
 }
 
 async function addFiles(k, list) {
+  if (!sampleSlotValid(dev?.smp, k) || smpBusy || recActive()) return;
   const d = smpDraft[k];
   for (const f of list) {
     try {
@@ -3917,11 +3933,11 @@ function recRow(k) {
 
 function renderSamples() {
   const box = $("smpslots");                        /* the tab says when there are no slots (renderPanels) */
-  if (!dev || !dev.smp) { box.replaceChildren(); return; }
-  const max = SMP.MAX_DATA;
+  if (!sampleSlotValid(dev?.smp, 0)) { box.replaceChildren(); return; }
+  const max = Math.min(SMP.MAX_DATA, dev.smp.slotKiB * 1024 - SMP.DATA_OFF);
   box.replaceChildren(...dev.smp.slots.map((u, k) => {
     const d = smpDraft[k];
-    const status = u.zones ? `${u.name || "—"}, ${u.zones} ${t("zones")}, ${u.kib} KiB` : t("empty");
+    const status = u.zones ? `${u.name || "—"}, ${u.zones} ${t("zones")}, ${u.kib} KiB` : t("smpUnavailable");
     const bar = el("progress", { max: dev.smp.slotKiB, value: u.kib, title: `${u.kib} / ${dev.smp.slotKiB} KiB` });
     const file = el("input", { type: "file", accept: ".wav,audio/wav,audio/x-wav,audio/*", multiple: true, hidden: true });
     file.addEventListener("change", () => { addFiles(k, [...file.files]); file.value = ""; });
@@ -3983,12 +3999,19 @@ function renderSamples() {
   }));
 }
 
-async function smpInfo(d = dev) { d.smp = parse[CMD.SMP_INFO](await sessionRequest(d, req.smpInfo())); }
+async function smpInfo(d = dev) {
+  d.smp = null; /* stale capabilities must never authorize a write after a failed refresh */
+  d.smp = parse[CMD.SMP_INFO](await sessionRequest(d, req.smpInfo()));
+}
 
 async function smpUpload(k, prog) {
+  if (!sampleSlotValid(dev?.smp, k) || smpBusy || recActive()) return;
   const d = smpDraft[k];
   let built;
-  try { built = buildSlot(d.name, d.files.map((f) => ({ s: f.s, root: f.root }))); }
+  try {
+    built = buildSlot(d.name, d.files.map((f) => ({ s: f.s, root: f.root })));
+    if (built.data.length + SMP.DATA_OFF > dev.smp.slotKiB * 1024) throw new Error("exceeds destination upload ceiling");
+  }
   catch (e) { sayK("smpFail", e.message); return; }
   if (!confirm(t("confirmUpload").replace("{n}", k + 1))) return;
   const { hdr, data } = built;
@@ -4000,17 +4023,17 @@ async function smpUpload(k, prog) {
   prog.hidden = false;
   try {
     const t0 = performance.now();
-    let r = parse[CMD.SMP_BEGIN](await rq(req.smpBegin(k, data.length), { timeout: 1000, retries: 0 }));
-    if (r.rc) throw new Error("begin rc " + r.rc);
+    let r = parse[CMD.SMP_BEGIN](await sessionRequest(session, req.smpBegin(k, data.length), { timeout: 1000, retries: 0 }));
+    if (r.slot !== k || r.rc) throw new Error("begin rc " + r.rc);
     for (let off = 0; off < data.length; off += 256) {
       const a = SMP.DATA_OFF + off;
-      const w = parse[CMD.SMP_WRITE](await rq(req.smpWrite(k, a, data.subarray(off, off + 256)), { timeout: 1000, retries: 1 }));
-      if (w.rc) throw new Error(`write at 0x${a.toString(16)} rc ${w.rc}`);
+      const w = parse[CMD.SMP_WRITE](await sessionRequest(session, req.smpWrite(k, a, data.subarray(off, off + 256)), { timeout: 1000, retries: 0 }));
+      if (w.slot !== k || w.offset !== a || w.rc) throw new Error(`write at 0x${a.toString(16)} rc ${w.rc}`);
       prog.value = (off + 256) / data.length;
       sayK("smpUploading", `${k + 1}  ${kib(Math.min(data.length, off + 256))} / ${kib(data.length)} KiB`);
     }
-    r = parse[CMD.SMP_END](await rq(req.smpEnd(k, hdr), { timeout: 2000, retries: 0 }));
-    if (r.rc) throw new Error(`end rc ${r.rc} (${SMP_RC[r.rc] || "?"})`);
+    r = parse[CMD.SMP_END](await sessionRequest(session, req.smpEnd(k, hdr), { timeout: 2000, retries: 0 }));
+    if (r.slot !== k || r.rc) throw new Error(`end rc ${r.rc} (${SMP_RC[r.rc] || "?"})`);
     sayK("smpDone", `${k + 1}  ${((performance.now() - t0) / 1000).toFixed(1)} s`);
   } catch (e) {
     if (e.message !== "closed") sayK("smpFail", e.message);
@@ -4023,14 +4046,14 @@ async function smpUpload(k, prog) {
 }
 
 async function smpErase(k) {
-  if (!dev || !confirm(t("confirmErase").replace("{n}", k + 1))) return;
+  if (!sampleSlotValid(dev?.smp, k) || smpBusy || recActive() || !confirm(t("confirmErase").replace("{n}", k + 1))) return;
   const session = dev;
   const releaseBusy = beginBusy();
   smpBusy = true;
   renderSamples();
   try {
-    const r = parse[CMD.SMP_ERASE](await rq(req.smpErase(k), { timeout: 2500, retries: 0 }));
-    if (r.rc) throw new Error("erase rc " + r.rc);
+    const r = parse[CMD.SMP_ERASE](await sessionRequest(session, req.smpErase(k), { timeout: 2500, retries: 0 }));
+    if (r.slot !== k || r.rc) throw new Error("erase rc " + r.rc);
     sayK("smpErased", String(k + 1));
   } catch (e) {
     if (e.message !== "closed") sayK("smpFail", e.message);

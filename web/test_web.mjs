@@ -36,7 +36,7 @@ const html = readFileSync(join(HERE, "editor.html"), "utf8");
 const proto = html.slice(html.indexOf("/*PROTO-BEGIN*/"), html.indexOf("/*PROTO-END*/"));
 const E = vm.runInNewContext(proto + `
 ;({ frame, unframe, parse, req, Link, parseWav, resample, normalize, takeSample, autoTrim, zoomView, rootFromName, buildSlot, makeMockDevice, CMD, SMP,
-   UP, bank, capturePatch, auditionPatch, startWatch, libraryFile, readLibraryFile, paramKeys, patternFromSteps, stepsFromPattern, upName,
+   makeSampleDrafts, sampleSlotValid, UP, bank, capturePatch, auditionPatch, startWatch, libraryFile, readLibraryFile, paramKeys, patternFromSteps, stepsFromPattern, upName,
    mixer, parseNotes, parseHits, hitsText, gridFromSteps, LANE_NOTE, LANE_OF, readDevicePreferences, devicePresetRows, engineOrder, ENGINE_ORDER, aliasOf, fmtValue, FM6, enumShown, F,
    FM4, fromDigital, fromPerc, DRUM_KIT_E,
    MENU: typeof MENU === "undefined" ? null : MENU, MENU_TABS: typeof MENU_TABS === "undefined" ? null : MENU_TABS,
@@ -320,6 +320,138 @@ async function editorMock() {
   m.stop();
 }
 
+/* S3 uses the actual page protocol and sample UI functions; no WASM transport. */
+async function editorEightSlots() {
+  const blank = (n) => [n,80,...Array(n).fill([0,0,0]).flat()];
+  for (const n of [3,8]) {
+    const { rq, done } = attachMock({ sampleSlots: n });
+    try {
+      const info = E.parse[E.CMD.SMP_INFO](await rq(E.req.smpInfo()));
+      ok(info.nslots === n && info.slots.length === n, `S3 ${n}-slot mock INFO`);
+      const sys = E.parse[E.CMD.INFO](await rq(E.req.info()));
+      const names = Array.from({length:n}, (_,k) => `USR${k+1}`);
+      for (const eng of [4,8,13]) {
+        await rq(E.req.preset(eng,0));
+        const d = E.parse[E.CMD.DESC](await rq(E.req.desc(0,sys.pe0)));
+        const expected = eng === 13 ? ["BREAK",...names.slice(0,3),"PIANO",...names.slice(3)] : ["PIANO","PIANO","FLUTE","SAX","PIANO",...names];
+        ok(eq(d.names,expected) && d.max === expected.length-1, `S3 ${n}-slot engine ${eng} source IDs`);
+      }
+      for (let k=0;k<n;k++) {
+        const pcm = Int16Array.from({length:601}, (_,i) => Math.round(10000*Math.sin(i/9+k)));
+        const built = E.buildSlot(`USR${k+1}`,[{s:pcm,root:60}]);
+        const upload = async (hdr) => {
+          let r = E.parse[E.CMD.SMP_BEGIN](await rq(E.req.smpBegin(k,built.data.length),{retries:0}));
+          for (let off=0;!r.rc && off<built.data.length;off+=256)
+            r = E.parse[E.CMD.SMP_WRITE](await rq(E.req.smpWrite(k,512+off,built.data.subarray(off,off+256)),{retries:0}));
+          return r.rc || E.parse[E.CMD.SMP_END](await rq(E.req.smpEnd(k,hdr),{retries:0})).rc;
+        };
+        let good = !await upload(built.hdr);
+        const broken = built.hdr.slice(); broken[20] ^= 1;
+        good &&= !!await upload(broken);
+        let si = E.parse[E.CMD.SMP_INFO](await rq(E.req.smpInfo()));
+        good &&= si.slots[k].name === `USR${k+1}` && si.slots[k].zones === 1;
+        const replacement = built.hdr.slice(); replacement[8] = 82;
+        good &&= !await upload(replacement);
+        si = E.parse[E.CMD.SMP_INFO](await rq(E.req.smpInfo())); good &&= si.slots[k].name.startsWith("R");
+        good &&= !E.parse[E.CMD.SMP_ERASE](await rq(E.req.smpErase(k),{timeout:1200,retries:0})).rc;
+        si = E.parse[E.CMD.SMP_INFO](await rq(E.req.smpInfo())); good &&= !si.slots[k].zones;
+        ok(good, `S3 ${n}-slot USR${k+1}: upload, failed replacement preservation, replacement and erase`);
+      }
+      const timeout = await rq(E.req.smpErase(n),{timeout:20,retries:0}).then(()=>false,()=>true);
+      ok(timeout, `S3 ${n}-slot out-of-range command rejected`);
+    } finally { done(); }
+  }
+  for (const raw of [Object.assign(Array(26), {0:8,1:80}), [8,80], [3,80,0,65], [9,80], [0,80], [8,0], [...blank(8),0],
+    [3,80,1,0,0,...Array(2).fill([0,0,0]).flat()], [3,80,17,0,0,...Array(2).fill([0,0,0]).flat()], [3,80,0,65,0,0,...Array(2).fill([0,0,0]).flat()]]) {
+    let rejected=false;try { E.parse[E.CMD.SMP_INFO](raw); } catch { rejected=true; }
+    ok(rejected,"S3 malformed or truncated INFO rejected");
+  }
+  const drafts=E.makeSampleDrafts(); drafts[7].name="LAST"; drafts[7].files.push({});
+  ok(drafts.length===8 && !drafts[0].name && !drafts[0].files.length && !E.sampleSlotValid(E.parse[E.CMD.SMP_INFO](blank(3)),3) &&
+    !E.sampleSlotValid(E.parse[E.CMD.SMP_INFO](blank(8)),8),"S3 independent drafts and zero-based capability bounds");
+}
+async function editorSampleUI() {
+  const sampleCode=html.slice(html.indexOf("const smpDraft ="),html.indexOf("/* ---------------------------------------------------------- mixer"));
+  const messages=[], calls=[];let handler,port;
+  const node=(tag,attrs={},...children)=>({tag,attrs,children:children.flat(),addEventListener(){},replaceChildren(...c){this.children=c;},append(...c){this.children.push(...c);},querySelector(){return {};}});
+  const box=node("div");
+  class Audio {
+    constructor(){this.sampleRate=22050;this.destination={};this.audioWorklet={addModule:async()=>{}};}
+    async resume(){} async close(){} createGain(){return {gain:{},connect(){return this;}};}
+    createMediaStreamSource(){return {connect(n){return n;}};}
+  }
+  const U=vm.runInNewContext(proto+`
+let dev=null,tab="samples";
+    async function sessionRequest(d,r,o){if(d!==dev)throw new Error("closed");const a=await request(r,o);if(d!==dev)throw new Error("closed");return a;}
+    ${sampleCode}
+    decodeFile=async f=>({fname:f.name,s:Int16Array.from([0,12000,0,-12000]),root:60});
+    trimCanvas=()=>el("canvas");
+    ;({renderSamples,smpInfo,smpUpload,smpErase,addFiles,recStart,recStop,
+       set:d=>{dev=d;},draft:k=>smpDraft[k],trim:k=>{const f=smpDraft[k].files[0];f.s=takeSample(f.raw,10,f.raw.length-10);},
+       busy:()=>smpBusy})`,{
+    setTimeout,clearTimeout,setInterval,clearInterval,console,Error,Blob,
+    el:node,$:()=>box,t:k=>k,splitKeys:()=>[],noteName:String,parseNote:()=>60,
+    confirm:()=>true,performance:{now:()=>0},sayK:(...m)=>messages.push(m),beginBusy:()=>()=>{},
+    request:(r,o)=>{calls.push({r,o});return handler(r,o);},
+    AudioContext:Audio,AudioWorkletNode:class {constructor(){this.port={};port=this.port;}connect(n){return n;}},
+    navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[{stop(){}}]}),enumerateDevices:async()=>[]}},
+    URL:{createObjectURL:()=>"blob:test",revokeObjectURL(){}},requestAnimationFrame(){},
+  });
+  const blank=n=>[n,80,...Array(n).fill([0,0,0]).flat()];
+  const dev={smp:E.parse[E.CMD.SMP_INFO](blank(8))};U.set(dev);
+  handler=async ([cmd,a])=>cmd===15?blank(dev.smp?.nslots||8):cmd===12?[a[0],...a.slice(1,4),0]:[a[0],0];
+  U.renderSamples(); ok(box.children.length===8,"S3 actual sample UI renders eight cards without absent drafts");
+  for(let k=0;k<8;k++) {
+    await U.recStart(k);
+    port.onmessage({data:Float32Array.from({length:2000},(_,i)=>0.5*Math.sin(i/8))});
+    await U.recStop(); U.trim(k);
+    await U.addFiles(k,[{name:`file${k}.wav`}]);
+    const before=calls.length; await U.smpUpload(k); await U.smpErase(k);
+    const writes=calls.slice(before).filter(c=>c.r[0]!==15);
+    ok(U.draft(k).files.length===2 && writes.some(c=>c.r[0]===13) && writes.every(c=>c.r[1][0]===k && c.o.retries===0) &&
+      U.draft((k+1)%8).files.length===(k===7?2:0),`S3 UI USR${k+1} recording, trimming, file import, upload and erase isolation`);
+  }
+  const before=calls.length;
+  await U.smpUpload(8);await U.smpErase(8);await U.recStart(8);await U.addFiles(8,[{name:"bad"}]);
+  ok(calls.length===before,"S3 invalid UI slot produces no requests");
+  U.set({smp:E.parse[E.CMD.SMP_INFO](blank(3))});U.renderSamples();
+  const n=calls.length;await U.smpUpload(3);await U.smpErase(7);
+  ok(box.children.length===3 && calls.length===n && U.draft(7).files.length===2,"S3 reconnect to three slots preserves drafts but hides unsupported controls");
+  U.set(dev);dev.smp=E.parse[E.CMD.SMP_INFO](blank(8));
+  handler=async()=>[8,80];
+  let rejected=false;try{await U.smpInfo(dev);}catch{rejected=true;}U.renderSamples();
+  const after=calls.length;await U.smpUpload(0);await U.smpErase(0);
+  ok(rejected && dev.smp===null && !box.children.length && calls.length===after,"S3 malformed refresh clears capabilities and blocks UI writes");
+  for(const fail of [11,12,13,14]) {
+    dev.smp=E.parse[E.CMD.SMP_INFO](blank(8)); const start=calls.length;
+    handler=async([cmd,a])=>{if(cmd===15)return blank(8);if(cmd===fail)throw new Error("lost acknowledgement");return cmd===12?[a[0],...a.slice(1,4),0]:[a[0],0];};
+    if(fail===14)await U.smpErase(7);else await U.smpUpload(7);
+    const trace=calls.slice(start);
+    ok(!U.busy() && trace.filter(c=>c.r[0]===fail).length===1 && !trace.some(c=>c.r[0]>fail && c.r[0]<15) && messages.at(-1)[0]==="smpFail",
+      `S3 UI failed ${fail} stops without retry or false success`);
+  }
+  for(const malformed of ["slot", "offset", "short"]) {
+    dev.smp=E.parse[E.CMD.SMP_INFO](blank(8)); const before=calls.length;
+    handler=async([cmd,a])=>cmd===15?blank(8):cmd===12?(malformed==="short"?[7,0]:[malformed==="slot"?6:7,0,malformed==="offset"?0:4,0,0]):[a[0],0];
+    await U.smpUpload(7);
+    ok(messages.at(-1)[0]==="smpFail" && !calls.slice(before).some(c=>c.r[0]===13),`S3 wrong ${malformed} WRITE acknowledgement cannot publish`);
+  }
+  dev.smp=E.parse[E.CMD.SMP_INFO](blank(8));
+  handler=async([cmd,a])=>{if(cmd===11)return [a[0],1];if(cmd===15)return blank(8);throw new Error("unexpected mutation");};
+  const blocked=calls.length;await U.smpUpload(7);
+  ok(messages.at(-1)[0]==="smpFail" && calls.slice(blocked).every(c=>[11,15].includes(c.r[0])),"S3 unavailable/quarantined mutation failure never proceeds to WRITE or END");
+  dev.smp=E.parse[E.CMD.SMP_INFO](blank(8));
+  const old=[8,80,1,...Array.from("OLD",c=>c.charCodeAt(0)),0,1,...Array(7).fill([0,0,0]).flat()];
+  handler=async([cmd,a])=>cmd===15?old:cmd===12?[a[0],...a.slice(1,4),0]:[a[0],0];
+  await U.smpUpload(0);
+  ok(messages.at(-1)[0]==="smpDone" && dev.smp.slots[0].name==="OLD","S3 pending replacement preserves the INFO view of running sample A");
+  dev.smp=E.parse[E.CMD.SMP_INFO](blank(8)); const cut=calls.length;
+  handler=async([cmd,a])=>{if(cmd===12){U.set(null);return [a[0],...a.slice(1,4),0];}return [a[0],0];};
+  await U.smpUpload(7);
+  ok(!U.busy() && calls.slice(cut).some(c=>c.r[0]===12) && !calls.slice(cut).some(c=>c.r[0]===13),"S3 disconnect mid-upload cannot send END to a new connection");
+  ok(html.includes("Committed; reboot to activate USR") && html.includes("Deleting does not reclaim space"),"S3 UI describes reboot activation and shared non-reclaiming capacity");
+}
+
 async function editorSamplePresets() {
   const C = E.CMD;
   const { m, rq, done } = attachMock();
@@ -328,7 +460,7 @@ async function editorSamplePresets() {
   await rq(E.req.preset(4, 0));
   const set = E.parse[C.DESC](await rq(E.req.desc(0, info.pe0)));
   ok(eq(names.names, ["PIANO", "PIANO", "FLUTE", "SAX"]) && eq(set.names.slice(0, 4), ["PIANO", "PIANO", "FLUTE", "SAX"])
-    && set.names[4] === "PIANO" && eq(set.names.slice(5), ["USR1", "USR2", "USR3"]),
+    && set.names[4] === "PIANO" && eq(set.names.slice(5), ["USR1", "USR2", "USR3", "USR4", "USR5", "USR6", "USR7", "USR8"]),
     "SAMPLE: TRANH and PERC removed, SET 1 and 4 kept as PIANO aliases, indices unchanged");
   ok(E.aliasOf(names.names, 1) === 0 && E.aliasOf(names.names, 2) === 2 && E.aliasOf(set.names, 5) === 5 &&
      E.aliasOf(set.names, 4) === 0, "SAMPLE: an entry named like an earlier one is an alias of it");
@@ -1716,6 +1848,11 @@ async function updater() {
   ok(e2 && e2.code === "notfound", "fm1ota.js: no device -> error code 'notfound'");
 }
 
+if (process.argv.includes("--s3-only")) {
+  await editorEightSlots(); await editorSampleUI();
+  console.log(failed ? `S3 TESTS FAILED (${failed})` : "S3 tests passed"); process.exit(failed ? 1 : 0);
+}
+await editorEightSlots(); await editorSampleUI();
 await editorMock();
 await editorSamplePresets();
 mockTables();
