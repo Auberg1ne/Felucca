@@ -2,7 +2,9 @@
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
 /* The firmware editor handler, USB framing and UART recovery against RAM flash.
  * Build with the generated tables and the same flags as hostsim.c. */
-static unsigned char host_samples[3][0x14000];
+#include "sample_storage.h"
+/* Isolated logical audio fixtures, not physical NOR partitions. */
+static unsigned char host_samples[SMP_USER_LOGICAL_SLOTS][SMP_USER_SIZE];
 #define SMP_USER_XIP(k) host_samples[k]
 #define FELUCCA_OTA 1
 #define FELUCCA_FLASH 0

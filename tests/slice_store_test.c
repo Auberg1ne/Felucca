@@ -92,7 +92,7 @@ int main(void)
     check("boot load never reads unowned or out-of-pool metadata", untouched());
 
     /* Legacy tails are also reclaimable; an old fixed base is not ownership. */
-    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) phys[k] = SMP_USER_BASE + k * SMP_USER_SIZE;
+    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) phys[k] = SMP_USER_BASE + (k + 1u) * SMP_USER_SECTOR_SIZE;
     slc_man_save = (1u << SMP_USER_SLOTS) - 1u;
     busy = 1;
     slc_store_poll();

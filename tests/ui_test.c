@@ -41,7 +41,9 @@
 #endif
 #include <stddef.h>
 #include <stdint.h>
-static uint32_t host_slots[3u * 0x14000u / 4u];          /* USR1..3 (zero: empty), as the flash at 0xA0000 */
+#include "sample_storage.h"
+/* Isolated logical audio fixtures, not physical NOR partitions. */
+static uint32_t host_slots[SMP_USER_LOGICAL_SLOTS * SMP_USER_SIZE / 4u];
 #define SMP_USER_XIP(k) ((const uint8_t *)host_slots + (k) * SMP_USER_SIZE)
 #define main hostsim_main
 #include "hostsim.c"
@@ -513,7 +515,7 @@ static int test_sound_loads(void)
         bad += check("SAMPLE / GRAIN SET 4 (PERC, retired): a PIANO alias, knobs skip it, USR1..3 stay 5..7",
                      str_eq(sd->names[SMP_SET_PERC], "PIANO") && enum_orig(sd, SMP_SET_PERC) == 0 &&
                      enum_step(sd, 3, 4) == 5 && enum_step(sd, 5, 4) == 3 && str_eq(sd->names[5], "USR1") &&
-                     str_eq(sd->names[7], "USR3") && sd->max == 7 &&
+                     str_eq(sd->names[7], "USR3") && sd->max == SMP_NSETS + SMP_USER_SLOTS - 1 &&
                      enum_orig(&ENGINES[8]->edit[0], SMP_SET_PERC) == 0 && SMP_SETS[SMP_SET_PERC].z0 == SMP_SETS[0].z0);
     }
     host_legacy_sample_perc(t);                /* SAMPLE PERC (SET 4, retired after 1.0.2): every load gives DRUM */
@@ -3755,8 +3757,8 @@ static int test_slices(void)
     n = slice_count();
     p0 = TSEL->p[P_E1];
     turn(EN_K1, 2); turn(EN_K2, 3);
-    ok = n == 16u && slice_sel() == 2u && TSEL->p[P_E1] == p0 && msg_is("SRC USR1-3 TO EDIT") && !slice_act_ready(2);
-    bad += check("SLICES on BREAK: its 16 slices shown, KNOB 1 picks; edits need USR1-3 (DIV unchanged)", ok);
+    ok = n == 16u && slice_sel() == 2u && TSEL->p[P_E1] == p0 && msg_is("SRC USR1-8 TO EDIT") && !slice_act_ready(2);
+    bad += check("SLICES on BREAK: its 16 slices shown, KNOB 1 picks; edits need USR1-8 (DIV unchanged)", ok);
     TSEL->p[P_E0] = 2;                               /* SRC USR2, empty: no slices (a sine plays): NO SAMPLE */
     frame();
     ok = slice_count() == 0u && (msg_is(MSG_NO_SAMPLE) || str_eq(ui.msg2, MSG_NO_SAMPLE));
@@ -3767,10 +3769,10 @@ static int test_slices(void)
     TSEL->p[P_E0] = 4;                               /* SRC PIANO: its 16 slices shown, no edits */
     frame();
     turn(EN_K2, 1);
-    ok = slice_count() == 16u && TSEL->p[P_E1] == p0 && msg_is("SRC USR1-3 TO EDIT");
+    ok = slice_count() == 16u && TSEL->p[P_E1] == p0 && msg_is("SRC USR1-8 TO EDIT");
     TSEL->p[P_E0] = 0;
     frame();
-    bad += check("SLICES on PIANO: its 16 slices shown; edits need USR1-3 (DIV unchanged)", ok);
+    bad += check("SLICES on PIANO: its 16 slices shown; edits need USR1-8 (DIV unchanged)", ok);
 
     host_slot_make(0);
     smp_user_scan(0);

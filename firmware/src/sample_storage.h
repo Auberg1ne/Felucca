@@ -6,13 +6,13 @@
 /*
  * User sample storage.
  *
- * Eight logical slots are planned, but the current on-flash format
- * still contains only three fixed 80 KiB slots. Do not access slots
- * 3..7 until the dynamic allocator and migration are implemented.
+ * Eight public logical slots share the original 240 KiB sector pool.
+ * Legacy geometry defines the pool size only; it does not define ownership
+ * or eight fixed partitions. Publication requires the existing journal.
  */
 #define SMP_USER_LOGICAL_SLOTS  8u
 #define SMP_USER_LEGACY_SLOTS    3u
-#define SMP_USER_SLOTS           SMP_USER_LEGACY_SLOTS
+#define SMP_USER_SLOTS           SMP_USER_LOGICAL_SLOTS
 
 #define SMP_USER_BASE           0xA0000u
 #define SMP_USER_SIZE           0x14000u

@@ -3,7 +3,9 @@
 /* The editor's full backup (editor_backup.c: LIST / GET / PUT) against simulated NOR flash:
  * CRC before any write, stale runtime copies, USB resets and timeouts, malformed objects, older
  * project formats, settings values and user preset banks kept byte for byte. */
-static unsigned char host_samples[3][0x14000];
+#include "sample_storage.h"
+/* Isolated logical audio fixtures, not physical NOR partitions. */
+static unsigned char host_samples[SMP_USER_LOGICAL_SLOTS][SMP_USER_SIZE];
 #define SMP_USER_XIP(k) host_samples[k]
 #define main hostsim_main
 #include "hostsim.c"
@@ -32,6 +34,8 @@ static int st_prog(uint32_t off, const void *src, uint32_t n) { memcpy(nor + off
 static uint32_t irq_save(void) { return 0; }
 static void irq_restore(uint32_t f) { (void)f; }
 static uint32_t fl_jedec_ram(void) { return 0; }
+/* Test NOR operations complete synchronously; production SR1/SR2 is unchanged. */
+static uint32_t fl_status_ram(void) { return 0; }
 static void fl_plain_window_init(void) {}
 #define FL_FAR(fn) (fn)
 #include "../firmware/src/storage.c"
@@ -168,8 +172,63 @@ static uint32_t get(uint32_t id, uint32_t off, uint32_t count)
     return rep[1];
 }
 
-int main(void)
+/* Seed already-authorized running metadata in isolated logical buffers. This
+ * harness tests backup encoding, not journal recovery or SMP upload transport;
+ * those use physical NOR in sample_delete_test.c. LIST currently fails earlier
+ * at the unchanged project serializer, so GET uses an explicit valid snapshot. */
+static int sample_objects(void)
 {
+    int bad = 0, ok = ED_BK_N == 18;
+    reset();
+    memset(host_samples, 0, sizeof host_samples);
+    smp_user_io_blocked = 0; smp_journal_state = SMP_JOURNAL_READY;
+    for (uint32_t i = 0; i < ED_BK_N; i++)
+        ok &= ED_BK_IDS[i] == (i < 10 ? i : i + 22);
+    bad += check("S2 enumeration: unchanged IDs 0..9 and USR1..8 IDs 32..39", ok);
+    ed_bk_valid = 1; ed_bk_usb = usb.resets;
+    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) {
+        uint8_t *bytes = host_samples[k];
+        smp_user_hdr_t h = {0};
+        h.magic = SMP_USER_MAGIC; h.version = 1; h.nz = 1; h.data_len = 256;
+        h.name[0] = 'U'; h.name[1] = '1' + k;
+        h.zone[0].n = 512; h.zone[0].le = 511; h.zone[0].hi = 127; h.zone[0].rate = 65536;
+        for (uint32_t j = 0; j < 256; j++) bytes[512 + j] = (uint8_t)(j + k * 17);
+        h.crc = st_crc32(bytes + 512, 256); memcpy(bytes, &h, sizeof h);
+        usr_nz[k] = 1; smp_user_phys[k] = SMP_USER_BASE + (k + 1) * 4096;
+        smp_user_sectors[k] = 1; smp_user_deleted[k] = smp_user_unresolved[k] = 0;
+        smp_user_header_bound[k] = 1; smp_user_header_crc[k] = st_crc32(&h, sizeof h);
+        uint32_t len; const uint8_t *p = ed_bk_object(32 + k, &len);
+        uint8_t decoded[768]; ok = p == bytes && len == sizeof decoded;
+        for (uint32_t off = 0; off < sizeof decoded; off += 256) {
+            ok &= !get(32 + k, off, 256) && rep[0] == 32 + k && ed_bk_r32(rep + 2) == off &&
+                ((uint32_t)rep[7] | (uint32_t)rep[8] << 7) == 256;
+            ok &= ed_unpack7(rep + 9, rep_n - 9, decoded + off, 256) == 256;
+        }
+        ok &= !memcmp(bytes, decoded, sizeof decoded) && st_crc32(bytes, sizeof decoded) == st_crc32(decoded, sizeof decoded);
+        char name[100]; snprintf(name, sizeof name, "S2 ID %u is USR%u: complete header/audio pack7 GET round trip", 32 + k, k + 1);
+        bad += check(name, ok);
+        bad += check("S2 GET boundaries: final byte allowed; zero/oversize/overflow rejected",
+            !get(32 + k, 767, 1) && get(32 + k, 768, 1) == 1 && get(32 + k, 767, 2) == 1 &&
+            get(32 + k, UINT32_MAX, 1) == 1 && get(32 + k, 0, 0) == 1 && get(32 + k, 0, 257) == 1);
+        bad += check("S2 sample objects restore only through SMP commands, never BACKUP_PUT", put_begin(32 + k, 768, 0) == 1 && ed_bk_valid);
+    }
+    uint32_t len = 999;
+    ok = !ed_bk_object(31, &len) && !len && get(31, 0, 1) == 1;
+    len = 999; ok &= !ed_bk_object(40, &len) && !len && get(40, 0, 1) == 1;
+    len = 999; ok &= !ed_bk_object(127, &len) && !len && get(127, 0, 1) == 1;
+    bad += check("S2 IDs below/above sample range rejected without erasing flash", ok && !erases);
+    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) {
+        usr_nz[k] = 0; len = 999;
+        ok = !ed_bk_object(32 + k, &len) && !len && get(32 + k, 0, 1) == 1;
+        bad += check("S2 empty sample object exposes no content", ok);
+    }
+    printf("backup S2 sample tests %s\n", bad ? "FAILED" : "passed");
+    return bad;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && !strcmp(argv[1], "--samples-only")) return sample_objects() != 0;
     int bad = 0;
     uint32_t len = 0, crc = 0, before;
     static project_store_t st;
@@ -178,8 +237,8 @@ int main(void)
 
     reset();
     trk[0].step[0] = (step_t){{60}, 1, ST_NOTE, 0, 96, 0, 0};
-    bad += check("LIST captures the runtime: 13 objects (id 8 empty, id 9 the FM6 patches), runtime 3840 B (FUN10)",
-                 list(0, &len, &crc) == 0 && rep[2] == 13u && len == sizeof(project_store_t) && len == 3840u &&
+    bad += check("LIST captures the runtime: 18 objects (id 8 empty, id 9 the FM6 patches), runtime 3840 B (FUN10)",
+                 list(0, &len, &crc) == 0 && rep[2] == ED_BK_N && len == sizeof(project_store_t) && len == 3840u &&
                  crc == st_crc32(ED_BK_RAW, len));
     bad += check("an empty project slot lists as length 0", list(2, &len, &crc) == 0 && len == 0);
     bad += check("GET of the runtime copy", get(0, 0, 64) == 0);
@@ -420,6 +479,7 @@ int main(void)
         b.nslot = 3;
         bad += check("a bank with the wrong slot count is refused", put_all(7, &b, sizeof b, st_crc32(&b, sizeof b)) == 2u);
     }
+    bad += sample_objects();
     printf("backup test %s\n", bad ? "FAILED" : "passed");
     return bad != 0;
 }

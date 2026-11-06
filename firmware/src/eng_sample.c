@@ -59,7 +59,7 @@ _Static_assert(sizeof(smp_user_hdr_t) == 480u && sizeof(smp_user_hdr_t) == SMP_A
                "header integrity must cover exactly all 480 FSMP bytes");
 static smp_zone_t usr_zone[SMP_USER_LOGICAL_SLOTS][16] __attribute__((section(".pool")));     /* RAM copy, off rebased onto SMP_DATA */
 static uint8_t usr_nz[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
-static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3"}; /* USR4-8 are appended when allocator support is enabled. */
+static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3", "USR4", "USR5", "USR6", "USR7", "USR8"};
 
 /* Logical-to-physical map. Boot clears these defaults; only journal recovery
  * authorizes a mapping. Zero means unpublished. */

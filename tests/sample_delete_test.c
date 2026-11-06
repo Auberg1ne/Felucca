@@ -860,8 +860,60 @@ static void h2_tests(void)
     reboot(); check("H2 physical header readback failure preserves old publication and reservation", ok && usr_nz[0] && smp_user_phys[0] == old && smp_alloc_test((bad_phys - SMP_USER_BASE) / 4096));
 }
 
+/* Public API coverage uses real command guards and physical journal storage. */
+static void eight_slot_tests(void)
+{
+    fresh();
+    int ok = SMP_USER_SLOTS == 8 && ED_BK_N == 18;
+    for (uint32_t i = 0; i < 18; i++) ok &= ED_BK_IDS[i] == (i < 10 ? i : i + 22);
+    for (uint32_t k = 0; k < 8; k++) {
+        uint8_t begin[] = {ED_HDR0, ED_HDR1, ED_HDR2, ED_SMP_BEGIN, k, 0, 2, 0};
+        host_wire_n = 0; ed_handle(begin, sizeof begin); host_drain();
+        ok &= host_wire_n == 8 && host_wire[5] == k && !host_wire[6];
+        uint8_t data[256], packed[600]; memset(data, 0x11 + k, sizeof data);
+        ok &= !write_page(k, 512, data, sizeof data);
+        smp_user_hdr_t h = header(0x11 + k);
+        uint8_t end[640] = {ED_HDR0, ED_HDR1, ED_HDR2, ED_SMP_END, k};
+        host_wire_n = 0; ed_handle(end, 5 + pack(&h, sizeof h, end + 5)); host_drain();
+        ok &= host_wire_n == 8 && host_wire[5] == k && !host_wire[6];
+    }
+    reboot();
+    uint8_t info[] = {ED_HDR0, ED_HDR1, ED_HDR2, ED_SMP_INFO};
+    host_wire_n = 0; ed_handle(info, sizeof info); host_drain();
+    ok &= host_wire_n == 32 && host_wire[5] == 8 && host_wire[6] == 80;
+    for (uint32_t k = 0; k < 8; k++) {
+        uint32_t len;
+        ok &= host_wire[7 + k * 3] == 1 && !host_wire[8 + k * 3] && host_wire[9 + k * 3] == 1;
+        ok &= ed_bk_object(32 + k, &len) == nor + smp_user_phys[k] && len == 768;
+    }
+    check("S2 command upload, reboot, INFO and stable backup IDs expose all eight slots", ok);
+    memcpy(saved, nor, sizeof nor); uint32_t before = writes;
+    const uint8_t commands[] = {ED_SMP_BEGIN, ED_SMP_WRITE, ED_SMP_END, ED_SMP_ERASE};
+    for (uint32_t c = 0; c < 4; c++) {
+        uint8_t bad[] = {ED_HDR0, ED_HDR1, ED_HDR2, commands[c], 8, 0, 2, 0, 0};
+        host_wire_n = 0; ed_handle(bad, c == 0 ? 8 : c == 3 ? 5 : sizeof bad); host_drain();
+        ok &= !host_wire_n;
+    }
+    uint32_t len; ok &= !ed_bk_object(40, &len) && !len;
+    check("S2 slot eight and backup ID forty rejected without flash writes", ok && writes == before && !memcmp(saved, nor, sizeof nor));
+    ok = 1;
+    for (uint32_t k = 0; k < 8; k++) {
+        uint32_t phys = smp_user_phys[k], crc = smp_user_header_crc[k];
+        smp_zone_t z = usr_zone[k][0];
+        assert(!upload(k, 0x22 + k));
+        ok &= smp_user_phys[k] == phys && smp_user_header_crc[k] == crc && !memcmp(&z, &usr_zone[k][0], sizeof z);
+        assert(!erase_request(k));
+        ok &= !usr_nz[k] && smp_user_phys[k] == phys && !memcmp(&z, &usr_zone[k][0], sizeof z) && smp_alloc_test((phys - SMP_USER_BASE) / 4096);
+    }
+    check("S2 all eight running readers survive pending replacements and deletion", ok);
+    reboot(); ok = 1;
+    for (uint32_t k = 0; k < 8; k++) ok &= gone(k);
+    check("S2 all eight durable deletes survive reboot", ok);
+}
+
 int main(void)
 {
+    eight_slot_tests();
     fresh(); assert(!upload(0, 0x11)); reboot(); uint32_t old = smp_user_phys[0]; smp_zone_t zone = usr_zone[0][0];
     assert(!upload(0, 0x22)); uint32_t gen = smp_user_generation[0]; memcpy(saved, nor, sizeof nor); erases = 0;
     check("ERASE before reboot deletes the pending replacement", !erase_request(0) && smp_user_generation[0] == gen + 1);

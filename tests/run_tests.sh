@@ -212,6 +212,8 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/sample_xip_test" web/emu/sample_xip_test.c -lm
     run "simulator: physical XIP, relocated samples and busy-flash recovery" "$OUT/sample_xip_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
+    run "eight slots: source IDs, packed voices, manual edits and legacy imports" "$OUT/eight_slot_compat_test"
 fi
 
 $CC -o "$OUT/storage_test" tests/storage_test.c
@@ -496,6 +498,8 @@ else
     A="$OUT/asan"
     SCC="${CC%% *} $SAN -Ibuild/gen -Ifirmware/src"
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+    $SCC -ffp-contract=off -o "$A/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
+    run "ASan/UBSan: eight-slot source compatibility and SLICE voice packing" "$A/eight_slot_compat_test"
     # This regression uses strict ASan/UBSan, without the broad DSP exclusions.
     STRICT_CC="${CC%% *} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -w -Ibuild/gen -Ifirmware/src"
     $STRICT_CC -o "$A/signed_audio_scaling_test_strict" tests/signed_audio_scaling_test.c -lm

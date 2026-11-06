@@ -7,9 +7,10 @@
 #include <signal.h>
 #include <sys/resource.h>
 
-static const uint32_t extent[3] = {3, 11, 27};
+static const uint32_t extent[8] = {3, 11, 27, 35, 41, 49, 54, 58};
 static uint8_t pool_before[SMP_USER_POOL_SIZE];
 static int failures;
+static uint32_t fixture_multi_slot = 8;
 
 /* Explicit v2 boot fixtures, not a second production upload implementation.
  * Real storage/CRC types and NOR programming semantics are used. No editor
@@ -27,14 +28,18 @@ static void fixture(int old_publication)
     web_nor_erase();
     smp_alloc_desc_t root = smp_journal_header();
     record(SMP_USER_BASE, &root);
-    for (uint32_t k = 0; k < 3; k++) {
+    for (uint32_t k = 0; k < 8; k++) {
         uint32_t phys = SMP_USER_BASE + extent[k] * SMP_USER_SECTOR_SIZE;
-        uint8_t audio[2048]; memset(audio, (k + 1u) * 0x11u, sizeof audio);
+        uint8_t audio[2048]; memset(audio, k == 7 ? 0x21u : (k + 1u) * 0x11u, sizeof audio);
         smp_user_hdr_t h = {0};
         h.magic = SMP_USER_MAGIC; h.version = 1; h.nz = 1;
         h.name[0] = 'A' + k; h.data_len = sizeof audio; h.crc = st_crc32(audio, sizeof audio);
         h.zone[0].n = sizeof audio * 2u; h.zone[0].le = h.zone[0].n - 1u;
         h.zone[0].rate = 32768; h.zone[0].root16 = 60 * 16; h.zone[0].hi = 127;
+        if (k == fixture_multi_slot) {
+            h.nz = 16; h.zone[0].n = 256; h.zone[0].le = 255;
+            for (uint32_t z = 1; z < 16; z++) { h.zone[z] = h.zone[0]; h.zone[z].off = z * 128; }
+        }
         smp_alloc_desc_t claim = {0};
         claim.magic = SMP_JOURNAL_CLAIM; claim.version = SMP_JOURNAL_V1;
         claim.logical_slot = k; claim.sector_count = 1; claim.generation = 1;
@@ -70,16 +75,16 @@ static int erased_boot(uint32_t unused)
 {
     (void)unused; web_nor_erase(); web_boot();
     if (!flash_ok || smp_journal_state != SMP_JOURNAL_BLANK || !web_booted || web_flash_writes) return 0;
-    for (uint32_t k = 0; k < 3; k++) if (usr_nz[k] || smp_user_phys[k] || smp_user_header_bound[k]) return 0;
+    for (uint32_t k = 0; k < 8; k++) if (usr_nz[k] || smp_user_phys[k] || smp_user_header_bound[k]) return 0;
     for (uint32_t i = 0; i < sizeof nor; i++) if (nor[i] != 255) return 0;
-    return SMP_USER_SLOTS == 3 && SLC_SRC_PIANO == 4 && SLC_NSRC == 5;
+    return SMP_USER_SLOTS == 8 && SMP_USER_POOL_SIZE == 0x3C000u && SMP_USER_SECTOR_COUNT == 60 && SLC_SRC_PIANO == 4 && SLC_NSRC == 10;
 }
 static int valid_boot(uint32_t unused)
 {
     (void)unused; fixture(0); web_boot();
     if (!flash_ok || smp_journal_state != SMP_JOURNAL_READY || !unchanged()) return 0;
-    static const int32_t first[3] = {1, 3, 4}; /* IMA codes 1, 2, 3 from initial state 0/0 */
-    for (uint32_t k = 0; k < 3; k++) {
+    static const int32_t first[8] = {1, 3, 4, 7, 8, 10, 11, 1}; /* IMA codes 1, 2, 3 from initial state 0/0 */
+    for (uint32_t k = 0; k < 8; k++) {
         uint32_t phys = SMP_USER_BASE + extent[k] * SMP_USER_SECTOR_SIZE;
         if (smp_user_phys[k] != phys || smp_user_xip(k) != nor + phys || usr_nz[k] != 1 ||
             !smp_user_header_bound[k] || smp_user_unresolved[k] || !smp_alloc_test(extent[k])) return 0;
@@ -88,7 +93,7 @@ static int valid_boot(uint32_t unused)
         if (v.s[6] || smp_zone(v.s[4]) != &usr_zone[k][0] || sample_next(smp_zone(v.s[4]), &v, 0) != first[k]) return 0;
         const smp_zone_t *z = gr_zone(SMP_NSETS + k, 0); int32_t pred = 0, idx = 0;
         if (gr_find(SMP_NSETS + k, 60) != 0 || z != &usr_zone[k][0] || gr_dec(z, 0, &pred, &idx) != first[k]) return 0;
-        const slc_src_t *s = slc_get(k + 1); slc_dec_t dec;
+        const slc_src_t *s = slc_get(k < 3 ? k + 1 : k + 2); slc_dec_t dec;
         slc_dec_at(&dec, 0, 0);
         if (!s || s->len != 4096 || slc_dec_next(s, &dec) != first[k]) return 0;
     }
@@ -98,9 +103,9 @@ static int render_slot(uint32_t which)
 {
     fixture(0); web_boot();
     for (uint32_t n = 0; n < 180; n++) web_render(128); /* past splash/keyboard hold */
-    uint32_t k = which % 3, engine = which / 3 == 0 ? ENGI_SAMPLE : which / 3 == 1 ? ENGI_GRAIN : 13;
+    uint32_t k = which % 8, engine = which / 8 == 0 ? ENGI_SAMPLE : which / 8 == 1 ? ENGI_GRAIN : 13;
     track_t *t = &trk[0]; host_preset(t, engine, 0);
-    t->p[P_E0] = engine == 13 ? k + 1 : SMP_NSETS + k;
+    t->p[P_E0] = engine == 13 ? (k < 3 ? k + 1 : k + 2) : SMP_NSETS + k;
     song.sel = 0; web_keys(1u << 7); /* C4, as the existing simulator test */
     float peak = 0;
     for (uint32_t n = 0; n < 40; n++) {
@@ -140,7 +145,7 @@ static int busy_boot(uint32_t unused)
     if (!(fl_status_ram() & 1u)) return 0;
     web_boot();
     if (flash_ok || smp_journal_state != SMP_JOURNAL_BLANK || web_flash_writes != writes || !unchanged()) return 0;
-    for (uint32_t k = 0; k < 3; k++) if (usr_nz[k] || smp_user_header_bound[k]) return 0;
+    for (uint32_t k = 0; k < 8; k++) if (usr_nz[k] || smp_user_header_bound[k]) return 0;
     web_test_flash_busy(0); web_boot(); /* one-shot boot must not silently reconcile */
     return !fl_status_ram() && !flash_ok && smp_journal_state == SMP_JOURNAL_BLANK && unchanged();
 }
@@ -161,14 +166,15 @@ static void run(const char *name, int (*test)(uint32_t), uint32_t arg, int trap)
     ok &= trap ? WIFSIGNALED(status) && (WTERMSIG(status) == SIGILL || WTERMSIG(status) == SIGTRAP) : WIFEXITED(status) && WEXITSTATUS(status) == 0;
     printf("simulator XIP: %s %s\n", name, ok ? "ok" : "FAIL"); failures += !ok;
 }
+#ifndef SAMPLE_XIP_TEST_NO_MAIN
 int main(void)
 {
     struct rlimit limit = {0, 0}; setrlimit(RLIMIT_CORE, &limit);
     run("physical offsets map directly, including first/last NOR bytes", mapping, 0, 0);
-    run("erased boot stays blank and retains three public slots", erased_boot, 0, 0);
-    run("v2 journal recovers relocated USR1-3 for all three audio decoders", valid_boot, 0, 0);
-    for (uint32_t i = 0; i < 9; i++) {
-        char name[80]; snprintf(name, sizeof name, "%s plays relocated USR%u through simulator audio", i / 3 == 0 ? "SAMPLE" : i / 3 == 1 ? "GRAIN" : "SLICE", i % 3 + 1);
+    run("erased boot stays blank and retains eight public slots", erased_boot, 0, 0);
+    run("v2 journal recovers relocated USR1-8 for all three audio decoders", valid_boot, 0, 0);
+    for (uint32_t i = 0; i < 24; i++) {
+        char name[80]; snprintf(name, sizeof name, "%s plays relocated USR%u through simulator audio", i / 8 == 0 ? "SAMPLE" : i / 8 == 1 ? "GRAIN" : "SLICE", i % 8 + 1);
         run(name, render_slot, i, 0);
     }
     run("corrupt v2 header is hidden without fallback or sector reuse", rejected_media, 0, 0);
@@ -180,3 +186,5 @@ int main(void)
     run("hardware CPU XIP address is not a physical flash offset", invalid_address, FM1_XIP(SMP_USER_BASE), 1);
     return failures ? 1 : 0;
 }
+
+#endif
