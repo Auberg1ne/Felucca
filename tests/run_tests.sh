@@ -210,6 +210,8 @@ run "storage backend: unresolved flash I/O blocks active transfers" "$OUT/storag
 if [ -f build/gen/felucca_tables.h ]; then
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/sample_xip_test" web/emu/sample_xip_test.c -lm
+    run "simulator: physical XIP, relocated samples and busy-flash recovery" "$OUT/sample_xip_test"
 fi
 
 $CC -o "$OUT/storage_test" tests/storage_test.c
