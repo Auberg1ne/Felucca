@@ -2,7 +2,10 @@
 
 The 240 KiB pool remains at `0xA0000..0xDBFFF`. In the new format its first
 4 KiB sector is an append-only ownership journal. It leaves 59 sectors for
-sample extents. There are no writes outside the existing pool.
+sample extents shared by eight public logical slots (USR1..8). The original
+three-slot geometry defines the pool boundary only, never eight fixed partitions.
+There are no writes outside the existing pool. Public enumeration does not change
+any descriptor, journal, quarantine, deletion or reservation rule.
 
 ## Trust boundary
 

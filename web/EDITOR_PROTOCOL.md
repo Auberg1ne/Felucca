@@ -195,7 +195,7 @@ at 1..3 and hides 6 5 8: what it sets still plays the right kit, and the device 
 | 8 PRESET | engine, preset | engine, preset (applies the preset's sound to the selected track and sends; the steps and the track's own parameters stay, see "Sound loads and undo"). For another track, select it with `TRACK` first |
 | 9 PROJECT | op (0 load, 1 save, 2 query), slot 0..3 | op, slot, used (1/0). Save writes flash: allow ~2 s; it stops the transport first (see "Saves while playing") |
 | 10 NAMES | engine | engine, count, count preset-name strings, then the two edit-page titles |
-| 11 SMP_BEGIN | slot 0..2, audio data length (3 × 7 bit, LSB first) | slot, rc (0 ok). Commits an ownership CLAIM before erasing a staged extent. Fails in read-only compatibility/quarantine mode or without journal/audio space |
+| 11 SMP_BEGIN | slot 0..7, audio data length (3 × 7 bit, LSB first) | slot, rc (0 ok). Commits an ownership CLAIM before erasing a staged extent. Fails in read-only compatibility/quarantine mode or without journal/audio space |
 | 12 SMP_WRITE | slot, offset (3 × 7 bit, LSB first), pack7 data (≤ 256 bytes) | slot, offset, rc: 0 ok, nonzero on invalid arguments or write failure. Writes go to the temporary extent reserved by SMP_BEGIN; offset ≥ 512, a multiple of 256, and within that extent. Sectors are erased by SMP_BEGIN, not by individual writes |
 | 13 SMP_END | slot, pack7 header (480 bytes) | slot, rc (0 committed). The length must match BEGIN. Verifies sample data/header/descriptor, then commits journal PUBLISH; activation occurs at reboot |
 | 14 SMP_ERASE | slot | slot, rc (0 durably deleted). Commits journal DELETE and cancels staging. No audio sectors are erased or released. Repeated deletion succeeds only while committed state is known. Fails in compatibility/quarantine mode or without journal space |
@@ -239,8 +239,21 @@ reply.
 unused mask bits in the last group must be zero. Oversized or incomplete transfers
 are rejected; SMP_WRITE decodes at most 256 bytes, SMP_END exactly 480 bytes.
 
-**User sample storage** exposes three legacy logical slots (USR1..USR3); eight
-identities remain reserved by the allocator. The pool remains 240 KiB, at
+**Eight-slot firmware compatibility:** SAMPLE/GRAIN retain built-in IDs 0..4
+and USR1..3 IDs 5..7; USR4..8 append IDs 8..12. SLICE retains BREAK 0,
+USR1..3 1..3 and PIANO 4; USR4..8 append IDs 5..9. Serialized parameter,
+preset and motion-lock layouts are unchanged. Older firmware cannot represent
+the appended source values. Manual slices remain RAM-only (C1).
+
+SMP_INFO enumerates eight entries; every sample command accepts slots 0..7 and
+rejects slot 8. Backup appends IDs 35..39 without renumbering existing objects.
+The current browser editor still assumes three samples in its drafts and archive
+handling: it is not an eight-slot client. Updating that client and editor-to-WASM
+transport are separate work; no such transport is provided here. Use a compatible
+protocol client for eight-slot operations. The legacy 80 KiB per-upload ceiling
+remains; eight simultaneous maximum-size samples cannot fit in this shared pool.
+
+**User sample storage** exposes eight logical slots (USR1..USR8). The pool remains 240 KiB, at
 `0xA0000..0xDBFFF`. New-format storage reserves its first 4 KiB sector for an
 anchored, append-only ownership journal; payload writes can never reach it.
 
@@ -883,10 +896,10 @@ this firmware sends 3. Requests name objects, never flash addresses.
 | 6, 7 | user preset banks (slots 1..16, 17..32) | the bank's size, or 0 if empty |
 | 8 | the FM6 patch bank of 1.0..1.0.2 (B1..B27). Since 1.0.3 always listed empty (see below) | 3472, or 0 if empty |
 | 9 | the user presets' FM6 patches (1.0.3; `up_fm6.c`: per slot a tag and the packed patch) | 3728, or 0 if none |
-| 32..34 | user sample slots 1..3: header (512 bytes) then ADPCM data | 512 + data length, or 0 if empty |
+| 32..39 | user sample slots 1..8: header (512 bytes) then ADPCM data | 512 + data length, or 0 if empty |
 
 Reading: `BACKUP_LIST` (no arguments) stops the transport, then takes a snapshot of the runtime object and
-answers `1, rc, count` (13 since 1.0.3, 12 with FM6 up to 1.0.2, 11 before) and, per object in the order above, `id, size u32, crc u32` (CRC-32, zlib). The other objects are read as
+answers `1, rc, count` (18 with eight-slot firmware; previously 13 since 1.0.3, 12 with FM6 up to 1.0.2, 11 before) and, per object in the order above, `id, size u32, crc u32` (CRC-32, zlib). The other objects are read as
 they are in RAM or flash. Then `BACKUP_GET` reads an object in pieces: `id, offset u32, count lo, count hi`
 (count 1..256, LSB first 7 bit pair) answers `id, rc, offset u32, count lo, count hi` and the data as pack7. Check each object's CRC
 against the list; if it differs the device changed, so start again.

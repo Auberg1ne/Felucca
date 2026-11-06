@@ -10,7 +10,7 @@
  *   KNOB 3  SPLIT  picked (right): OCT+ splits the slice at its middle (up to 32 slices)
  *   KNOB 4  JOIN   picked (right): OCT+ joins the slice to the one before (its start goes)
  *   OCT-    drops the pick, or (none) goes HOME
- * Edits are for a user slot (USR1..3: SRC); BREAK and PIANO show their slices only, a source with no material (it
+ * Edits are for a user slot (USR1..8: SRC); BREAK and PIANO show their slices only, a source with no material (it
  * plays a sine) says SAMPLE NOT FOUND (the no-file icon). The first edit takes
  * the slices shown into the slot's MAN table (eng_slice.c) and sets DIV to MAN; later edits change that table (the
  * audio side switches tables between notes). Leaving the page saves them with the sample (slice_store.c, once
@@ -82,12 +82,15 @@ static slc_man_t *slice_edit_begin(uint32_t *k)
     uint32_t src, div, n, i, a, b, st;
     const slc_src_t *s = slice_src(&src, &div);
     slc_man_t *m;
-    if (!s || !src || src == SLC_SRC_PIANO) {
-        static const char *const EMPTY[3] = {"USR1 EMPTY", "USR2 EMPTY", "USR3 EMPTY"};
-        ui_message(src && src != SLC_SRC_PIANO ? EMPTY[src - 1u] : "SRC USR1-3 TO EDIT");
+    uint32_t slot = slc_slot_from_src(src);
+    if (!s || slot >= SMP_USER_SLOTS) {
+        if (slot < SMP_USER_SLOTS) {
+            char msg[] = "USR1 EMPTY"; msg[3] += (char)slot;
+            ui_message(msg);
+        } else ui_message("SRC USR1-8 TO EDIT");
         return 0;
     }
-    *k = src - 1u;
+    *k = slot;
     if (div != SLC_DIV_MAN && slc_man_of(s)) {       /* the slot has slices set by hand: those, not the grid; this */
         TSEL->p[P_E1] = SLC_DIV_MAN;                 /* touch only shows them (its marker was another one) */
         ui_message("DIV MAN");
@@ -142,7 +145,7 @@ static void slice_knob(uint32_t slot, int32_t steps)
     j = j < n ? (j < m->n ? j : m->n - 1u) : m->n;   /* (a table cut short by SLC_MIN: the nearest) */
     {
         int32_t d = steps * (int32_t)((b - a) / SP_COLS ? (b - a) / SP_COLS : 1u);
-        const slc_src_t *s = slc_get(k + 1u);
+        const slc_src_t *s = slc_get(slc_src_from_slot(k));
         if (j < m->n)
             slc_man_move(s, m, j, d);
         else
@@ -187,7 +190,7 @@ static void slice_act(uint32_t c)
         j = slc_man_join(m, j);
     } else {
         uint32_t before = m->n;
-        j = slc_man_split(slc_get(k + 1u), m, j);
+        j = slc_man_split(slc_get(slc_src_from_slot(k)), m, j);
         if (m->n == before) {
             ui_message(before >= SLC_AUTO ? "32 SLICES AT MOST" : "SLICE TOO SHORT");
             return;
