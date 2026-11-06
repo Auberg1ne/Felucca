@@ -3,10 +3,12 @@
 // Local, complete musical archives. Requests name whitelisted objects, never flash addresses.
 // 8: the FM6 patch bank of 1.0..1.0.2 (listed empty since 1.0.3: a restore of an older archive's bank moves its patches
 // into the user presets restored before it); 9: the user presets' FM6 patches (1.0.3)
-export const BACKUP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 34];
-const BACKUP_IDS_V2 = BACKUP_IDS.filter((id) => id !== 9);              // 1.0..1.0.2, and their archives
-const BACKUP_IDS_V1 = BACKUP_IDS_V2.filter((id) => id !== 8);           // firmware before FM6, and its archives
-const idsOf = (n) => [BACKUP_IDS, BACKUP_IDS_V2, BACKUP_IDS_V1].find((ids) => ids.length === n) || null;
+export const BACKUP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 34, 35, 36, 37, 38, 39];
+// Exact historical profiles: never derive these from the eight-slot profile.
+const BACKUP_IDS_13 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 32, 33, 34];
+const BACKUP_IDS_12 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 32, 33, 34];
+const BACKUP_IDS_11 = [0, 1, 2, 3, 4, 5, 6, 7, 32, 33, 34];
+const idsOf = (n) => [BACKUP_IDS, BACKUP_IDS_13, BACKUP_IDS_12, BACKUP_IDS_11].find((ids) => ids.length === n) || null;
 export const BACKUP_CMD = { LIST: 65, GET: 66, PUT: 67 };
 const BACKUP_CHUNK = 256;
 export const bkU32 = (n) => Array.from({ length: 5 }, (_, i) => (n >>> (i * 7)) & (i === 4 ? 15 : 127));
@@ -81,7 +83,8 @@ export function readBackup(file) {
         const off = 32 + z * 28, start = view.getUint32(off,true), n = view.getUint32(off+4,true),
           ls = view.getUint32(off+8,true), le = view.getUint32(off+12,true), rate = view.getUint32(off+16,true);
         if (!n || start > length || Math.ceil(n/2) > length - start || n > 163840 || ls > le || le >= n ||
-            !rate || rate > 262144 || bytes[off+24] > 88 || bytes[off+25] > bytes[off+26]) throw new Error("Invalid sample zone");
+            !rate || rate > 262144 || view.getInt16(off+22,true) < 0 || view.getInt16(off+22,true) > 2032 ||
+            bytes[off+24] > 88 || bytes[off+25] > bytes[off+26] || bytes[off+26] > 127 || bytes[off+27] > 1) throw new Error("Invalid sample zone");
       }
     }
     return { ...o, bytes };
@@ -110,6 +113,22 @@ export async function captureBackup(request, firmware, onProgress = () => {}) {
 }
 export async function restoreBackup(request, file, onProgress = () => {}) {
   const archive = readBackup(file); // Validate every byte before the first destructive request.
+  // Fresh read-only capabilities before *any* PUT, ERASE or BEGIN. No timeout fallback.
+  const info = await request([15, []], { timeout: 1000, retries: 0 });
+  const slots = info?.[0], ceiling = info?.[1];
+  if (![3, 8].includes(slots) || !Number.isInteger(ceiling) || ceiling < 1 || ceiling > 80 ||
+      !Array.from(info).every((v) => Number.isInteger(v) && v >= 0 && v < 128)) throw new Error("Invalid destination sample INFO");
+  let pos = 2;
+  for (let k = 0; k < slots; k++) {
+    const zones = info[pos++]; let name = "";
+    while (pos < info.length && info[pos]) name += String.fromCharCode(info[pos++]);
+    if (pos >= info.length) throw new Error("Incomplete destination sample INFO");
+    pos++; const kib = info[pos++];
+    if (zones == null || zones > 16 || kib == null || kib > ceiling || name.length > 8 || /[^\x20-\x7e]/.test(name) ||
+        (!zones && (name || kib)) || (zones && !kib)) throw new Error("Invalid destination sample INFO");
+  }
+  if (pos !== info.length || archive.objects.some((o) => o.id >= 32 + slots)) throw new Error("Archive exceeds destination sample slots");
+  if (archive.objects.some((o) => o.id >= 32 && o.size > ceiling * 1024)) throw new Error("Sample exceeds destination upload ceiling");
   const total = archive.objects.reduce((n, o) => n + o.size, 0); let done = 0;
   const ask = async (r, o = {}) => request(r, { timeout: 4000, retries: 0, ...o });
   const put = async (args) => { const a = await ask([BACKUP_CMD.PUT, args]); bkCheck(a[2]); return a; };
@@ -117,14 +136,20 @@ export async function restoreBackup(request, file, onProgress = () => {}) {
   for (const o of [...archive.objects.slice(2), archive.objects[1], archive.objects[0]]) {
     if (o.id >= 32) {
       const slot = o.id - 32;
-      const check = (a) => { if (a[0] !== slot) throw new Error("Unexpected sample reply"); bkCheck(a.at(-1)); };
+      const check = (a, off) => {
+        if (!Array.isArray(a) || a.length !== (off === undefined ? 2 : 5) || a[0] !== slot ||
+            !a.every((v) => Number.isInteger(v) && v >= 0 && v < 128) ||
+            (off !== undefined && (a[1] | a[2] << 7 | a[3] << 14) !== off)) throw new Error("Unexpected sample reply");
+        bkCheck(a.at(-1));
+      };
       if (!o.size) check(await ask([14, [slot]]));
       else {
         if (o.size < 512) throw new Error("Short sample backup");
-        check(await ask([11, [slot]]));
+        const length = o.size - 512;
+        check(await ask([11, [slot, length & 127, length >>> 7 & 127, length >>> 14 & 127]]));
         for (let off = 512; off < o.size; off += BACKUP_CHUNK) {
           const chunk = o.bytes.subarray(off, off + BACKUP_CHUNK);
-          check(await ask([12, [slot, off & 127, off >>> 7 & 127, off >>> 14 & 127, ...bkPack(chunk)]]));
+          check(await ask([12, [slot, off & 127, off >>> 7 & 127, off >>> 14 & 127, ...bkPack(chunk)]]), off);
           done += chunk.length; onProgress(done, total);
         }
         check(await ask([13, [slot, ...bkPack(o.bytes.subarray(0, 480))]]));

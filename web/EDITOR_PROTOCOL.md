@@ -247,10 +247,19 @@ the appended source values. Manual slices remain RAM-only (C1).
 
 SMP_INFO enumerates eight entries; every sample command accepts slots 0..7 and
 rejects slot 8. Backup appends IDs 35..39 without renumbering existing objects.
-The current browser editor still assumes three samples in its drafts and archive
-handling: it is not an eight-slot client. Updating that client and editor-to-WASM
-transport are separate work; no such transport is provided here. Use a compatible
-protocol client for eight-slot operations. The legacy 80 KiB per-upload ceiling
+The S3 browser editor supports both three-slot and eight-slot SMP_INFO replies.
+It validates the complete reply before exposing controls; unsupported, malformed
+or truncated replies disable sample operations. Drafts are independent for USR1..8;
+only the slots reported by the connected device are shown. An empty entry can mean
+unavailable or quarantined media, not permission to format or reclaim anything.
+Uploads report commitment with activation after reboot; INFO and backup can still
+show the old running sample while its replacement awaits reboot. Sample mutations
+are not automatically retried after a timeout or failed acknowledgement.
+
+S3 connects via Web MIDI SysEx or a JavaScript mock, not the audio simulator.
+Editor-to-WASM transport remains S4. The mock demonstrates client operations, not
+journal recovery, physical NOR ownership, quarantine or active-reader safety.
+The legacy 80 KiB per-upload ceiling
 remains; eight simultaneous maximum-size samples cannot fit in this shared pool.
 
 **User sample storage** exposes eight logical slots (USR1..USR8). The pool remains 240 KiB, at
@@ -910,7 +919,25 @@ the settings record's size for id 1, 3840, 3648, 3584, 3388 or 0 (empty the slot
 3472 or 0 for 8 (the FM6 bank: its magic, layout and every byte below 128 are checked), 3728 or 0 for 9 (its magic,
 version and slot count checked; 0 clears the patches). FUN9, FUN8, FUN7 and FUN6 become FUN10 (1.2; firmware before
 1.2 refuses a 3840-byte project at begin, rc 1).
-An archive without id 8 (written before FM6) still restores; the web editor reads all three kinds (11, 12, 13 objects).
+The browser accepts only the exact ordered archive profiles of 11, 12, 13 or
+18 objects: historical profiles retain sample IDs 32..34; the 18-object profile
+contains IDs 0..9 then 32..39. Missing, duplicate, reordered or unsupported IDs
+are rejected before writing. JSON archive version 1 and wire layouts are unchanged.
+Before any restore mutation, the client reads and validates fresh SMP_INFO.
+An 18-object archive is refused on a three-slot destination even if its higher
+samples are empty; historical archives never issue commands for slots 3..7.
+Nonempty samples use BEGIN(slot, three 7-bit bytes of size minus 512), sequential
+WRITE chunks starting at 512 and END containing exactly the first 480 header bytes.
+The archived descriptor at 480..511 is not written back: firmware creates and binds
+its own publication. Empty sample objects use ERASE. Mutations use no automatic
+retries; failure stops the restore, which may already have committed earlier objects.
+Quarantined media, journal exhaustion and claimed extents remain firmware decisions;
+restore does not format, compact or reclaim sectors. Eight slots share 240 KiB,
+including the journal, rather than eight 80 KiB partitions.
+
+Current-format project capture still has a pre-existing project-size failure.
+This can block successful wire-level BACKUP_LIST even with an eight-slot client;
+S3 does not repair project saving or claim end-to-end archive availability.
 Since 1.0.3 an id 8 with data (an archive of 1.0..1.0.2) is not stored: like the first boot after the update, every FM6
 user preset whose stored SLOT is a B slot (8..34) and has no patch yet gets that bank slot's patch, and id 9 is written.
 So restore ids 6 and 7 before 8 (the web editor does); an empty id 8 is taken and ignored (rc 0). Old archives
