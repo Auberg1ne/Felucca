@@ -212,6 +212,11 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/sample_xip_test" web/emu/sample_xip_test.c -lm
     run "simulator: physical XIP, relocated samples and busy-flash recovery" "$OUT/sample_xip_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/editor_bridge_test" web/emu/editor_bridge_test.c -lm
+    run "S4A: real firmware allowlist, bounded queues, state and audio continuity" "$OUT/editor_bridge_test"
+    if command -v node >/dev/null 2>&1; then
+        run "S4A: channel lifecycle and actual Link/native firmware queries" node web/emu/editor_transport_test.mjs "$OUT/editor_bridge_test"
+    fi
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
     run "eight slots: source IDs, packed voices, manual edits and legacy imports" "$OUT/eight_slot_compat_test"
 fi
@@ -498,6 +503,8 @@ else
     A="$OUT/asan"
     SCC="${CC%% *} $SAN -Ibuild/gen -Ifirmware/src"
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+    $SCC -ffp-contract=off -o "$A/editor_bridge_test" web/emu/editor_bridge_test.c -lm
+    run "ASan/UBSan: S4A guarded simulator editor" "$A/editor_bridge_test"
     $SCC -ffp-contract=off -o "$A/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
     run "ASan/UBSan: eight-slot source compatibility and SLICE voice packing" "$A/eight_slot_compat_test"
     # This regression uses strict ASan/UBSan, without the broad DSP exclusions.

@@ -15,8 +15,8 @@
  *   - the screen: lcd_fill / lcd_blit into a 240 x 240 RGB565 frame (the panel's byte order);
  *   - the flash: a 1 MiB NOR image behind storage.c's hooks (settings, projects, user presets, the user
  *     sample slots read through it as XIP); the page keeps its storage sectors and gives them back at boot.
- * Not here: USB (MIDI, audio, the editor, updates), TRS MIDI, the serial console, the battery (full), the
- * crash / UBOOT paths. Nothing of the firmware changes for this file.
+ * Not here: USB (MIDI, audio, updates), TRS MIDI, the serial console, the battery (full), the
+ * crash / UBOOT paths. S4A adds guarded, scheduled editor queries without USB or OTA installation.
  *   web/emu/build.sh  ->  build/emu/{felucca.wasm, worklet.js, index.html} */
 #include <stdint.h>
 /* Define the hardware helper once before the simulator-local name override.
@@ -183,6 +183,7 @@ static void lcd_init(void) {}
 /* ------------------------------------------------------------ the flash --- */
 static uint32_t web_flash_writes;
 static uint8_t flash_ok;
+static uint32_t web_booted, web_editor_dispatching, web_editor_forbidden;
 /* NOR operations below are synchronous. The WIP input can be held by tests to
  * model a warm reset while a chip command is still busy; startup must refuse it. */
 static uint8_t web_flash_status;
@@ -196,6 +197,7 @@ static int st_read(uint32_t off, void *dst, uint32_t n)
 }
 static int st_erase(uint32_t off)
 {
+    if (web_editor_dispatching) { web_editor_forbidden++; return -8; }
     if (off >= sizeof nor || 4096u > sizeof nor - off)
         return -8;
     memset(nor + (off & ~4095u), 0xFF, 4096);
@@ -206,6 +208,7 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)       /* NOR: a wr
 {
     const uint8_t *s = src;
     uint32_t i;
+    if (web_editor_dispatching) { web_editor_forbidden++; return -8; }
     if (off >= sizeof nor || n > sizeof nor - off)
         return -8;
     for (i = 0; i < n; i++)
@@ -221,6 +224,7 @@ static void fl_plain_window_init(void) {}
 #include "../../firmware/src/storage.c"
 #include "../../firmware/src/upreset.c"
 #include "../../firmware/src/project.c"
+#include "editor_bridge.c"
 
 /* ------------------------------------------------- main.c and its HAL --- */
 #if FELUCCA_CPU2
@@ -276,7 +280,7 @@ static void cdc_task(void) {}
 #undef usb_detach
 
 /* --------------------------------------------------------- the device --- */
-static uint32_t web_booted, web_boot_ms, web_last_frame;
+static uint32_t web_boot_ms, web_last_frame;
 
 /* main.c fm1_main's boot, up to the main loop (no USB, no UART, no panel setup) */
 static void web_power_on(void)
@@ -301,7 +305,7 @@ static void web_power_on(void)
     web_booted = 1;
 }
 
-/* one pass of main.c fm1_main's loop (what the browser has: no USB, editor, UBOOT, console) */
+/* one pass of main.c fm1_main's loop (what the browser has: no USB, UBOOT, console; editor queries run after audio) */
 static void web_frame(void)
 {
     int32_t b = fm1_adc_read(FM1_ADC_BATT);
@@ -358,6 +362,18 @@ static void web_ms(void)
 #define EXPORT __attribute__((used, visibility("default")))
 #undef __attribute__
 
+/* Fixed-buffer ABI: no caller-supplied pointers, allocations or synchronous dispatch. */
+EXPORT uint8_t *web_editor_input(void) { return web_ed_input; }
+EXPORT uint8_t *web_editor_output(void) { return web_ed_output; }
+EXPORT uint32_t web_editor_open(uint32_t epoch) { return web_ed_open(epoch); }
+EXPORT void web_editor_close(uint32_t epoch) { web_ed_close(epoch); }
+EXPORT uint32_t web_editor_submit(uint32_t epoch, uint32_t ticket, uint32_t n) { return web_ed_submit(epoch, ticket, n); }
+EXPORT void web_editor_cancel(uint32_t epoch, uint32_t ticket) { web_ed_cancel(epoch, ticket); }
+EXPORT uint32_t web_editor_length(void) { return web_ed_len; }
+EXPORT uint32_t web_editor_ticket(void) { return web_ed_ticket; }
+EXPORT uint32_t web_editor_epoch(void) { return web_ed_epoch; }
+EXPORT void web_editor_pop(uint32_t epoch, uint32_t ticket) { web_ed_cancel(epoch, ticket); }
+EXPORT uint32_t web_editor_forbidden_count(void) { return web_editor_forbidden; }
 static float out_l[1024], out_r[1024];
 EXPORT float *web_out_l(void) { return out_l; }
 EXPORT float *web_out_r(void) { return out_r; }
@@ -374,6 +390,7 @@ EXPORT void web_render(uint32_t n)
         out_l[k] = ring[i];
         out_r[k] = ring[i + 1];
     }
+    web_ed_step(); /* at most one bounded query per 15 device ms, after audio generation */
 }
 
 /* the flash: erased, then the page's saved sectors (web_nor), then boot */

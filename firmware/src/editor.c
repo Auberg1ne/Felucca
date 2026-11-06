@@ -401,7 +401,13 @@ static void ed_load_after(const ed_load_t *b)
         if (TSEL->p[i] != b->p[i])
             ed_w.v[i] = TSEL->p[i];
 }
-static int ed_room(void) { return so_w - so_r + 8u <= SXQ / 2u; }
+static int ed_room(void) {
+#ifdef ED_TRANSPORT_ROOM
+    return ED_TRANSPORT_ROOM();
+#else
+    return so_w - so_r + 8u <= SXQ / 2u;
+#endif
+}
 static void ed_known(uint32_t k, uint32_t id)            /* the editor's own change of trk[k].p[id]: no push */
 {
     uint32_t j;
@@ -549,6 +555,9 @@ static void ed_step_reply(const step_t *st)              /* the same 15 bytes */
  * stalls the sequencer; the device's own SAVE refuses with "STOP TO SAVE", the editor's confirmed save stops) */
 static int ed_flash_stop(void)
 {
+#ifdef ED_FLASH_STOP_GUARD
+    if (ED_FLASH_STOP_GUARD()) return 1;
+#endif
     uint32_t t0 = fm1_ms;
     if (!transport_busy())
         return 0;

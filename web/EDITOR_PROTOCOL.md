@@ -1344,3 +1344,100 @@ device gone at ~0.3 s, the MIDI port gone at ~0.57 s and back at ~1.15 s; ON -> 
 at ~0.6 s while the MIDI port was not seen to disappear at all (so do not wait for a disconnect event: after
 a real change, wait ~1.5 s and open again). What the editor sends in that window is lost, `WATCH` ends with the
 bus reset (send `INFO` and `WATCH` again after reconnecting), and a backup in progress answers rc 5 (stale).
+
+## S4A simulator read-only bridge (unverified preview)
+
+The simulator's **Open read-only editor** button opens a separate same-origin editor
+window. Start audio first. Source pages use `web/emu/index.html` and `web/editor.html`;
+the deployed site uses sibling `/emu/` and `/editor/` routes. A standalone
+`build/emu/` directory is not a complete editor deployment: serve the editor and
+its assets at the matching sibling route too. This connection does not use Web
+MIDI, change the hardware connection, or create a second WASM instance.
+
+S4A calls the actual firmware editor handlers. It is deliberately narrower than
+hardware INFO capabilities: INFO is not rewritten to invent a different device.
+The transport, loader and disabled controls enforce read-only access. Only the
+Sound view and the current selected track's parameter snapshot are available.
+Source descriptors retain SAMPLE/GRAIN IDs 5–12 for USR1–8 and SLICE IDs
+1–3, 5–9. These names do **not** report occupancy or sample availability.
+
+The C dispatch gate allows exactly these decimal commands and arguments:
+
+| Command | Exact argument bytes | Valid ranges |
+| --- | --- | --- |
+| INFO (1) | none | — |
+| GET (2) | scope, parameter | scope 0: parameter `< P_COUNT`; scope 1: `< G_COUNT` |
+| DESC (5) | scope, parameter | same as GET |
+| NAMES (10) | engine | `< NENGINES` |
+| PING (25) | none | — |
+| TRACK (27) | none | query only; no selection argument |
+| TRACK_DUMP (29) | track | `< NTRK` |
+| TRACK_PARAM (31) | track, parameter | track `< NTRK`, parameter `< P_COUNT`; no value |
+
+Everything else is denied **before firmware dispatch**, including SMP_INFO (15),
+DUMP, PROJECT (even its query), WATCH, sample uploads/deletion, backup and restore,
+FM6, UI settings and firmware installation. Seemingly read-only commands are not
+implicitly safe: DUMP and step queries update editor shadows, and SMP_INFO can
+hold autosave or invalidate sample metadata. The simulator keeps OTA disabled;
+it never calls the blocking USB ring, `ed_service` or `ed_sync` for this bridge.
+
+Full requests are `F0 7D 46 4C command [arguments] F7`: **6–8 bytes**. Eight is
+the smallest bound covering the entire allowlist, including framing. Interior
+bytes must all be seven-bit values. Missing framing, foreign identity, extra
+arguments and oversized messages are rejected. The C gate checks bounds again
+at dispatch. Firmware responses retain their full SysEx framing and use one
+**664-byte** buffer, matching the firmware editor output buffer (compile-time
+asserted), rather than the USB ring. There is one pending request and its reserved
+response capacity; no second request is accepted until the response is consumed
+or cancelled. The editor Link permits one active request and eight queued requests.
+
+Worklet messages only validate/copy/queue requests. After generating audio,
+`web_render` dispatches at most one allowed query per 15 ms of **simulated** time;
+no query runs from the worklet message callback. Responses are copied out of WASM
+before buffer release and delivered as complete messages. No recursive rendering,
+USB draining or busy wait is used. A query still runs synchronously on the audio
+thread: its loops are bounded by firmware counts, but **browser deadline/timing
+validation is required**. This is not the future dedicated-worker architecture.
+
+The explicit connection validates same origin, the registered window source and
+a random 128-bit handshake nonce. One controller lease owns a transferred
+MessagePort; the client must acknowledge that port within 1 s. Each connection
+uses a monotonically increasing epoch; each request
+uses a monotonically increasing ticket. Stale epochs/tickets cannot consume
+responses. Exhaustion fails closed. Disconnect, closed window, audio suspension,
+handshake failure or request timeout releases the lease and cancels undispatched
+requests. The broker also expires an outstanding request after 1 s independently
+of the client timer, and the editor closes its session on page exit. No automatic
+retries are made. A query already running synchronously
+cannot be interrupted; its stale response is discarded. Browser MessagePort
+queues themselves are browser-managed; application request capacity is bounded,
+and this is not an isolation boundary against hostile same-origin scripts.
+
+The query-only loader uses INFO, TRACK, DESC, NAMES, TRACK_DUMP and GET, and checks
+selection coherence. It does not call the normal hardware initialization path.
+Track/engine changes during a snapshot require reconnecting; snapshots are not
+atomic while music or panel controls are active. S4A cannot inspect quarantine,
+shared pool capacity or pending replacement activation, and cannot upload,
+restore, format, reclaim or activate samples. C1/C2/C3/H1/H2 and S1/S2/S3 formats
+and storage behavior are unchanged. Simulator editor flash adapters and transport
+stop fail closed and count forbidden attempts; ordinary panel-driven simulator
+storage remains independent of this bridge.
+
+Validation commands (run after generating the normal firmware tables):
+
+```
+cc -O2 -w -ffp-contract=off -Ibuild/gen -Ifirmware/src \
+  -o /tmp/editor_bridge_test web/emu/editor_bridge_test.c -lm
+/tmp/editor_bridge_test
+node web/emu/editor_transport_test.mjs /tmp/editor_bridge_test
+web/emu/build.sh
+node web/emu/editor_transport_test.mjs /tmp/editor_bridge_test --wasm build/emu/felucca.wasm
+```
+
+Native tests exercise actual firmware handlers, not JavaScript command mocks.
+The optional WASM test must use a rebuilt binary containing the bridge exports;
+a missing binary is reported as unverified (exit 77). Real-browser separate-window
+loading, WebAssembly linking/exports, AudioWorklet deadlines under active audio,
+background-tab behavior and browser compatibility remain release gates. Passing
+native tests alone does not make S4A production-ready. No physical FM-1 hardware
+is flashed or validated by these tests.

@@ -8,6 +8,8 @@
 // The flash the page keeps: storage.c's areas (projects, user presets and their FM6 patches, the user sample
 // slots 0x97000..0xDFFFF; the autosave 0xE5000..0xE6FFF (1.2) and FM6's voice bank 0xE7000 (1.4.1); the settings and
 // the second FM6 copy 0xFC000..0xFFFFF), only the sectors that hold something (an erased sector is all 0xFF). {offset: bytes}
+import { WasmReadonlyEndpoint } from "./editor_transport.js";
+
 export const STORE_AREAS = [[0x97000, 0xE0000], [0xE5000, 0xE8000], [0xFC000, 0x100000]];
 export function storeSectors(nor) {
   const out = {};
@@ -79,6 +81,7 @@ if (typeof registerProcessor === "function") {
           ex.web_master(m.master ?? 700);
           ex.web_boot();
           this.ex = ex;
+          this.editor = new WasmReadonlyEndpoint(ex, m => this.port.postMessage(m));
           this.sentWrites = ex.web_flash_writes_count();
           this.port.postMessage({ type: "ready", rate: ex.web_sample_rate() });
         } catch (err) {
@@ -88,6 +91,7 @@ if (typeof registerProcessor === "function") {
       }
       const ex = this.ex;
       if (!ex) return;
+      if (m.type?.startsWith("editor-")) { this.editor.receive(m); return; }
       if (m.type === "buttons" || m.type === "keys") this.queue.push(m);
       else if (m.type === "enc") ex.web_enc(m.role, m.n | 0);
       else if (m.type === "master") ex.web_master(m.value | 0);
@@ -147,6 +151,7 @@ if (typeof registerProcessor === "function") {
       const out = outputs[0], n = out[0].length;
       const t0 = clock();
       ex.web_render(n);
+      this.editor.drain();
       this.busy += clock() - t0;
       this.frames += n;
       out[0].set(new Float32Array(ex.memory.buffer, ex.web_out_l(), n));

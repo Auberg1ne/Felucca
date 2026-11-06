@@ -2751,6 +2751,7 @@ function applyLang() {
   setLabel($("connect"), t(dev ? "disconnect" : "connect"));
   if (lastKey) $("status").textContent = t(lastKey) + lastArg;
   $("libq").placeholder = t("libSearch");
+  if (dev?.readonly) { renderReadonlyView(); return; }
   renderLive();
   renderLib();
   renderBank();
@@ -2773,6 +2774,7 @@ let tab = (() => {
 })();
 const hasTracks = () => !!dev && !!dev.info && !!dev.info.ntrk;
 function showTab(name) {
+  if (dev?.readonly && name !== "sound") return;
   if (!TABS.includes(name)) name = "sound";
   const prev = tab;
   tab = name;
@@ -2793,6 +2795,7 @@ function renderPanels() {
     b.setAttribute("aria-selected", on ? "true" : "false");
     b.tabIndex = on ? 0 : -1;
     if (b.dataset.tab === "tracks") b.hidden = !tracksOk;
+    if (dev?.readonly) b.hidden = b.dataset.tab !== "sound";
   }
   const ready = !!dev && !!dev.dump;
   let hint = "";
@@ -2825,6 +2828,7 @@ window.addEventListener("hashchange", () => { const h = location.hash.slice(1); 
 
 const QS = new URLSearchParams(location.search);
 const MOCK = QS.get("mock") === "1";
+const SIM_READONLY = QS.get("simulator");
 $("mock").hidden = !MOCK;
 let mock = null;
 
@@ -2902,6 +2906,7 @@ const pPan = () => pById("PAN", 39), pMute = () => pById("MUTE", 40);
 let connecting = false;
 async function connect() {
   if (connecting || dev) return;
+  if (SIM_READONLY) { await connectSimulatorReadonly(); return; }
   connecting = true;
   let connectedDevice = null;
   wantConnected = true;
@@ -2992,6 +2997,46 @@ async function getDesc(scope, id, d = dev) { return parse[CMD.DESC](await sessio
 async function getDump(d = dev) { const reply = await sessionRequest(d, req.dump()); lastDump = Date.now(); return parse[CMD.DUMP](reply, d.info); }
 async function getStep(i, d = dev) { return parse[CMD.STEP_GET](await sessionRequest(d, req.stepGet(i))); }
 
+/* S4A has a distinct, strictly query-only loader. Firmware INFO is not rewritten. */
+let readonlyModule;
+window.addEventListener("pagehide",()=>{if(dev?.readonly)dev.link.close();});
+async function connectSimulatorReadonly() {
+  connecting = true; $("connect").disabled = true;
+  let d;
+  try {
+    readonlyModule = await import(location.pathname.endsWith(".html") ? "./emu/editor_transport.js" : "../emu/editor_transport.js");
+    const client = await readonlyModule.connectReadonly(window, SIM_READONLY, Link, reason => queueMicrotask(() => {
+      if (dev === d) { disconnect(); sayK("error", reason); }
+    }));
+    tab = "sound";
+    d = dev = { readonly: true, link: client, input: {}, info: null, pdesc: [], gdesc: [], names: [], titles: [],
+      steps: [], slotUsed: [null,null,null,null], watch: false, bank: null, smp: null };
+    const state = await readonlyModule.loadReadonly((r,o)=>sessionRequest(d,r,o),parse,req,CMD);
+    assertSession(d); Object.assign(d,state);
+    d.keys=paramKeys(d.pdesc,d.info.pe0,d.info.pcount);
+    $("version").textContent=d.info.version+" · S4A SIMULATOR READ-ONLY · UNVERIFIED PREVIEW";
+    setLabel($("connect"),t("disconnect"));renderReadonlyView();sayK("ready"," · Simulator read-only");
+  } catch(e) {
+    if(d && dev===d)disconnect();sayK("error",e.message);
+  } finally {connecting=false;$("connect").disabled=false;}
+}
+function renderReadonlyView() {
+  if(!dev?.readonly || !dev.dump)return;
+  initEngineSelector();buildGroups();updateBrowser();renderPanels();
+  for(const c of document.querySelectorAll("main input, main select, main button, #engine, #preset")) {
+    if(c.id!=="connect" && !c.dataset.tab)c.disabled=true;
+  }
+}
+async function pollSimulatorReadonly() {
+  const d=dev,release=beginBusy();
+  try {
+    const snap=await readonlyModule.readonlySnapshot((r,o)=>sessionRequest(d,r,o),parse,req,CMD,d.info);
+    assertSession(d);
+    if(snap.sel!==d.sel || snap.dump.engine!==d.dump.engine) { disconnect();sayK("error","Simulator selection changed; reconnect");return; }
+    d.dump=snap.dump;renderReadonlyView();
+  } catch(e) {if(dev===d){disconnect();sayK("error",e.message);}} finally {release();}
+}
+
 /* the whole connect sequence */
 async function load(d) {
   const releaseBusy = beginBusy();
@@ -3064,10 +3109,13 @@ async function loadSteps(d = dev) {
 }
 
 /* --------------------------------------------------------------- UI --- */
-function buildUI() {
+function initEngineSelector() {
   const sel = $("engine");
   /* (engine 1, "-": DIGITAL retired, reserved: never offered) */
   sel.replaceChildren(...engineOrder(dev.info.engines).map((i) => el("option", { value: i, text: dev.info.engines[i] })));   /* (shown order) */
+}
+function buildUI() {
+  initEngineSelector();
   dev.mix = null;
   buildGroups();
   updateBrowser();
@@ -3092,6 +3140,7 @@ function renderTrackbar() {
   for (const b of box.children) b.setAttribute("aria-pressed", +b.dataset.i === (dev.sel || 0) ? "true" : "false");
 }
 function selectTrack(i) {
+  if (dev?.readonly) return;
   if (!dev || !hasTracks() || i === dev.sel) return;
   op(async () => {
     dev.sel = parse[CMD.TRACK](await rq(req.track(i))).sel;
@@ -4318,6 +4367,7 @@ function maybeReload() {
 }
 /* one multi-request operation; polling waits for it */
 async function op(fn) {
+  if (dev?.readonly) return;
   if (!dev) return;
   const releaseBusy = beginBusy();
   try { await fn(); } catch (err) { report(err); } finally { releaseBusy(); }
@@ -4353,6 +4403,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && de
 let stepRR = 0;
 setInterval(async () => {
   if (!dev || busy || dragging || document.hidden || !dev.dump || !dev.link.idle) return;
+  if (dev.readonly) { await pollSimulatorReadonly(); return; }
   if (needReload) { maybeReload(); return; }
   if (dev.watch && Date.now() - lastDump < 5000) return;
   const releaseBusy = beginBusy();
@@ -5094,8 +5145,9 @@ $("connect").addEventListener("click", () => {
 });
 applyLang();
 showTab(tab);
-libInit();
-if (!MOCK && !navigator.requestMIDIAccess) sayK("nomidi");
+if (!SIM_READONLY) libInit();
+if (SIM_READONLY) connect();
+else if (!MOCK && !navigator.requestMIDIAccess) sayK("nomidi");
 })();
 </script>
 </body>

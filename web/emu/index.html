@@ -99,6 +99,7 @@ footer small { font-size: 11px; opacity: .8; }
 <footer>
   <small class="version">@VERSION@@PREVIEW@</small><br>
   Felucca by Leo Kuroshita, Hügelton Instruments · <a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a> · browser build after charlesvestal's <a href="https://github.com/charlesvestal/fm1-x0x">X0X</a> · DotGothic16 font, <a href="fonts/OFL.txt">SIL OFL 1.1</a><br>
+  <button id="open-editor" disabled>Open read-only editor (S4A, unverified preview)</button>
   <nav><a href="../installer/">Install</a><a href="../editor/">Editor</a><a href="https://github.com/hugelton/Felucca">Source</a></nav>
   <small>M-VAVE and FM-1 are trademarks of their respective owners. Felucca is not affiliated with or endorsed by them.</small>
 </footer>
@@ -155,12 +156,35 @@ function label(parent, x, y, s, size, font = SANS, ink = "var(--label)") {
 const KEYNAMES = ["F", "F♯", "G", "G♯", "A", "A♯", "B", "C", "C♯", "D", "D♯", "E"];
 const keyName = (k) => KEYNAMES[k % 12] + (3 + Math.floor((k + 5) / 12));
 
+let editorContext = null, editorReloadRequired = false;
 let node = null, btnMask = 0, keyMask = 0, latched = 0, masterValue = 700, lastLeds = [0, 0, 0, 0, 0], layout = null;
 const angle = Object.fromEntries(KNOBS.map((n) => [n, 0]));
 angle.MASTER = -135 + 270 * masterValue / 1023;
 const knobs = [], buttons = [], keys = [];
 const btnBy = new Map(), keyBy = new Map();                   // pointer / key code -> label bit or key
 const send = (m) => { if (node) node.port.postMessage(m); };
+const { SimulatorBroker } = await import("./editor_transport.js");
+const editorBroker = new SimulatorBroker(window, send, () => !editorReloadRequired && !!node && editorContext?.state === "running");
+function updateEditorButton() {
+  const button = document.getElementById("open-editor");
+  button.disabled = editorReloadRequired || !node || editorContext?.state !== "running";
+  if (editorReloadRequired) button.textContent = "Reload simulator page to reconnect editor (previous session discarded)";
+}
+document.getElementById("open-editor").addEventListener("click", () => {
+  if (editorReloadRequired) return;
+  if (editorBroker.target && !editorBroker.target.child.closed) { editorBroker.target.child.focus(); return; }
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2,"0")).join("");
+  const url = new URL(location.pathname.endsWith(".html") ? "../editor.html" : "../editor/", location.href);
+  url.searchParams.set("simulator", nonce);
+  const child = window.open(url.href, "_blank");
+  if (!editorBroker.setTarget(child, nonce)) child?.close();
+});
+window.addEventListener("pagehide", () => {
+  editorReloadRequired = true; editorBroker.dispose(); updateEditorButton();
+});
+window.addEventListener("pageshow", e => {
+  if (e.persisted) { editorReloadRequired = true; editorBroker.dispose(); updateEditorButton(); }
+});
 
 function build(name) {
   const L = LAYOUTS[name];
@@ -496,10 +520,16 @@ async function switchOn() {
       ac.audioWorklet.addModule("worklet.js")]);
     node = new AudioWorkletNode(ac, "felucca", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     node.connect(ac.destination);
+    editorContext = ac;
+    ac.addEventListener("statechange", () => {
+      updateEditorButton();
+      if (ac.state !== "running") editorBroker.end("Simulator audio suspended");
+    });
     let warned = false;
     await new Promise((res, rej) => {
       node.port.onmessage = (e) => {
         const m = e.data;
+        if (m.type?.startsWith("editor-")) { editorBroker.receive(m); return; }
         if (m.type === "ready") res();
         else if (m.type === "error") rej(new Error(m.message));
         else if (m.type === "frame") {
@@ -514,6 +544,7 @@ async function switchOn() {
       node.port.postMessage({ type: "load", wasm, sectors: loadFlash(), master: masterValue }, [wasm]);
     });
     await ac.resume();
+    updateEditorButton();
     document.getElementById("start").hidden = true;
     go.textContent = "On";
     if (ac.sampleRate !== 44100) console.warn(`Felucca: the browser plays at ${ac.sampleRate} Hz, the pitch is off by ${(1200 * Math.log2(ac.sampleRate / 44100)).toFixed(0)} cents.`);
@@ -522,7 +553,8 @@ async function switchOn() {
     send({ type: "visible", on: !document.hidden });
     midiOn();
   } catch (err) {
-    node = null;
+    editorBroker.end("Simulator failed"); node = null; editorContext = null;
+    document.getElementById("open-editor").disabled = true;
     go.disabled = false;
     go.textContent = "Switch on";
     say("Could not start: " + (err && err.message || err) + ". A current Chrome, Edge, Firefox or Safari should work.");
