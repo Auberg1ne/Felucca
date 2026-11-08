@@ -1,0 +1,8 @@
+{
+  "sourceCheckpoint": "29bc277a4c726b5b20b4881c6fa744e2d5b4cb9f",
+  "wasmSHA256": "de3f9cc7b2080d8a1b1ae2f99b50715fed4d47cf9dd5df318e9ac41a0ce8be51",
+  "compiler": "Emscripten 3.1.74",
+  "experimental": true,
+  "editor": "read-only",
+  "hardwareValidated": false
+}
