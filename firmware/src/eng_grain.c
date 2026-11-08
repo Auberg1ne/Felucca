@@ -105,7 +105,7 @@ static int32_t gr_rng[NPART];
 
 static uint32_t gr_part(const track_t *t) { return (uint32_t)(t - trk) % NPART; }
 static gr_part_t *gr_of(const track_t *t) { return (gr_part_t *)ENG_MEM(gr_part(t)); }
-static uint32_t gr_nz(uint32_t src) { return src < SMP_NSETS ? SMP_SETS[src].nz : usr_nz[(src - SMP_NSETS) % SMP_USER_SLOTS]; }
+static uint32_t gr_nz(uint32_t src) { return src < SMP_NSETS ? (smp_factory_set_valid(src) ? SMP_SETS[src].nz : 0u) : usr_nz[(src - SMP_NSETS) % SMP_USER_SLOTS]; }
 static const smp_zone_t *gr_zone(uint32_t src, uint32_t zl)
 {
     return src < SMP_NSETS ? &SMP_ZONES[SMP_SETS[src].z0 + zl] : &usr_zone[(src - SMP_NSETS) % SMP_USER_SLOTS][zl & 15u];
@@ -120,7 +120,7 @@ static inline uint32_t gr_scale(uint32_t n, uint32_t f16) { return (n >> 16) * f
 /* one IMA ADPCM sample of zone z at index pos */
 static inline int32_t gr_dec(const smp_zone_t *z, uint32_t pos, int32_t *pred, int32_t *idx)
 {
-    uint32_t b = SMP_DATA[z->off + (pos >> 1)], code = (pos & 1u) ? (b >> 4) : (b & 15u);
+    uint32_t b = smp_data_byte(z->off + (pos >> 1)), code = (pos & 1u) ? (b >> 4) : (b & 15u);
     int32_t step = IMA_STEP[*idx], vd = step >> 3;
     if (code & 4u)
         vd += step;

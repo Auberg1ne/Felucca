@@ -10,9 +10,10 @@ The ADPCM state at the loop start is stored so loops restart exactly.
 
 Libraries:
   cc0        assets/samples-cc0/ (tools/fetch_cc0.py, Versilian Studios, CC0):
-             PIANO, FLUTE, SAX (set 1, once TRANH, and set 4, once PERC, are aliases of PIANO).
-             PIANO is the 5-zone piano of 1.0 .. 1.1.5 (1.2 .. 1.4.1 built a reduced 2-zone
-             one at 11,025 Hz; 1.5 went back to the full one, the same bytes as 1.1.5)
+             GUITAR, VOICE, HIT; source IDs 1 and 4 alias GUITAR at 0.
+             Five factory IDs are always reserved, even without WAV assets.
+             The separate --user-slot PIANO export still uses the historical library;
+             it does not change the factory source table.
 SAMPLE's factory presets end before set 4 (SMP_PERC_SLOT); every sample set and SET / USR
 index stays in its original place.
 A retired set keeps its index as an alias: the original's name and zones (no data), and a
@@ -21,19 +22,19 @@ browsing skips it (params.c enum_orig, ui.c preset_orig).
 Set 4 was PERC, the GM-mapped drum kit (Felucca's generated drums and CC0 hand percussion,
 ~66 KB of flash): retired, the DRUM engine plays the same GM map. A sound that selected it
 loads as DRUM with its default kit (core.h drum_from_perc); what that cannot reach (GRAIN's
-SRC, a value sent live) plays the alias, PIANO.
+SRC, a value sent live) plays the alias, GUITAR.
 
 The SLICE engine's built-in BREAK (eng_slice.c) is rendered here: one bar of 16ths arranged
 from Felucca's generated drums (tools/gen_waves.py, the Hügelton Sample Pack; no third-party
 loop), stored after every set (their
 offsets do not move) and NOT one of the SAMPLE sets (the SET list, its presets and the
-USR1-3 numbers stay as they were). Its slice table (decoder states on a 128-point grid,
+USR1-8 IDs stay 5-12). Its slice table (decoder states on a 128-point grid,
 the hits as AUTO slices) is written with it: SLC_BREAK_INIT.
 
-SLICE's SRC PIANO (added in 1.0.4 after BREAK and USR1-3) is the PIANO set's middle C zone itself:
-no data of its own, only its slice table (one AUTO slice, the note's attack): SLC_PIANO_INIT.
-(1.2 .. 1.4.1 kept a copy of that zone after BREAK, as their PIANO had none; 1.5 shares it again.)
-Without the CC0 library (no PIANO set) it has no material (SLICE plays a sine there).
+SLICE retains its historical SRC PIANO name/ID, but this bank shares GUITAR's middle C
+zone: no data of its own, only its slice table (one AUTO slice): SLC_PIANO_INIT.
+Without that factory material the SLICE source is unavailable too.
+Without GUITAR material the historical SLICE source uses its existing sine fallback.
 
   gen_samples.py OUT.h                                       the header (tools/build.py)
   gen_samples.py --user-slot PIANO "PIANO HD" build/piano_hd/PIANO_HD
@@ -66,10 +67,8 @@ CC0 = SRC / "assets" / "samples-cc0"
 TR = 22050                                   # stored sample rate
 
 # CC0 library: set -> kind ("oneshot" decaying, "sus" looped sustain, "kit" one sample per key)
-# Built-in sets (piano, flute, sax); the other slots of the 8 are for the user (USR1-3, loaded
-# from the web editor). TRANH was removed (66 KB of flash); its index 1 stays, an alias of PIANO
-# ("alias": the set named). PERC (the GM kit) was removed (66 KB); its index 4 stays, an alias of
-# PIANO too (PERC_SLOT; its sounds load as the DRUM engine)
+# Five fixed factory identities; user IDs start at 5 even without assets.
+# Aliases 1/4 retain their saved numbers and share GUITAR's zones/data.
 CC0_SETS = [("GUITAR", "oneshot"), ("GUITAR", "alias"), ("VOICE", "sus"), ("HIT", "oneshot"), ("GUITAR", "alias")]
 PERC_SLOT = 4                                # core.h SMP_SET_PERC: SAMPLE's factory presets end before it
 MEASURED_TUNING = ()                         # sets whose recordings are not at A440 (was TRANH, ~+35 ct)
@@ -275,10 +274,10 @@ class Builder:
         self.brk = dict(off=off, n=n, grid=grid, apos=hits, ast=ima_states(data, hits))
 
     def slice_piano(self):
-        """SLICE's PIANO: the PIANO set's SLC_PIANO_NOTE zone (its data, no copy); its slice table: decoder states
+        """SLICE's historical PIANO: GUITAR's SLC_PIANO_NOTE zone (no copy); its slice table: decoder states
         at k * len / SLC_GRID, one AUTO slice at 0 (a single note has one attack)"""
         z = next((z for name, z0, nz in self.sets if name == "GUITAR"
-                  for z in self.zones[z0:z0 + nz] if z["root16"] == SLC_PIANO_NOTE * 16), None)
+                  for z in self.zones[z0:z0 + nz] if z["n"] and z["root16"] == SLC_PIANO_NOTE * 16), None)
         if not z:
             return
         off, n = z["off"], z["n"]
@@ -298,6 +297,12 @@ class Builder:
     def add_set(self, name, kind, entries):
         """entries: zone dicts with root16 (and key for a kit); assigns the key ranges"""
         if not entries:
+            # Reserve the source identity and an in-bounds zero-length zone.
+            # SAMPLE/GRAIN already recognize n == 0 as unavailable (sine fallback).
+            self.sets.append((name, len(self.zones), 1))
+            self.zones.append(dict(off=0, n=0, ls=0, le=0, sr=TR, root16=960,
+                                   pred=0, idx=0, lo=0, hi=127, looped=False))
+            self.kinds[name] = kind
             return
         if kind == "kit":
             for e in entries:
@@ -328,6 +333,8 @@ class Builder:
 
     def header(self):
         zones, sets, blob = self.zones, self.sets, self.blob
+        if len(sets) != 5 or [n for n, _, _ in sets] != [n for n, _ in CC0_SETS]:
+            raise ValueError("Factory source IDs 0..4 must remain canonical")
         L = ["/* generated by tools/gen_samples.py: IMA ADPCM sample sets */", "#pragma once",
              "#include <stdint.h>", ""]
         L.append(f"static const uint8_t SMP_DATA[{max(1, len(blob))}] = {{")
@@ -350,8 +357,8 @@ class Builder:
         if not sets:
             L.append('    {"NONE", 0, 1},')
         L.append("};")
-        L.append(f"#define SMP_NSETS {max(1, len(sets))}")
-        named = sets or [("NONE", 0, 0)]
+        L.append("#define SMP_NSETS 5")
+        named = sets
         perc = PERC_SLOT if len(named) > PERC_SLOT else len(named)
         L.append(f"#define SMP_NPRESETS {perc}")
         if len(named) > PERC_SLOT:
@@ -438,7 +445,7 @@ def main(out):
     subprocess.run([sys.executable, str(Path(__file__).with_name("gen_waves.py")), str(GENDIR)], check=True)
     have_cc0 = CC0.exists() and any(CC0.glob("*/*.wav"))
     if not have_cc0:
-        print("samples: CC0 library not fetched (tools/fetch_cc0.py) - no SAMPLE sets")
+        print("samples: factory assets unavailable - reserving IDs 0..4 with empty zones")
     key = input_key(have_cc0)
     try:
         ck, summary, text = CACHE.read_text().split("\n", 2)
@@ -449,12 +456,12 @@ def main(out):
     except (OSError, ValueError):
         pass
     b = Builder()
-    if have_cc0:
-        for name, kind in CC0_SETS:
-            if kind == "alias":
-                b.alias_set(name)
-            else:
-                b.cc0_set(name, kind)
+    # Asset availability must never move the user-source offset from 5.
+    for name, kind in CC0_SETS:
+        if kind == "alias":
+            b.alias_set(name)
+        else:
+            b.cc0_set(name, kind)
     if slice_on():                                  # SLICE's BREAK: only when that engine is built
         b.slice_break()                             # last: the sets' offsets stay as they were
         b.slice_piano()                             # (no data of its own: the PIANO set's)

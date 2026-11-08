@@ -123,6 +123,7 @@ async function nativeDevice(binary,engine) {
     .replace('await import("./editor_transport.js")','bridgeModule');
   const setup=vm.runInNewContext(`(async()=>{
     let editorContext={state:"running"},editorReloadRequired=false;
+    let simulatorReady=true,authorityReady=true,workerStartup=null;
     const node={port:{postMessage:m=>endpoint.receive(m)}};
     ${wiring}
     return {broker:editorBroker,updateEditorButton};
@@ -209,6 +210,13 @@ if(binary&&!binary.startsWith("--")) {
       const desc=E.parse[E.CMD.DESC](await d.request(E.req.desc(0,info.pe0)));
       const names=Array.from({length:8},(_,k)=>`USR${k+1}`);
       ok(engine===13?desc.names.join()===["BREAK",...names.slice(0,3),"PIANO",...names.slice(3)].join():desc.names.length===13&&desc.names.slice(5).join()===names.join(),`real firmware via Link: engine ${engine} eight-slot source IDs`);
+      if(engine!==13){
+        const mock=E.makeMockDevice({auto:false});
+        try {ok(desc.names.join()===["GUITAR","GUITAR","VOICE","HIT","GUITAR",...names].join()&&
+          desc.names.join()===mock.tables.ENG[engine].edit[0].names.join()&&state.pdesc[info.pe0].names.join()===desc.names.join(),
+          `S5 real firmware descriptors and mock share all thirteen identities for engine ${engine}`);}
+        finally{mock.stop();}
+      }
       const snap=await readonlySnapshot(d.request,E.parse,E.req,E.CMD,info);
       ok(snap.dump.engine===engine&&snap.dump.p.length===info.pcount&&snap.dump.g.length===info.gcount,`real firmware via Link: engine ${engine} snapshot without DUMP or selection change`);
       for(const [cmd,args] of [[15,[]],[27,[1]],[31,[0,0,0,0]],[65,[]],[3,[0,0]]])

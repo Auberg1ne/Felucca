@@ -82,3 +82,35 @@ static uint32_t old_pack(uint8_t *b, const project_t *q, uint32_t magic, uint32_
     memcpy(b + st - 4u, &sum, 4);
     return st;
 }
+
+/* Frozen FUN10 writer for compatibility fixtures; never derive old steps from
+ * the current writer's bytes. The legacy MIDI boundary allows np <= 114. */
+#define OLD_FUN10 0x46554E41u
+static uint32_t old_pack10(uint8_t *b, const project_t *q, uint32_t np)
+{
+    uint32_t pos=68u, magic=OLD_FUN10, size=3840u, sum;
+    if(np<8u || np>P_COUNT || 68u+NTRK*(np+2u+NSTEP*9u)+sizeof q->chain+sizeof q->motion>PROJ_MIDI_OFF) return 0;
+    memset(b,0,size);memcpy(b,&magic,4);memcpy(b+4,&size,4);memcpy(b+8,q->g,sizeof q->g);
+    b[62]=q->sel;b[63]=q->parts;b[64]=q->phys;b[66]=(uint8_t)np;
+    for(uint32_t t=0;t<NTRK;t++) {
+        for(uint32_t i=0;i<np;i++) {uint32_t id=i<np-8u?i:P_E0+i-(np-8u);b[pos++]=(uint8_t)(q->t[t].p[id]+64);}
+        b[pos++]=q->t[t].engine;b[pos++]=q->t[t].preset;
+        for(uint32_t i=0;i<NSTEP;i++) {
+            const step_t *s=&q->t[t].step[i];uint32_t nd=(uint32_t)step_nudge(s)&15u,r=step_ratchet(s)-1u;
+            if(s->n>4||s->time>ST_REST||s->probability>=COND_FIRST+NCOND)return 0;
+            for(uint32_t j=0;j<4;j++)b[pos++]=(uint8_t)((s->note[j]&127u)|((nd>>j&1u)<<7));
+            b[pos++]=(uint8_t)(s->n|s->time<<3|(s->flags&3u)<<5);
+            b[pos++]=(uint8_t)((s->vel&127u)|(r&1u)<<7);b[pos++]=s->hit;b[pos++]=s->acc&s->hit;
+            b[pos++]=(uint8_t)(s->probability|(r>>1)<<7);
+        }
+    }
+    memcpy(b+pos,&q->chain,sizeof q->chain);pos+=sizeof q->chain;
+    memcpy(b+pos,&q->motion,sizeof q->motion);
+    for(uint32_t i=0;i<q->motion.count;i++) {
+        uint32_t id=MOTION_ID(&q->motion.event[i]);
+        if(id>=P_E0)id-=P_COUNT-np;else if(id>=np-8u)return 0;
+        b[pos+4+3*i+1]=(uint8_t)(id|(q->motion.event[i].param&MOTION_LOCK));
+    }
+    proj_midi_pack(b,q);memcpy(b+PROJ_FM6_OFF,q->fm6,sizeof q->fm6);memcpy(b+PROJ_NAME_OFF,q->name,PROJ_NAME_LEN);
+    sum=proj_hash(b,size-4);memcpy(b+size-4,&sum,4);return size;
+}

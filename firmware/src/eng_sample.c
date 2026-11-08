@@ -375,8 +375,37 @@ static void smp_user_alloc_boot(void)
 
 #ifndef SMP_USER_XIP                                /* host tests: a RAM image of the slots */
 #define SMP_USER_XIP(k) fm1_xip_ptr(smp_user_phys[k])
+#define SMP_USER_FLAT_POOL 1
+#else
+#define SMP_USER_FLAT_POOL 0
 #endif
 static const uint8_t *smp_user_xip(uint32_t k) { return SMP_USER_XIP(k); }
+/* User offsets retain their flat 32-bit representation, shared with SLICE.
+ * Indexing the factory C array with them is outside that object; an assetless
+ * one-byte array can fold every such read to zero. Translate with unsigned
+ * address arithmetic, then read the actual bounded factory/NOR object.
+ * This resolves addresses, not ownership: journal/header validation still
+ * authorizes readers, and deletion keeps the running map for active voices. */
+static inline uint32_t smp_data_byte(uint32_t off)
+{
+    if (off < sizeof SMP_DATA) return SMP_DATA[off];
+#if SMP_USER_FLAT_POOL
+    const uint8_t *pool = fm1_xip_ptr(SMP_USER_BASE);
+    uint32_t rel = off + (uint32_t)(uintptr_t)SMP_DATA - (uint32_t)(uintptr_t)pool;
+    return rel < SMP_USER_POOL_SIZE ? pool[rel] : 0u;
+#else
+    /* Isolated host fixtures may supply separate logical objects. */
+    for (uint32_t k = 0; k < SMP_USER_LOGICAL_SLOTS; k++) {
+        uint32_t size = (uint32_t)smp_user_sectors[k] * SMP_USER_SECTOR_SIZE;
+        if (size < SMP_USER_DATA) continue;
+        const uint8_t *base = smp_user_xip(k) + SMP_USER_DATA;
+        uint32_t rel = off + (uint32_t)(uintptr_t)SMP_DATA - (uint32_t)(uintptr_t)base;
+        if (rel < size - SMP_USER_DATA) return base[rel];
+    }
+    return 0u;
+#endif
+}
+
 #if FELUCCA_SLICE
 static void slc_user_scan(uint32_t k, int valid);   /* eng_slice.c: SLICE's slice table of the slot */
 #else
@@ -438,10 +467,30 @@ static void smp_sine(int32_t *out, uint32_t n, const vmod_t *m, int32_t d16, int
     *y = s;
 }
 /* SET / SRC si (0..SMP_NALL - 1) has no sample data: an empty or invalid user slot, a built-in set without data */
+/* Generated factory descriptors must stay within their own C objects;
+ * malformed offsets must not be interpreted as rebased user NOR addresses. */
+static int smp_factory_set_valid(uint32_t si)
+{
+    if (si >= SMP_NSETS || si >= sizeof SMP_SETS / sizeof SMP_SETS[0]) return 0;
+    const smp_set_t *set = &SMP_SETS[si];
+    uint32_t count = sizeof SMP_ZONES / sizeof SMP_ZONES[0];
+    if (!set->nz || set->z0 >= count || set->nz > count - set->z0) return 0;
+    for (uint32_t i = 0; i < set->nz; i++) {
+        const smp_zone_t *z = &SMP_ZONES[set->z0 + i];
+        uint32_t bytes = z->n / 2u + (z->n & 1u);
+        if (!z->n || z->off > sizeof SMP_DATA || bytes > sizeof SMP_DATA - z->off ||
+            !z->rate || z->rate > (4u << 16) || z->idx > 88u ||
+            z->root16 < 0 || z->root16 > 127 * 16 || z->lo > z->hi || z->hi > 127u ||
+            z->looped > 1u || z->ls > z->le || z->le > z->n ||
+            (z->looped && (z->ls >= z->le || z->le >= z->n))) return 0;
+    }
+    return 1;
+}
+
 static int smp_set_missing(uint32_t si)
 {
     if (si < SMP_NSETS)
-        return !SMP_ZONES[SMP_SETS[si].z0].n;
+        return !smp_factory_set_valid(si);
     return !usr_nz[(si - SMP_NSETS) % SMP_USER_SLOTS];
 }
 
@@ -455,7 +504,7 @@ static inline const smp_zone_t *smp_zone(uint32_t zi)
  * index, s[2] previous sample, s[3] current sample, s[4] zone, s[5] step Q16 */
 static inline int32_t sample_next(const smp_zone_t *z, voice_t *v, int loop)
 {
-    uint32_t pos = v->ph[0], b = SMP_DATA[z->off + (pos >> 1)];
+    uint32_t pos = v->ph[0], b = smp_data_byte(z->off + (pos >> 1));
     uint32_t code = (pos & 1u) ? (b >> 4) : (b & 15u);
     int32_t step = IMA_STEP[(uint32_t)v->s[1] <= 88u ? v->s[1] : 88], vd = step >> 3;
     if (code & 4u)
@@ -479,7 +528,8 @@ static inline int32_t sample_next(const smp_zone_t *z, voice_t *v, int loop)
 static void sample_note_on(track_t *t, voice_t *v)
 {
     uint32_t si = (uint32_t)t->p[P_E0] % SMP_NALL, i, zi = 0xFFFFu, width = 128u;
-    if (si < SMP_NSETS) {                           /* a built-in set: its zones split the keyboard */
+    uint32_t missing = smp_set_missing(si);
+    if (!missing && si < SMP_NSETS) {                           /* a built-in set: its zones split the keyboard */
         const smp_set_t *set = &SMP_SETS[si];
         for (i = 0; i < set->nz; i++)
             if (v->note >= SMP_ZONES[set->z0 + i].lo && v->note <= SMP_ZONES[set->z0 + i].hi) {
@@ -487,7 +537,7 @@ static void sample_note_on(track_t *t, voice_t *v)
                 break;
             }
         v->s[4] = (int32_t)(zi == 0xFFFFu ? set->z0 : zi);
-    } else {                                        /* user slot: silent if empty; the narrowest zone plays */
+    } else if (!missing) {                          /* user slot: narrowest zone plays */
         uint32_t k = si - SMP_NSETS;
         for (i = 0; i < usr_nz[k]; i++) {
             const smp_zone_t *z = &usr_zone[k][i];
@@ -505,7 +555,7 @@ static void sample_note_on(track_t *t, voice_t *v)
     v->s[2] = v->s[3] = 0;
     v->s[6] = zi == 0xFFFFu;     /* 1 = sample ended (one-shot); a kit key with no sound stays silent */
     v->s[7] = 0;                 /* lo-pass state */
-    if (smp_set_missing(si))
+    if (missing)
         v->s[6] = 2;             /* 2 = no sample data: the sine (smp_sine; ph[0] its phase) */
 }
 

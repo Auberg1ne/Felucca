@@ -15,6 +15,7 @@
  * tests/run_tests.sh. */
 #define UI_TEST_NO_MAIN 1
 #include "ui_test.c"
+#include "old_pack.h"
 
 /* track 1 alone, a one-step loop: step 0 NOTE 60 (flags), RATCH hits, GATE 64, no swing; the transport started */
 static track_t *one_step(uint32_t hits, uint32_t flags)
@@ -172,28 +173,28 @@ static int projects(void)
               after.t[0].step[i].vel == before.t[0].step[i].vel;
     bad += check("FUN8: x1..x4 round trip with their velocity, accent, chance (0 and 30 %) and lane hits", ok &&
                  step_ratchet(&after.t[3].step[5]) == 4u && after.t[3].step[5].hit == 0x81);
-    pos = 68u + P_COUNT + 2u + 3u * 9u;              /* step 3 of track 1: x4 -> bit 7 of its velocity and chance */
-    bad += check("  x4 is bit 7 of the velocity and the chance bytes", (packed.raw[pos + 5] & 128u) && (packed.raw[pos + 8] & 128u) &&
-                 (packed.raw[pos + 5] & 127u) == before.t[0].step[3].vel);
+    uint8_t step_raw[9]; uint32_t bit = 3u * PROJ_STEP_BITS;
+    ok = proj_step_get71(packed.raw + 68u + P_COUNT + 2u, &bit, step_raw);
+    bad += check("  x4 retains bit 7 of reconstructed velocity and chance bytes", ok && (step_raw[5] & 128u) &&
+                 (step_raw[8] & 128u) && (step_raw[5] & 127u) == before.t[0].step[3].vel);
     for (k = 0; k < NTRK; k++)
         for (i = 0; i < NSTEP; i++)
             trk[k].step[i].flags &= (uint8_t)~SF_RATCH;
     project_capture(&before);
     proj_pack(&packed, &before);
     ok = 1;
-    for (k = 0, pos = 68u; k < NTRK; k++, pos += P_COUNT + 2u + NSTEP * 9u)
-        for (i = 0; i < NSTEP; i++)
-            ok &= packed.raw[pos + P_COUNT + 2u + i * 9u + 5u] < 128u && packed.raw[pos + P_COUNT + 2u + i * 9u + 8u] < 128u;
-    bad += check("  a project without ratchets: every velocity and chance byte below 128, as firmware before wrote", ok);
-    {   /* a FUN7 image (its tracks without patches) as firmware before RATCH wrote it: x1 */
-        project_store_t old;
-        uint32_t sum, magic = PROJ_MAGIC_V7, size = PROJ_STORE_V7;
-        project_t fun7;
-        memcpy(&old, &packed, sizeof old);
-        memcpy(old.raw, &magic, 4); memcpy(old.raw + 4, &size, 4);
-        memset(old.raw + PROJ_STORE_V7 - 4u - PROJ_NAME_LEN, 0, PROJ_NAME_LEN);
-        sum = proj_hash(old.raw, PROJ_STORE_V7 - 4u); memcpy(old.raw + PROJ_STORE_V7 - 4u, &sum, 4);
-        ok = proj_import(&fun7, &old, PROJ_STORE_V7);
+    for (k = 0, pos = 68u; k < NTRK; k++, pos += P_COUNT + 2u + PROJ_TRACK_STEPS) {
+        bit = 0;
+        for (i = 0; i < NSTEP; i++) {
+            ok &= proj_step_get71(packed.raw + pos + P_COUNT + 2u, &bit, step_raw);
+            ok &= step_raw[5] < 128u && step_raw[8] < 128u;
+        }
+    }
+    bad += check("  a project without ratchets: reconstructed velocity and chance bytes below 128", ok);
+    {   /* Frozen FUN7 writer: never relabel current-format bytes as legacy. */
+        project_store_t old; project_t fun7;
+        uint32_t size = old_pack(old.raw, &before, OLD_FUN7, 89u);
+        ok = size == PROJ_STORE_V7 && proj_import(&fun7, &old, size);
         for (k = 0; ok && k < NTRK; k++)
             for (i = 0; i < NSTEP; i++)
                 ok &= step_ratchet(&fun7.t[k].step[i]) == 1u;

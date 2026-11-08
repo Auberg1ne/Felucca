@@ -333,8 +333,16 @@ async function editorEightSlots() {
       for (const eng of [4,8,13]) {
         await rq(E.req.preset(eng,0));
         const d = E.parse[E.CMD.DESC](await rq(E.req.desc(0,sys.pe0)));
-        const expected = eng === 13 ? ["BREAK",...names.slice(0,3),"PIANO",...names.slice(3)] : ["PIANO","PIANO","FLUTE","SAX","PIANO",...names];
+        const expected = eng === 13 ? ["BREAK",...names.slice(0,3),"PIANO",...names.slice(3)] : ["GUITAR","GUITAR","VOICE","HIT","GUITAR",...names];
         ok(eq(d.names,expected) && d.max === expected.length-1, `S3 ${n}-slot engine ${eng} source IDs`);
+        if (eng !== 13) {
+          const v4 = E.parse[E.CMD.SET](await rq(E.req.set(0,sys.pe0,4)));
+          const v5 = E.parse[E.CMD.SET](await rq(E.req.set(0,sys.pe0,5)));
+          const last = E.parse[E.CMD.SET](await rq(E.req.set(0,sys.pe0,d.max)));
+          const past = E.parse[E.CMD.SET](await rq(E.req.set(0,sys.pe0,d.max+1)));
+          ok(v4.value===0 && v5.value===5, `S5 ${n}-slot engine ${eng}: factory alias 4 / first user 5`);
+          ok(last.value===d.max && past.value===d.max, `S5 ${n}-slot engine ${eng}: last user / unsupported source clamps`);
+        }
       }
       for (let k=0;k<n;k++) {
         const pcm = Int16Array.from({length:601}, (_,i) => Math.round(10000*Math.sin(i/9+k)));
@@ -459,16 +467,16 @@ async function editorSamplePresets() {
   const names = E.parse[C.NAMES](await rq(E.req.names(4)));
   await rq(E.req.preset(4, 0));
   const set = E.parse[C.DESC](await rq(E.req.desc(0, info.pe0)));
-  ok(eq(names.names, ["PIANO", "PIANO", "FLUTE", "SAX"]) && eq(set.names.slice(0, 4), ["PIANO", "PIANO", "FLUTE", "SAX"])
-    && set.names[4] === "PIANO" && eq(set.names.slice(5), ["USR1", "USR2", "USR3", "USR4", "USR5", "USR6", "USR7", "USR8"]),
-    "SAMPLE: TRANH and PERC removed, SET 1 and 4 kept as PIANO aliases, indices unchanged");
+  ok(eq(names.names, ["GUITAR", "GUITAR", "VOICE", "HIT"]) && eq(set.names.slice(0, 4), ["GUITAR", "GUITAR", "VOICE", "HIT"])
+    && set.names[4] === "GUITAR" && eq(set.names.slice(5), ["USR1", "USR2", "USR3", "USR4", "USR5", "USR6", "USR7", "USR8"]),
+    "SAMPLE: TRANH and PERC removed, SET 1 and 4 kept as GUITAR aliases, indices unchanged");
   ok(E.aliasOf(names.names, 1) === 0 && E.aliasOf(names.names, 2) === 2 && E.aliasOf(set.names, 5) === 5 &&
      E.aliasOf(set.names, 4) === 0, "SAMPLE: an entry named like an earlier one is an alias of it");
   const alias = E.parse[C.PRESET](await rq(E.req.preset(4, 1)));
   const setAlias = E.parse[C.SET](await rq(E.req.set(0, info.pe0, 1)));
   const setPerc = E.parse[C.SET](await rq(E.req.set(0, info.pe0, 4)));
   ok(alias.preset === 0 && setAlias.value === 0 && setPerc.value === 0,
-    "SAMPLE: preset 1 and SET 1 / 4 (once TRANH, PERC) land on PIANO");
+    "SAMPLE: preset 1 and SET 1 / 4 (once TRANH, PERC) land on GUITAR");
   await rq(E.req.preset(10, 0));
   const kitD = E.parse[C.DESC](await rq(E.req.desc(0, info.pe0)));
   const kitSet = [];

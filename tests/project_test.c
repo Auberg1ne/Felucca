@@ -418,9 +418,9 @@ int main(void)
         project_t a, c;
         project_store_t st, st2;
         uint32_t i, zero = 1;
-        bad += check("FUN10 name at the end of the reserved tail, the FM6 patches before it, after the data (16 spare)",
-                     PROJ_NAME_OFF == 3824u && PROJ_FM6_OFF == 3312u && 68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) +
-                     sizeof(chain_config_t) + sizeof(motion_store_t) + 16u == PROJ_FM6_OFF);
+        bad += check("FUNB fixed tail after compact steps (17 spare plus 3 MIDI bytes)",
+                     PROJ_NAME_OFF == 3824u && PROJ_FM6_OFF == 3312u && 68u + NTRK * (P_COUNT + 2u + PROJ_TRACK_STEPS) +
+                     sizeof(chain_config_t) + sizeof(motion_store_t) + 20u == PROJ_FM6_OFF);
         memset(&a, 0, sizeof a);
         a.magic = PROJ_MAGIC; a.size = sizeof a; a.parts = NPART; a.phys = PROJ_PHYS;
         chain_defaults(&a.chain);
@@ -443,7 +443,8 @@ int main(void)
         st2 = st;
         st2.raw[PROJ_NAME_OFF + 3] ^= 1u;
         bad += check("FUN7 name byte changed: the hash refuses the project", !proj_import(&c, &st2, sizeof st2));
-        st2 = st;
+        /* The tolerant invalid-name rule belongs to legacy FUNA, not FUNB. */
+        old_pack10(st2.raw, &a, 111u);
         st2.raw[PROJ_NAME_OFF + 3] = 7u;            /* not printable, the hash right */
         {
             uint32_t sum = proj_hash(st2.raw, PROJ_STORE_SIZE - 4u);
@@ -469,7 +470,7 @@ int main(void)
         }
         memcpy(a.name, "FM SONG", 7);
         a.sum = proj_sum(&a);
-        ok = proj_pack(&st, &a) && ((uint32_t *)st.raw)[0] == 0x46554E41u && proj_import(&c, &st, sizeof st);
+        ok = proj_pack(&st, &a) && ((uint32_t *)st.raw)[0] == PROJ_MAGIC && proj_import(&c, &st, sizeof st);
         for (k = 0; k < NTRK; k++)
             ok &= !memcmp(c.fm6[k], FM6_FACTORY[k * 2u], FM6_PACKED) && c.t[k].engine == ENGI_FM6 &&
                   !memcmp(st.raw + PROJ_FM6_OFF + k * FM6_PACKED, FM6_FACTORY[k * 2u], FM6_PACKED);
@@ -494,7 +495,7 @@ int main(void)
                 f.sum = proj_sum(&f);
                 ok = proj_pack(&st, &f) && proj_import(&g, &st, sizeof st) && !memcmp(&f.motion, &g.motion, sizeof f.motion);
                 bad += check("FUN10 round trip: locks on a lane level (P_LN2) and an engine value (P_E5) kept", ok &&
-                             st.raw[68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) + sizeof(chain_config_t) + 4u + 6u + 1u] ==
+                             st.raw[68u + NTRK * (P_COUNT + 2u + PROJ_TRACK_STEPS) + sizeof(chain_config_t) + 4u + 6u + 1u] ==
                              (P_LN2 | MOTION_LOCK) && g.motion.event[3].param == (P_E5 | MOTION_LOCK));
             }
             e.motion.count = 3;   /* a FUN8 of a 1.1 development build (91 parameters) could hold a lock: its E5 then */
@@ -669,7 +670,7 @@ int main(void)
                     !memcmp((c).t[2].p, a.t[2].p, P_E0 * sizeof(int16_t)) && \
                     !memcmp((c).t[2].step, a.t[2].step, sizeof a.t[2].step) && \
                     (c).t[0].engine == ENGI_SAMPLE && (c).t[0].p[P_E0] == 2 && (c).t[1].engine == ENGI_SAMPLE)
-        ok = proj_pack(&st, &a) && proj_import(&c, &st, sizeof st);
+        ok = old_pack(st.raw, &a, OLD_FUN8, 91u) == PROJ_STORE_V8 && proj_import(&c, &st, sizeof st);
         bad += check("FUN8 with a SAMPLE PERC track: DRUM's kit, the rest of the sound and the steps kept", ok && PERC_OK(c) &&
                      str_eq(ENGINES[ENGI_DRUM]->presets[0].name, "DRUM KIT") &&
                      !memcmp(ENGINES[ENGI_DRUM]->presets[0].e, (int8_t[8])DRUM_KIT_E, 8));

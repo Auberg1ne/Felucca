@@ -188,8 +188,8 @@
 #                   seeds: tests/fuzz_ed.c (editor SysEx and raw USB-MIDI packets), tests/fuzz_proj.c (mutated project
 #                   stores -> import -> restore -> render), tests/fuzz_smp.c (user sample slot headers -> scan -> SAMPLE /
 #                   GRAIN / SLICE). Longer runs: build/host/asan/fuzz_ed 300000 7 (iterations, seed), the same for the others.
-#                   UBSan leaves out the DSP's intended wraps (signed overflow, shifts) and the XIP rebase of a user zone's
-#                   offset (bounds, object-size, pointer-overflow: correct on the device's flat flash, not in C's model).
+#                   Legacy suites retain their historical DSP/host sanitizer exclusions. Factory/user addressing
+#                   additionally runs strict decoder checks; its render checks keep bounds and pointer checks enabled.
 # Change baseline entries only for reviewed, intentional differences in sound or cost;
 # retain every unaffected golden / CPU / target entry. VERBOSE=1: every render.
 set -e
@@ -207,6 +207,11 @@ run "SLICE metadata: dynamic samples and staging sectors are never accessed" "$O
 $CC -o "$OUT/storage_fault_gate_test" tests/storage_fault_gate_test.c
 run "storage backend: unresolved flash I/O blocks active transfers" "$OUT/storage_fault_gate_test"
 
+if command -v node >/dev/null 2>&1; then
+    run "simulator startup: guarded Worker lifecycle and receiver" node web/emu/startup_test.mjs
+    run "simulator timing: observer scope and privacy" node web/emu/timing_observer_test.mjs
+fi
+
 if [ -f build/gen/felucca_tables.h ]; then
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
@@ -219,6 +224,13 @@ if [ -f build/gen/felucca_tables.h ]; then
     fi
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
     run "eight slots: source IDs, packed voices, manual edits and legacy imports" "$OUT/eight_slot_compat_test"
+    run "sample identities: actual generator, assetless/partial builds and firmware" python3 tests/sample_identity_test.py --native --out "$OUT/sample_identity"
+    FACTORY_OUT=$(mktemp -d "${TMPDIR:-/tmp}/coffee-grains-factory-tests.XXXXXX")
+    run "factory/user addressing: populated, partial and assetless with BREAK" python3 tests/factory_pipeline_test.py --out "$FACTORY_OUT/with-break"
+    run "factory/user addressing: assetless sentinel without BREAK, all eight slots" python3 tests/factory_pipeline_test.py --without-break --out "$FACTORY_OUT/no-break"
+    run "factory/user addressing: actual SLICE-disabled build" python3 tests/factory_pipeline_test.py --slice-off --out "$FACTORY_OUT/slice-off"
+    $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/project_codec_test" tests/project_codec_test.c -lm
+    run "FUNB: lossless steps, legacy projects, backup and A/B power cuts" "$OUT/project_codec_test"
 fi
 
 $CC -o "$OUT/storage_test" tests/storage_test.c
@@ -507,6 +519,10 @@ else
     run "ASan/UBSan: S4A guarded simulator editor" "$A/editor_bridge_test"
     $SCC -ffp-contract=off -o "$A/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
     run "ASan/UBSan: eight-slot source compatibility and SLICE voice packing" "$A/eight_slot_compat_test"
+    FACTORY_SAN_OUT=$(mktemp -d "${TMPDIR:-/tmp}/coffee-grains-factory-san.XXXXXX")
+    run "strict ASan/UBSan: sample addressing, invalid factory metadata and all slots" python3 tests/factory_pipeline_test.py --without-break --strict-decode --bad-descriptors --out "$FACTORY_SAN_OUT/strict"
+    $SCC -o "$A/project_codec_test" tests/project_codec_test.c -lm
+    run "ASan/UBSan: FUNB codec, legacy import, backup and A/B power cuts" "$A/project_codec_test"
     # This regression uses strict ASan/UBSan, without the broad DSP exclusions.
     STRICT_CC="${CC%% *} -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -w -Ibuild/gen -Ifirmware/src"
     $STRICT_CC -o "$A/signed_audio_scaling_test_strict" tests/signed_audio_scaling_test.c -lm

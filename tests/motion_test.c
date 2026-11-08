@@ -117,7 +117,7 @@ static int compact_project(void)
  * 81..88, motion ids from 81 on for E0..E7 (m: its events as that firmware numbered them) */
 static void pack_fun7_89(project_store_t *out, const project_t *q, const motion_store_t *m)
 {
-    uint8_t *b = out->raw; uint32_t pos = 68u, t, i, magic = PROJ_MAGIC, size = PROJ_STORE_SIZE, sum;
+    uint8_t *b = out->raw; uint32_t pos = 68u, t, i, magic = PROJ_MAGIC_V10, size = PROJ_STORE_SIZE, sum;
     memset(out, 0, sizeof *out); memcpy(b, &magic, 4); memcpy(b + 4, &size, 4);
     memcpy(b + 8, q->g, sizeof q->g); b[62] = q->sel; b[63] = q->parts; b[64] = q->phys; b[66] = 89;
     for (t = 0; t < NTRK; t++) {

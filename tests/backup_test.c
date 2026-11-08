@@ -28,9 +28,24 @@ static void panel_setup(void) {}
 static uint8_t nor[0x100000], flash_ok = 1;
 static int erase_error;
 static uint32_t erases;
-static int st_read(uint32_t off, void *dst, uint32_t n) { memcpy(dst, nor + off, n); return 0; }
-static int st_erase(uint32_t off) { if (erase_error) return -8; memset(nor + off, 0xFF, 4096); erases++; return 0; }
-static int st_prog(uint32_t off, const void *src, uint32_t n) { memcpy(nor + off, src, n); return 0; }
+/* Optional RAM-NOR fault hooks used by project_codec_test; no production driver changes. */
+static int (*bk_read_hook)(uint32_t, void *, uint32_t);
+static int (*bk_erase_hook)(uint32_t);
+static int (*bk_prog_hook)(uint32_t, const void *, uint32_t);
+static int bk_read_plain(uint32_t off, void *dst, uint32_t n) {
+    if(off>sizeof nor || n>sizeof nor-off)return -9;memcpy(dst,nor+off,n);return 0;
+}
+static int bk_erase_plain(uint32_t off) {
+    if(erase_error)return -8;if(off>sizeof nor || 4096u>sizeof nor-off)return -9;
+    memset(nor+off,255,4096);erases++;return 0;
+}
+static int bk_prog_plain(uint32_t off,const void *src,uint32_t n) {
+    if(off>sizeof nor || n>sizeof nor-off)return -9;
+    for(uint32_t i=0;i<n;i++)nor[off+i]&=((const uint8_t *)src)[i];return 0;
+}
+static int st_read(uint32_t off,void *dst,uint32_t n){return bk_read_hook?bk_read_hook(off,dst,n):bk_read_plain(off,dst,n);}
+static int st_erase(uint32_t off){return bk_erase_hook?bk_erase_hook(off):bk_erase_plain(off);}
+static int st_prog(uint32_t off,const void *src,uint32_t n){return bk_prog_hook?bk_prog_hook(off,src,n):bk_prog_plain(off,src,n);}
 static uint32_t irq_save(void) { return 0; }
 static void irq_restore(uint32_t f) { (void)f; }
 static uint32_t fl_jedec_ram(void) { return 0; }
@@ -92,6 +107,7 @@ static void reset(void)
     usb.resets = 0;
     erase_error = 0;
     erases = 0;
+    bk_read_hook = 0; bk_erase_hook = 0; bk_prog_hook = 0;
     ed_bk_valid = ed_bk_put = 0;
 }
 
@@ -174,8 +190,8 @@ static uint32_t get(uint32_t id, uint32_t off, uint32_t count)
 
 /* Seed already-authorized running metadata in isolated logical buffers. This
  * harness tests backup encoding, not journal recovery or SMP upload transport;
- * those use physical NOR in sample_delete_test.c. LIST currently fails earlier
- * at the unchanged project serializer, so GET uses an explicit valid snapshot. */
+ * those use physical NOR in sample_delete_test.c. These isolated sample GET
+ * fixtures use an explicit snapshot; project_codec_test exercises actual LIST. */
 static int sample_objects(void)
 {
     int bad = 0, ok = ED_BK_N == 18;
@@ -226,6 +242,7 @@ static int sample_objects(void)
     return bad;
 }
 
+#ifndef BACKUP_TEST_NO_MAIN
 int main(int argc, char **argv)
 {
     if (argc == 2 && !strcmp(argv[1], "--samples-only")) return sample_objects() != 0;
@@ -483,3 +500,5 @@ int main(int argc, char **argv)
     printf("backup test %s\n", bad ? "FAILED" : "passed");
     return bad != 0;
 }
+
+#endif /* BACKUP_TEST_NO_MAIN */

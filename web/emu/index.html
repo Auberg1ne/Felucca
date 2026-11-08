@@ -77,8 +77,9 @@ footer small { font-size: 11px; opacity: .8; }
 <div class="device" id="device">
   <svg id="panel" viewBox="0 0 1000 624" aria-hidden="true"></svg>
   <canvas id="screen" width="240" height="240" role="img" aria-label="The screen"></canvas>
-  <div class="start" id="start"><button id="go" type="button">Switch on</button><p id="status" hidden></p></div>
+  <div class="start" id="start"><button id="go" type="button">Switch on</button><button id="cancel-worker" type="button" hidden>Cancel preparation</button><p id="status" hidden></p></div>
 </div>
+<p id="persistence-status" role="status" aria-live="polite" aria-atomic="true" data-state="unchecked">Browser persistence will be checked when audio starts.</p>
 
 <p class="keys">
   <span><kbd>Z</kbd>–<kbd>'</kbd> <kbd>Q</kbd>–<kbd>O</kbd> keys</span>
@@ -107,6 +108,7 @@ footer small { font-size: 11px; opacity: .8; }
 
 <script type="module">
 import { midiKnob, KNOB_MODES } from "./worklet.js";
+import {PreparedStartup, readSavedSectors} from "./startup.js";
 const NS = "http://www.w3.org/2000/svg";
 // panel.c's labels (bit = label) and encoder roles
 const B = { FX: 0, SCL: 1, ENV: 2, LFO: 3, EDIT: 4, GLO: 5, HOME: 6, SAVE: 7, ARP: 8, SEQ: 9, PLAY: 10, REC: 11, "OCT-": 12, "OCT+": 13 };
@@ -157,17 +159,26 @@ const KEYNAMES = ["F", "F♯", "G", "G♯", "A", "A♯", "B", "C", "C♯", "D", 
 const keyName = (k) => KEYNAMES[k % 12] + (3 + Math.floor((k + 5) / 12));
 
 let editorContext = null, editorReloadRequired = false;
+let simulatorReady=false, authorityReady=false, workerStartup=null;
+const workerOptIn=new URLSearchParams(location.search).get("worker_prepare")==="1";
 let node = null, btnMask = 0, keyMask = 0, latched = 0, masterValue = 700, lastLeds = [0, 0, 0, 0, 0], layout = null;
 const angle = Object.fromEntries(KNOBS.map((n) => [n, 0]));
 angle.MASTER = -135 + 270 * masterValue / 1023;
 const knobs = [], buttons = [], keys = [];
 const btnBy = new Map(), keyBy = new Map();                   // pointer / key code -> label bit or key
-const send = (m) => { if (node) node.port.postMessage(m); };
+const send = (m) => {
+  if(!node)return;
+  const closing=m.type==='editor-close'||m.type==='editor-cancel';
+  const live=authorityReady && !!editorContext && editorContext.state!=='closed' &&
+    (!workerStartup || (workerStartup.state==='RUNNING' && workerStartup.node===node && workerStartup.context===editorContext));
+  // Keep live MIDI/control delivery during interruption; editor access still needs audio readiness.
+  if(closing || (m.type?.startsWith('editor-') ? simulatorReady : live))node.port.postMessage(m);
+};
 const { SimulatorBroker } = await import("./editor_transport.js");
-const editorBroker = new SimulatorBroker(window, send, () => !editorReloadRequired && !!node && editorContext?.state === "running");
+const editorBroker = new SimulatorBroker(window, send, () => simulatorReady && !editorReloadRequired && !!node && editorContext?.state === "running");
 function updateEditorButton() {
   const button = document.getElementById("open-editor");
-  button.disabled = editorReloadRequired || !node || editorContext?.state !== "running";
+  button.disabled = !simulatorReady || editorReloadRequired || !node || editorContext?.state !== "running";
   if (editorReloadRequired) button.textContent = "Reload simulator page to reconnect editor (previous session discarded)";
 }
 document.getElementById("open-editor").addEventListener("click", () => {
@@ -180,6 +191,7 @@ document.getElementById("open-editor").addEventListener("click", () => {
   if (!editorBroker.setTarget(child, nonce)) child?.close();
 });
 window.addEventListener("pagehide", () => {
+  authorityReady=false;simulatorReady=false;workerStartup?.cancel();
   editorReloadRequired = true; editorBroker.dispose(); updateEditorButton();
 });
 window.addEventListener("pageshow", e => {
@@ -440,24 +452,41 @@ function drawLights([litB, litK, dimB, dimK, dimLo = 0, brB = 0, brK = 0, midK =
 }
 
 // ------------------------------------------------------------------ the flash, kept in this browser
+let flashWritable=true;
+function setPersistenceStatus(state,message) {
+  const region=document.getElementById('persistence-status');
+  region.dataset.state=state;region.textContent=message;region.hidden=false;
+}
 function loadFlash() {
+  let storage=null;try{storage=window.localStorage;}catch{}
   try {
-    const raw = JSON.parse(localStorage.getItem(STORE) || "{}"), out = {};
-    for (const [off, b64] of Object.entries(raw)) out[off] = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    return out;
-  } catch { return {}; }
+    const saved=readSavedSectors(storage,STORE);flashWritable=saved.writable;
+    setPersistenceStatus(saved.writable?'available':'ram-only',saved.writable?
+      'Browser storage is available. New changes are durable only after a successful save.':
+      'RAM-only session: browser storage cannot be read. Changes will not be written back.');
+    return saved.sectors;
+  }catch(err){
+    flashWritable=false;
+    setPersistenceStatus('read-failed','Saved flash could not be read or decoded. Writes are prohibited; existing saves are retained.');
+    throw err;
+  }
 }
 function saveFlash(sectors) {
+  if(!flashWritable)return false; // Preserve the RAM-only/read-failed status and write prohibition.
   try {
     const raw = {};
     for (const [off, u8] of Object.entries(sectors)) {
-      let s = "";
+      let s = '';
       for (let i = 0; i < u8.length; i += 4096) s += String.fromCharCode.apply(null, u8.subarray(i, i + 4096));
       raw[off] = btoa(s);
     }
     localStorage.setItem(STORE, JSON.stringify(raw));
+    setPersistenceStatus('available','Latest published changes were saved in this browser.');
     return true;
-  } catch { return false; }                                       // private mode, full: this session only
+  } catch {
+    setPersistenceStatus('save-failed','Latest changes were not saved. They remain in memory; a later publication may succeed.');
+    return false;
+  }
 }
 
 // ------------------------------------------------------------------ Web MIDI in (channel messages)
@@ -510,6 +539,14 @@ async function midiOn() {
 const status = document.getElementById("status");
 const say = (t) => { status.textContent = t; status.hidden = !t; };
 async function switchOn() {
+  if(workerOptIn){
+    try {
+      if(workerStartup.state==='IDLE')await workerStartup.prepare();
+      else if(workerStartup.state==='READY_TO_START')await workerStartup.start();
+      else if(workerStartup.state==='RUNNING')await workerStartup.resume();
+    }catch(err){say("Worker startup failed: "+String(err?.message||err)+". Reload required; no fallback performed.");}
+    return;
+  }
   const go = document.getElementById("go");
   go.disabled = true;
   go.textContent = "Starting…";
@@ -537,13 +574,14 @@ async function switchOn() {
           if (m.leds) drawLights(lastLeds = m.leds, m.anim);
           if (m.sectors && !saveFlash(m.sectors) && !warned) {
             warned = true;
-            console.warn("Felucca: this browser does not keep the saves; they last until the page closes.");
+            console.warn("Felucca: latest changes were not saved; see the persistence status.");
           }
         }
       };
       node.port.postMessage({ type: "load", wasm, sectors: loadFlash(), master: masterValue }, [wasm]);
     });
     await ac.resume();
+    authorityReady=true;simulatorReady=true;
     updateEditorButton();
     document.getElementById("start").hidden = true;
     go.textContent = "On";
@@ -553,12 +591,60 @@ async function switchOn() {
     send({ type: "visible", on: !document.hidden });
     midiOn();
   } catch (err) {
-    editorBroker.end("Simulator failed"); node = null; editorContext = null;
+    authorityReady=false;simulatorReady=false;
+    editorBroker.end("Simulator failed");
+    try{node?.disconnect();}catch{}
+    if(editorContext)editorContext.close().catch(()=>{});
+    node = null; editorContext = null;
     document.getElementById("open-editor").disabled = true;
     go.disabled = false;
     go.textContent = "Switch on";
     say("Could not start: " + (err && err.message || err) + ". A current Chrome, Edge, Firefox or Safari should work.");
   }
+}
+if(workerOptIn){
+  const go=document.getElementById('go'),cancel=document.getElementById('cancel-worker');
+  go.textContent='Prepare simulator (Worker preview)';
+  say('Development-only Worker preparation. A second Start audio gesture is required.');
+  workerStartup=new PreparedStartup({loadSaved:loadFlash,master:()=>masterValue,
+    onFrame:m=>{
+      if(m.type?.startsWith('editor-')){editorBroker.receive(m);return;}
+      if(m.type==='frame'){
+        if(m.fb)drawScreen(m.fb);if(m.leds)drawLights(lastLeds=m.leds,m.anim);
+        if(m.sectors)saveFlash(m.sectors);
+      }
+    },
+    onContextState:state=>{
+      if(state==='closed')authorityReady=false;
+      simulatorReady=state==='running'&&workerStartup.state==='RUNNING';
+      if(!simulatorReady)editorBroker.end('Simulator audio unavailable');
+      updateEditorButton();
+      if(workerStartup.state==='RUNNING'){
+        document.getElementById('start').hidden=simulatorReady;
+        go.disabled=false;go.textContent=simulatorReady?'On':'Resume audio';
+        if(simulatorReady){send({type:'master',value:masterValue});syncButtons();syncKeys();send({type:'visible',on:!document.hidden});}
+      }
+    },
+    onState:(state,error)=>{
+      cancel.hidden=!['PREPARING','READY_TO_START','BOOTING','READY_TO_RENDER'].includes(state);
+      go.disabled=!['READY_TO_START','RUNNING'].includes(state);
+      if(state==='PREPARING'){go.textContent='Preparing…';say('Preparing disposable WASM in a Worker; audio is not started.');}
+      if(state==='READY_TO_START'){go.textContent='Start audio';say('Prepared. Press Start audio to initialize the simulator.');}
+      if(state==='BOOTING'||state==='READY_TO_RENDER')go.textContent='Starting…';
+      if(state==='RUNNING'){
+        node=workerStartup.node;editorContext=workerStartup.context;authorityReady=editorContext.state!=='closed';simulatorReady=editorContext.state==='running';
+        document.getElementById('start').hidden=simulatorReady;go.textContent=simulatorReady?'On':'Resume audio';
+        send({type:'master',value:masterValue});syncButtons();syncKeys();send({type:'visible',on:!document.hidden});midiOn();
+      }
+      if(state==='FAILED'||state==='CANCELLED'){
+        authorityReady=false;simulatorReady=false;editorBroker.end('Simulator startup ended');node=null;editorContext=null;
+        document.getElementById('start').hidden=false;go.textContent='Reload required';
+        say((error?.message||'Preparation cancelled')+'. Reload required; no fallback performed.');
+      }
+      updateEditorButton();
+    }
+  });
+  cancel.addEventListener('click',()=>workerStartup.cancel());
 }
 document.getElementById("go").addEventListener("click", switchOn);
 document.addEventListener("visibilitychange", () => send({ type: "visible", on: !document.hidden }));

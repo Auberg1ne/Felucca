@@ -175,7 +175,7 @@ The FX layer's REV THROW and ECHO THROW (1.5.1) are performance only: no paramet
 `DESC` names it like the value it now plays (an alias), the device never holds it (a `SET` of it lands on that value
 and the reply says so) and its knob steps over it. Of a repeated name, the original is the first value when that has
 the name, else the last one with it; an editor should list only the originals and show an alias by its name when
-it ever sees one. Today: SAMPLE SET and GRAIN SRC 1 and 4 (once TRANH, PERC) = 0 PIANO; DRUM KIT (engine 10, E1)
+it ever sees one. Today: SAMPLE SET and GRAIN SRC 1 and 4 (once TRANH, PERC) = 0 GUITAR; DRUM KIT (engine 10, E1)
 1, 2, 3 (once HAND, CYM, H+CYM; 1.0.5) = 6 (66), 5 (10), 8 (77): its names are STD 66 10 77 80 10 66 55 77 (1.5.6,
 #216: then 9 DEEP, 10 TIGHT, 11 PERC, appended; firmware before clamps them to 8, 77), the device's knob steps STD 80 10
 66 55 77 DEEP TIGHT PERC. An editor of before 1.0.5 (first of a name = original) offers 66 10 77
@@ -244,6 +244,44 @@ and USR1..3 IDs 5..7; USR4..8 append IDs 8..12. SLICE retains BREAK 0,
 USR1..3 1..3 and PIANO 4; USR4..8 append IDs 5..9. Serialized parameter,
 preset and motion-lock layouts are unchanged. Older firmware cannot represent
 the appended source values. Manual slices remain RAM-only (C1).
+
+**Canonical SAMPLE/GRAIN source identity (S5):**
+
+| Source ID | Name/material |
+|---|---|
+| 0 | GUITAR |
+| 1 | GUITAR, compatibility alias of 0 |
+| 2 | VOICE |
+| 3 | HIT |
+| 4 | GUITAR, compatibility alias of 0 |
+| 5..12 | USR1..USR8, in order |
+
+These are source IDs, not writable factory slots or factory-preset numbers.
+Factory ADPCM/metadata is compiled into the application; user uploads still use
+logical slots 0..7 and the same shared 240 KiB pool. There are three distinct
+factory materials, not five independent sounds. Existing browsing hides aliases;
+stored source values retain their established interpretation. The special legacy
+SAMPLE SET 4/PERC-to-DRUM project/preset migration remains unchanged.
+
+The generator reserves all five factory entries even when the library is absent,
+empty or partial. Missing material has an in-bounds zero-length zone and uses the
+existing missing-source sine fallback. It never consumes a user slot or moves
+USR1 away from source 5. Optional SLICE generation does not change this mapping.
+Source 13 is outside the descriptor range; existing parameter/editor SET behavior
+clamps to the last value 12. Sample command slot 8 remains rejected.
+
+This preserves canonical project selections without changing serialization.
+Old files from the defective assetless generator may contain shifted user IDs
+that overlap legitimate factory IDs; no provenance distinguishes them. Do not
+automatically reinterpret those values as users. This patch does not migrate
+such ambiguous files; recovery needs the original build context and an explicit
+migration decision. The separate current-format project-size/save failure is
+not repaired here.
+
+The JavaScript mock uses these names for both three-user and eight-user profiles;
+real connections continue to use the device's INFO/DESC/NAMES responses. S4A
+remains read-only. SLICE keeps its separate append-only numbering and historical
+PIANO label at ID 4; no SLICE source or audio behavior changes in S5.
 
 SMP_INFO enumerates eight entries; every sample command accepts slots 0..7 and
 rejects slot 8. Backup appends IDs 35..39 without renumbering existing objects.
@@ -384,8 +422,8 @@ numbered 0..31 (the device shows U01..U32).
 - **SAMPLE SET 4** was PERC, the General MIDI drum kit, until 1.0.2. A record of SAMPLE (engine 4) with E1 (SET)
   = 4, stored then or sent by `UP_PUT`, is the DRUM engine with its default kit: the device rewrites it (engine 10,
   E1..E8 = DRUM KIT's {0, 64, 70, 64, 64, 100, 0, 0}, the other values and the pattern as they were). Projects
-  and `PRESET` 4 / 4 do the same (a project's track keeps its steps). SET 4 itself stays (`DESC` names it "PIANO":
-  an alias, as SET 1; a `SET` of 4 lands on 0), and USR1..USR3 stay 5..7; GRAIN's SRC 4 plays PIANO.
+  and `PRESET` 4 / 4 do the same (a project's track keeps its steps). SET 4 itself stays (`DESC` names it "GUITAR":
+  an alias, as SET 1; a `SET` of 4 lands on 0), and USR1..USR3 stay 5..7; GRAIN's SRC 4 plays GUITAR.
 - **DRUM KIT 1..3** were HAND, CYM and H+CYM until 1.0.4 (STD with a conga / claves, a cymbal, both). Since 1.0.5
   they play the VA kits 66, 10 and 77, and a record holding one loads as that kit: `UP_GET` / `UP_LOAD` give KIT 6, 5
   or 8 (the record itself is not rewritten). Projects, motion events and `SET` do the same.
@@ -899,9 +937,9 @@ this firmware sends 3. Requests name objects, never flash addresses.
 
 | id | object | size |
 | --- | --- | --- |
-| 0 | runtime: the music being played now, as a FUN10 project (1.1: FUN9, 3648; 1.0.x: FUN8, 3584; firmware before FM6: FUN7, 3388) | 3840 |
+| 0 | runtime: the music being played now, as a FUNB project (see current codec note below) (1.1: FUN9, 3648; 1.0.x: FUN8, 3584; firmware before FM6: FUN7, 3388) | 3840 |
 | 1 | settings (palette, speaker, HOLD time, favorites, panel calibration, ...) | the settings record's size |
-| 2..5 | PROJECT slots 1..4 (FUN10; 1.1: FUN9, 3648; 1.0.x: FUN8, 3584) | 3840, or 0 if empty |
+| 2..5 | PROJECT slots 1..4 (FUNB or retained legacy; 1.1: FUN9, 3648; 1.0.x: FUN8, 3584) | 3840, or 0 if empty |
 | 6, 7 | user preset banks (slots 1..16, 17..32) | the bank's size, or 0 if empty |
 | 8 | the FM6 patch bank of 1.0..1.0.2 (B1..B27). Since 1.0.3 always listed empty (see below) | 3472, or 0 if empty |
 | 9 | the user presets' FM6 patches (1.0.3; `up_fm6.c`: per slot a tag and the packed patch) | 3728, or 0 if none |
@@ -1441,3 +1479,240 @@ loading, WebAssembly linking/exports, AudioWorklet deadlines under active audio,
 background-tab behavior and browser compatibility remain release gates. Passing
 native tests alone does not make S4A production-ready. No physical FM-1 hardware
 is flashed or validated by these tests.
+
+
+### Development-only Worker startup (S4A-I1)
+
+The simulator's ordinary startup remains the default. Append `?worker_prepare=1`
+(or `&worker_prepare=1`) to opt into the guarded preview. The existing start
+screen first offers **Prepare simulator**, then **Start audio**. Preparation
+creates no AudioContext: a dedicated Worker compiles the bundled WASM, boots a
+disposable private instance with blank NOR, and renders 207 blocks of 128 frames
+(about 600.816 ms of simulated audio). No saved sectors, user samples, projects,
+editor ports or persistence callbacks are sent to that Worker.
+
+The second deliberate gesture creates AudioContext and, only if browser policy
+requires it, requests `resume()` directly from that gesture. There is no explicit
+`suspend()` preparation cycle. One fresh authoritative instance receives the
+compiled module by structured cloning, restores the page's legitimate saved
+sectors and runs the existing firmware boot/recovery sequence. It performs no
+warm-up, reference-instance creation, memory comparison or NOR snapshot. Its
+first normal render acknowledges startup before editor access and ordinary
+inputs become available. A later browser interruption offers an explicit
+**Resume audio** action without recreating or warming firmware.
+
+Startup states are `IDLE`, `PREPARING`, `READY_TO_START`, `BOOTING`,
+`READY_TO_RENDER`, `RUNNING`, and terminal `FAILED` / `CANCELLED`. Cancellation,
+timeouts, Worker errors, protocol mismatches and processor errors require a
+reload; they never silently switch to the ordinary startup path or retry
+initialization. The idle Worker/module remains owned by the page until failure,
+cancellation or page exit. Back/forward-cache restoration still requires reload.
+
+The internal startup protocol is `coffee-grains-wasm-prepare`, version 1, with a
+nonzero increasing per-controller attempt ID, separate from editor epochs and
+tickets. Only one attempt and initialization can be active. Stale attempts are
+ignored; duplicate readiness/initialization and malformed current messages fail
+closed. Module objects are cloned, never put in a transfer list. WASM input is
+limited to 8 MiB; diagnostics use fixed scalar fields. The authoritative sector
+map is limited to the existing 80 aligned 4 KiB sectors in the unchanged saved
+areas. Preparation, registration/initialization and first-render waits have
+15 s, 5 s and 2 s deadlines respectively. These are failure-detection deadlines,
+not hard preemption guarantees for synchronous WASM or worklet execution.
+
+Saved-flash decoding is strict in both startup modes: malformed existing JSON,
+invalid base64/sector sizes, duplicate normalized offsets and out-of-area sectors
+stop startup without replacing stored bytes with blank data. If browser storage
+cannot be read at all, the page explicitly uses RAM-only mode and does not write
+back during that session. No startup error formats, migrates or reclaims flash.
+Normal successful simulator persistence remains authoritative sector publication;
+the Worker cannot publish sectors. All C1/C2/C3/H1/H2 protections, the 240 KiB pool,
+S1 address mapping, and the S4A command allowlist/lease/origin/nonce/epoch/response
+bounds remain unchanged. No sample/backup/OTA editor operations are enabled.
+
+This slice has no production browser timing claim. Earlier blank-NOR Chromium
+experiments demonstrated cross-thread reuse, but do not bound nonblank journal
+recovery, restored projects, cold engine paths, memory pressure, other browsers
+or real-time deadlines. Two 32 MiB instances may coexist until garbage collection;
+termination and dropping references do not guarantee immediate memory release.
+A production-file browser check, restored-data timing, activation/lifecycle checks
+and FM-1 hardware validation remain separate gates. No physical hardware is
+flashed by this startup path.
+
+Interruption handling separates live firmware control routing from audible/editor
+availability: MIDI release/control messages continue to the same initialized
+authority while its AudioContext is interrupted. Editor access stays disabled
+until audio is available. Failure, cancellation and closed contexts stop routing;
+external MIDI state is not reconstructed from panel keys. Current-attempt
+protocol mismatches remain fatal after readiness as well as during preparation.
+
+A persistent, accessible browser-storage status appears outside the startup
+overlay. It distinguishes storage availability, RAM-only operation, saved-data
+read/decode failure with writes prohibited, and an unsuccessful publication save.
+Read unavailability prohibits writes for the session. A save failure reports
+that the latest changes are not durable; only a later successful publication
+clears that warning. No automatic save retry or blank-storage fallback is added.
+
+### Repeatable browser startup smoke test
+
+The opt-in regression below serves a temporary snapshot of the current web
+sources with an explicitly selected, SHA-256-checked WASM artifact. It requires
+Python Playwright and sandbox-capable system Chromium; it does not install tools
+or rebuild WASM. Run from the checkout:
+
+```
+python3 web/emu/browser_startup_test.py \
+  --wasm /absolute/path/to/felucca.wasm \
+  --sha256 EXPECTED_ARTIFACT_SHA256
+```
+
+Use `--chromium /path/to/chromium` for a different installed executable, and
+`--case default|worker|cancel|corrupt-storage|missing-wasm` for a focused case.
+Without `--case` all five run, stopping on the first failure. The runner uses a
+fresh disposable profile, binds only to 127.0.0.1, blocks external page requests
+and retains JSON results/source hashes under a new temporary directory. Repository
+files and existing browser profiles/saves are not modified. Missing prerequisites
+or sandbox permission failures are unverified, never passing results.
+
+Tests exercise actual page startup, Worker readiness without an AudioContext,
+the second Start gesture, a single authoritative node, render progress, the normal
+separate-window editor handshake/real firmware replies, disabled mutation controls,
+controller release, cancellation, corrupt-save preservation and failed WASM loading.
+Read-only observations wrap native constructors and port sends; they do not render
+extra firmware instances, issue editor commands, alter application handlers or
+forward saved state to the Worker. Existing JS/DOM tests remain responsible for
+MIDI interruption routing and persistence-write failure injection.
+
+This smoke test is not a timing benchmark. AudioContext clock progress and worklet
+frame messages do not establish audible output, absence of underruns, callback
+deadlines or compilation reuse. Observer overhead also prevents timing claims.
+Production-file timing traces, nonblank restored-project startup and physical
+FM-1 validation remain separate gates. Default startup and read-only bridge
+restrictions remain unchanged.
+
+### Matched native-trace timing controls (test-only)
+
+`web/emu/timing_test.py` consolidates the startup/GRAIN timing experiment. It
+requires the existing Playwright/system Chromium tools, a production S4A WASM,
+and the previously validated 26-sector saved-NOR fixture (eight v2 user samples
+plus a supported FUN9 autosave selecting GRAIN/USR8). Fixture hashes are checked
+and its sector image is decoded with the actual `readSavedSectors` implementation.
+It never rebuilds, installs tools, regenerates the fixture or changes app files.
+
+```
+python3 web/emu/timing_test.py \
+  --wasm /path/to/felucca.wasm --sha256 EXPECTED_WASM_SHA256 \
+  --fixture-nor /path/to/restored.nor \
+  --fixture-sectors /path/to/saved-sectors.json --repeats 3 \
+  > /tmp/coffee-grains-timing-driver.log 2>&1
+```
+
+The default campaign uses three fresh-browser repetitions per cell in a 2x2
+clean/restored NOR × observer off/on design, with counterbalanced order. Restored
+runs include the same three-key GRAIN chord, editor read-only snapshot and release.
+There are no concurrent audio instances or test workloads. Both arms use the same
+passive Window probes and native CDP tracing; observer-off means **no worklet
+wrapper**, not absence of trace overhead. Durations come from complete native
+`AudioWorkletProcessor::Process (author script execution)` spans, checked against
+JS process calls and wider native processor spans. Quantum/rate come from CDP in
+both arms. Exact first-active callback completion is unverified in observer-off
+runs; the started reply is recorded separately and is not a completion timestamp.
+
+`timing_observer.js` is never imported or packaged by normal startup. Only the
+runner prepends it to a temporary served worklet copy, after testing the actual
+Window/worklet scope guard. It exports aggregate callback/frame/finiteness/peak
+metrics only, never NOR bytes, projects, firmware handles or parameter state.
+One processor is registered and one node/connection is used. There is no
+per-callback reporting/allocation. `timing_observer_test.mjs` checks environment,
+registration and privacy and runs in the ordinary host-test Node block.
+
+The runner binds only to 127.0.0.1, blocks external page requests, keeps sandboxing,
+bounds trace storage and preserves browser stderr without suppressing errors.
+Results, stream-close statistics and source hashes go to a new `/tmp` directory;
+profiles and served snapshots are removed. `--analyze /path/to/results` reanalyzes
+without launching a browser. No automatic retries or runtime mitigations occur.
+
+Reported budget exceedances are elapsed-envelope observations, not proof of
+hardware underruns. Callback tails, observer/tracing/JIT costs and browser/host
+scheduling require separate interpretation. Three repeats are exploratory and do
+not estimate rare-event rates. In headless runs the native stream can be `FAKE`;
+that is not physical audio validation. Keep generic stream lifecycle `OnError`
+records separate from read timeouts, glitches and platform errors. Normal startup
+remains default-off for Worker preparation, and editor writes remain denied.
+
+
+#### Bounded stage attribution (test-only)
+
+Add `--stages --repeats 2` to the timing command above for four fresh-browser
+captures (two clean, two restored), rather than another observer-off/on campaign.
+Only the temporary served worklet copy receives static native trace markers,
+capped at 8,192 callbacks. Production worklet/startup files and WASM stay unchanged.
+The analyzer brackets the production process body, `web_render`, stereo output
+view/copies and `publish()`. Here `publish()` means UI/display/changed-sector
+message construction, not the audio output copy and not journal PUBLISH. The
+native author-script envelope also includes the aggregate observer and call
+boundary; it must not be described as DSP time alone.
+
+Markers provide elapsed timestamps and raw Chromium ThreadTicks. CPU quality
+counters explicitly flag negative values and CPU intervals exceeding elapsed
+intervals by more than 5 microseconds. Such values are unreliable for attribution;
+ThreadTicks distributions remain raw evidence, not a guarantee of accurate CPU
+accounting. Read-only cgroup snapshots report shared quota/throttling counters.
+Host/trace monotonic-clock alignment is checked before temporal correlation;
+100 ms snapshots cannot identify a particular thread's scheduler delay or prove
+that an individual callback was throttled. Static-marker/tracing overhead and
+first-use compilation remain observer effects. Do not infer hardware underruns
+from elapsed callback overruns or generic native stream `OnError` notifications.
+
+No extra AudioContext, node or connection is created. Tests execute the actual
+process body before/after the served-copy transformation to check output and
+operation ordering, inactive behavior and marker-cap behavior. The deterministic
+unit adapters are not used for timing: browser measurements use the production
+WASM and validated saved NOR. Do not change startup defaults or DSP based solely
+on a bounded exploratory capture.
+
+#### Disposable publication-getter preparation
+
+The default-off `?worker_prepare=1` path calls a fixed list of 15 read-only
+exports once after its existing 207-block disposable render warm-up: the eight
+LED mask/level getters, stereo output pointers, screen pointer/draw count, NOR
+pointer/size and flash-write count. The C implementations only read initialized
+state or return addresses; no pointer contents or getter results are sent to the
+page/worklet. `web_anim_levels` is deliberately excluded because it writes a
+static display-cache array. No UI publication, sector serialization, editor
+request or additional authoritative instance is run in the Worker.
+
+Existing counter checks still reject flash writes or forbidden operations. A
+missing getter fails preparation with the existing reload-only error behavior;
+there is no silent fallback. The two gestures, no AudioContext during preparation,
+private Worker memory, direct authoritative saved-sector restoration, diagnostics
+format and read-only editor boundary are unchanged. Tests compare the disposable
+memory before/after getter calls and a fresh instance against an unwarmed boot
+reference; production performs no memory comparisons.
+
+Invoking these functions in a Worker does not guarantee that another context or
+browser reuses their compiled code. Compare native AudioWorklet compilation
+spans and callback/publication timing with the same WASM and workload. Remaining
+cache-writing getters, JS first-use costs and scheduling delays are outside this
+preparation coverage. This is not a claim of real-time safety or an opt-in rollout
+change.
+
+## Coffee Grains S6: current FUNB projects
+
+The historical FUN10/FUNA descriptions above remain relevant to older records.
+Current writes use explicitly versioned FUNB (`0x46554E42`), still exactly 3840
+bytes. Each track stores 64 steps in a 568-byte, 71-bit-per-step stream; only
+the formerly rejected metadata bit is omitted. All 84 chain bytes, motion,
+MIDI, FM6 and canonical SAMPLE/GRAIN source IDs 0–12 remain intact. The current
+118-parameter body ends at offset 3292, leaving 17 padding bytes before MIDI
+at 3309. Patches, name and FNV-1a checksum retain offsets 3312, 3824 and 3836.
+
+Valid FUN1–FUNA records remain readable without repacking on load. Backup
+exports retained project records at their validated original lengths; restore
+validates and converts them to FUNB through the existing bounded A/B commit.
+Runtime capture and LIST fit again. Older firmware may reject FUNB. New FUNB
+SAMPLE source 4 remains the GUITAR alias; historical PERC migration applies
+only to older records. No ambiguous assetless selection is migrated.
+
+No sample-storage format, backup object ID, editor command permission or
+startup default changes. See [project-codec.md](../docs/project-codec.md) for
+the losslessness gate, exact byte layout and compatibility limits.

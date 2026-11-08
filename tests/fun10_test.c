@@ -489,42 +489,24 @@ static int formats(void)
         motion_set_event(&trk[i % 4u], (i / 4u) % NSTEP, i / 4u < NSTEP ? P_REV : P_PAN, (int16_t)(i / 4u < NSTEP ? i / 4u : -(int32_t)(i % 60u)));
     motion_set_lock(&trk[2], 9, P_E0 + 3, 7);
     project_capture(&a);
-    ok = motion.count == MOTION_MAX && proj_pack(&st, &a) && ((uint32_t *)st.raw)[0] == 0x46554E41u &&
+    ok = motion.count == MOTION_MAX && proj_pack(&st, &a) && ((uint32_t *)st.raw)[0] == PROJ_MAGIC &&
          ((uint32_t *)st.raw)[1] == 3840u && st.raw[66] == P_COUNT && proj_import(&b, &st, sizeof st) && !memcmp(&a, &b, sizeof a);
     ok &= step_nudge(&b.t[0].step[0]) == -8 && step_nudge(&b.t[0].step[1]) == 7 && step_nudge(&b.t[0].step[2]) == -1 &&
           step_ratchet(&b.t[0].step[3]) == 4u && step_nudge(&b.t[0].step[3]) == 1 && step_chance(&b.t[0].step[3]) == 33u;
     ok &= b.t[0].p[P_LSYNC] == 8 && b.t[0].p[P_LTRIG] == 1 && b.t[0].p[P_LPOL] == 1 && b.t[0].p[P_SQNT] == 0;
-    ok &= !(st.raw[68u + P_COUNT + 2u] & 0x80u) && (st.raw[68u + P_COUNT + 2u + 3u] & 0x80u) &&   /* -8: bit 3 only */
-          (st.raw[68u + P_COUNT + 2u + 9u] & 0x80u) && !(st.raw[68u + P_COUNT + 2u + 12u] & 0x80u);   /* +7: bits 0..2 */
+    { uint32_t bit = 0; uint8_t r0[9],r1[9];
+      ok &= proj_step_get71(st.raw+68u+P_COUNT+2u,&bit,r0) && proj_step_get71(st.raw+68u+P_COUNT+2u,&bit,r1) &&
+            !(r0[0]&128u) && (r0[3]&128u) && (r1[0]&128u) && !(r1[3]&128u);
+    }
     bad += check("FUN10 round trip: 3840 bytes, nudges (bit 7 of the note bytes), 128 records, LFO 2, QUANTIZE", ok);
     /* a FUN10 of a 1.2 build before SPREAD (#148): 103 parameters (no P_SPRD, nor 1.5's); one of 1.2 .. 1.4: 104 (no
      * INSERT, filter TYPE, ENV SYNC: 1.5). Their engine values and their motion (the lock on E3) as many ids lower. They
      * load by count: SPREAD 0, the INSERT OFF (its defaults), TYPE LP, ENV SYNC OFF, the rest as written */
     for (uint32_t from = P_SPRD; from <= P_ITYPE; from += P_ITYPE - P_SPRD) {
         static project_store_t so;
-        uint32_t pi = 68u, po = 68u, tr, m0, drop = P_E0 - from;
-        memset(&so, 0, sizeof so);
-        ok = proj_pack(&st, &a) && !a.t[0].p[P_SPRD] && !a.t[0].p[P_ITYPE] && !a.t[0].p[P_FTYPE] && !a.t[0].p[P_ESYNC];
-        memcpy(so.raw, st.raw, 68u);
-        so.raw[66] = (uint8_t)(P_COUNT - drop);
-        for (tr = 0; tr < NTRK; tr++) {
-            for (i = 0; i < P_COUNT; i++, pi++)
-                if (i < from || i >= P_E0)
-                    so.raw[po++] = st.raw[pi];
-            memcpy(so.raw + po, st.raw + pi, 2u + NSTEP * 9u);
-            pi += 2u + NSTEP * 9u;
-            po += 2u + NSTEP * 9u;
-        }
-        memcpy(so.raw + po, st.raw + pi, sizeof(chain_config_t) + sizeof(motion_store_t));
-        m0 = po + sizeof(chain_config_t);
-        for (i = 0; i < so.raw[m0]; i++) {
-            uint8_t *id = &so.raw[m0 + 4u + 3u * i + 1u];
-            if ((*id & 0x7Fu) >= P_E0)
-                *id = (uint8_t)(*id - drop);            /* (the lock bit kept) */
-        }
-        memcpy(so.raw + PROJ_FM6_OFF, st.raw + PROJ_FM6_OFF, PROJ_STORE_SIZE - 4u - PROJ_FM6_OFF);
-        i = proj_hash(so.raw, PROJ_STORE_SIZE - 4u);
-        memcpy(so.raw + PROJ_STORE_SIZE - 4u, &i, 4);
+        uint32_t drop = P_E0 - from;
+        /* Frozen FUN10 writer: do not copy 9-byte steps from a FUNB stream. */
+        ok = old_pack10(so.raw,&a,P_COUNT-drop)==sizeof so;
         ok &= so.raw[66] == (from == P_SPRD ? 103u : 104u) && proj_import(&b, &so, sizeof so) && !memcmp(&a, &b, sizeof a) &&
               b.t[2].p[P_E0 + 3] == 5 && b.t[1].p[P_ITYPE] == 0 && b.t[1].p[P_IMIX] == 127 && b.t[1].p[P_FTYPE] == 0 &&
               b.t[1].p[P_ESYNC] == 0;
@@ -536,7 +518,7 @@ static int formats(void)
     }
     {   /* the song's sections (1.2): a slot per track, "-" silent, 5 bytes a row, 84 in all, right after the steps */
         project_t c = a, d;
-        uint32_t at = 68u + NTRK * (P_COUNT + 2u + NSTEP * 9u);
+        uint32_t at = 68u + NTRK * (P_COUNT + 2u + PROJ_TRACK_STEPS);
         c.chain.count = CHAIN_ROWS;
         for (i = 0; i < CHAIN_ROWS; i++)
             c.chain.row[i] = (chain_row_t){{(uint8_t)(i % 5u), (uint8_t)((i + 1u) % 5u), (uint8_t)((i + 2u) % 5u),
@@ -674,18 +656,18 @@ static int formats(void)
 static int midi_track_fmt(void)
 {
     int bad = 0, ok;
-    uint32_t i, end = 68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) + sizeof(chain_config_t) + sizeof(motion_store_t);
+    uint32_t i, end = 68u + NTRK * (P_COUNT + 2u + PROJ_TRACK_STEPS) + sizeof(chain_config_t) + sizeof(motion_store_t);
     project_t a, b;
     static project_store_t st, old;
     int16_t r;
     memset(song.mch, 0, sizeof song.mch);
     song.g[G_ROUTE] = 0;
     project_capture(&a);
-    ok = proj_pack(&st, &a) && PROJ_MIDI_OFF == PROJ_FM6_OFF - 3u && end <= PROJ_MIDI_OFF && PROJ_FM6_OFF - end == 16u;
+    ok = proj_pack(&st, &a) && PROJ_MIDI_OFF == PROJ_FM6_OFF - 3u && end <= PROJ_MIDI_OFF && PROJ_FM6_OFF - end == 20u;
     for (i = end; i < PROJ_FM6_OFF; i++)
         ok &= st.raw[i] == 0u;
     ok &= proj_import(&b, &st, sizeof st) && !memcmp(&a, &b, sizeof a) && !b.mch[0] && !b.mch[3] && !b.g[G_ROUTE];
-    bad += check("MIDI IN TRACK (1.5.5): CH1-4 and the default channels pack as before (the 16 spare bytes all 0)", ok);
+    bad += check("MIDI IN TRACK (1.5.5): CH1-4 and the default channels pack as before (17 spare bytes and 3 MIDI bytes all 0)", ok);
 
     song.g[G_ROUTE] = ROUTE_TRACK;
     mch_set(0, 9); mch_set(1, 1); mch_set(2, MCH_OMNI); mch_set(3, MCH_OFF);
@@ -730,7 +712,10 @@ static int midi_track_fmt(void)
     ok = proj_pack(&st, &a) && !(st.raw[PROJ_MIDI_OFF + 2u] & 0x80u);
     memcpy(&r, st.raw + 8u + 2u * G_ROUTE, 2);
     ok &= r == 3 && proj_import(&b, &st, sizeof st) && !memcmp(&a, &b, sizeof a) && b.g[G_ROUTE] == 3;
-    st.raw[PROJ_MIDI_OFF] |= 31u;                        /* a field past OFF: read as 0 (the track's own channel) */
+    /* Invalid channel codes remain tolerated only in legacy FUNA. FUNB
+     * rejects them (covered by project_codec_test). Use a frozen old fixture. */
+    ok &= old_pack10(st.raw, &a, 111u) == sizeof st;
+    st.raw[PROJ_MIDI_OFF] |= 31u;                        /* legacy: read as the track's own channel */
     i = proj_hash(st.raw, PROJ_STORE_SIZE - 4u);
     memcpy(st.raw + PROJ_STORE_SIZE - 4u, &i, 4);
     ok &= proj_import(&b, &st, sizeof st) && b.mch[0] == 0u && b.mch[1] == a.mch[1];

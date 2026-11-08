@@ -568,6 +568,7 @@ static struct {
 static uint32_t sample_wave_zone(const track_t *t)
 {
     uint32_t si = (uint32_t)t->p[P_E0] % SMP_NALL, i, zi = 0xFFFFu;
+    if (smp_set_missing(si)) return zi;
     if (si < SMP_NSETS) {
         const smp_set_t *set = &SMP_SETS[si];
         for (i = 0; i < set->nz; i++)
@@ -595,7 +596,7 @@ static void sample_wave_tick(const track_t *t)
     const smp_zone_t *z = sample_wave.zone;
     if (!z || !z->n || sample_wave.ready) return;
     for (i = 0; i < 512u && sample_wave.pos < z->n; i++) {
-        uint32_t pos = sample_wave.pos, b = SMP_DATA[z->off + (pos >> 1)];
+        uint32_t pos = sample_wave.pos, b = smp_data_byte(z->off + (pos >> 1));
         uint32_t code = (pos & 1u) ? b >> 4 : b & 15u;
         int32_t step = IMA_STEP[sample_wave.index], d = step >> 3;
         if (code & 4u) d += step;

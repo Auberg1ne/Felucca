@@ -37,7 +37,10 @@ static const uint8_t *ed_bk_object(uint32_t id, uint32_t *len)
     if (id == 0u) { *len = sizeof(project_store_t); return ED_BK_RAW; }
     if (id == 1u) { *len = sizeof ed_bk_settings; return (const uint8_t *)&ed_bk_settings; }
     if (id >= 2u && id <= 5u) {
-        if (project_used(id - 2u)) *len = sizeof proj_slot[0];
+        if (project_used(id - 2u)) {
+            /* Validated cache may retain a shorter legacy record verbatim. */
+            memcpy(len, proj_slot[id - 2u].raw + 4u, 4u);
+        }
         return (const uint8_t *)&proj_slot[id - 2u];
     }
     if (id == 6u || id == 7u) {
@@ -99,7 +102,7 @@ static uint32_t ed_bk_commit(void)
     if (ed_bk_pos != ed_bk_len || st_crc32(raw, ed_bk_len) != ed_bk_crc) return 2;
     if (ed_bk_id == 0u || (ed_bk_id >= 2u && ed_bk_id <= 5u)) {
         if (ed_bk_len && !proj_import(&proj_scratch, raw, (int)ed_bk_len)) return 2;
-        if (ed_bk_len) {                            /* an older format becomes FUN10 inside its ranges */
+        if (ed_bk_len) {                            /* an older format becomes FUNB inside its ranges */
             proj_bound(&proj_scratch);
             if (!proj_pack((project_store_t *)raw, &proj_scratch)) return 2;
             ed_bk_len = sizeof(project_store_t);
@@ -159,10 +162,12 @@ static uint32_t ed_bk_commit(void)
     sync_reload = 1; ui.force = 1;
     return 0;
 }
-/* a project object's length: FUN10 (today's, 1.2), FUN9 (1.1), FUN8 (before the DRUM lane levels, 1.0.x), FUN7 */
+/* Known stored project sizes only; FUNB shares FUNA's 3840-byte cap. */
 static int proj_store_len(uint32_t len)
 {
-    return len == sizeof(project_store_t) || len == PROJ_STORE_V9 || len == PROJ_STORE_V8 || len == PROJ_STORE_V7;
+    return len == sizeof(project_store_t) || len == PROJ_STORE_V9 || len == PROJ_STORE_V8 || len == PROJ_STORE_V7 ||
+           len == sizeof(project_v5_t) || len == sizeof(project_v4_t) || len == sizeof(project_v3_t) ||
+           len == sizeof(project_v2_t) || len == sizeof(project_v1_t);
 }
 static uint32_t ed_bk_write(const uint8_t *a, uint32_t n)
 {

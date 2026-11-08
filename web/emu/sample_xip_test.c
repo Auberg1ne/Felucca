@@ -77,7 +77,12 @@ static int erased_boot(uint32_t unused)
     if (!flash_ok || smp_journal_state != SMP_JOURNAL_BLANK || !web_booted || web_flash_writes) return 0;
     for (uint32_t k = 0; k < 8; k++) if (usr_nz[k] || smp_user_phys[k] || smp_user_header_bound[k]) return 0;
     for (uint32_t i = 0; i < sizeof nor; i++) if (nor[i] != 255) return 0;
-    return SMP_USER_SLOTS == 8 && SMP_USER_POOL_SIZE == 0x3C000u && SMP_USER_SECTOR_COUNT == 60 && SLC_SRC_PIANO == 4 && SLC_NSRC == 10;
+    if (SMP_USER_SLOTS != 8 || SMP_USER_POOL_SIZE != 0x3C000u || SMP_USER_SECTOR_COUNT != 60) return 0;
+#if FELUCCA_SLICE
+    return SLC_SRC_PIANO == 4 && SLC_NSRC == 10;
+#else
+    return 1;
+#endif
 }
 static int valid_boot(uint32_t unused)
 {
@@ -93,9 +98,11 @@ static int valid_boot(uint32_t unused)
         if (v.s[6] || smp_zone(v.s[4]) != &usr_zone[k][0] || sample_next(smp_zone(v.s[4]), &v, 0) != first[k]) return 0;
         const smp_zone_t *z = gr_zone(SMP_NSETS + k, 0); int32_t pred = 0, idx = 0;
         if (gr_find(SMP_NSETS + k, 60) != 0 || z != &usr_zone[k][0] || gr_dec(z, 0, &pred, &idx) != first[k]) return 0;
+#if FELUCCA_SLICE
         const slc_src_t *s = slc_get(k < 3 ? k + 1 : k + 2); slc_dec_t dec;
         slc_dec_at(&dec, 0, 0);
         if (!s || s->len != 4096 || slc_dec_next(s, &dec) != first[k]) return 0;
+#endif
     }
     return unchanged();
 }
@@ -173,7 +180,7 @@ int main(void)
     run("physical offsets map directly, including first/last NOR bytes", mapping, 0, 0);
     run("erased boot stays blank and retains eight public slots", erased_boot, 0, 0);
     run("v2 journal recovers relocated USR1-8 for all three audio decoders", valid_boot, 0, 0);
-    for (uint32_t i = 0; i < 24; i++) {
+    for (uint32_t i = 0; i < (FELUCCA_SLICE ? 24u : 16u); i++) {
         char name[80]; snprintf(name, sizeof name, "%s plays relocated USR%u through simulator audio", i / 8 == 0 ? "SAMPLE" : i / 8 == 1 ? "GRAIN" : "SLICE", i % 8 + 1);
         run(name, render_slot, i, 0);
     }

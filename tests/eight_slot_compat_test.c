@@ -4,12 +4,61 @@
 #include "../web/emu/sample_xip_test.c"
 #include "old_pack.h"
 
+static const char *const S5_FACTORY[] = {"GUITAR", "GUITAR", "VOICE", "HIT", "GUITAR"};
+
+/* No engine changes: exercise the actual zero-length factory fallback as well
+ * as existing material through the real simulator renderer. */
+static int factory_playback(uint32_t grain)
+{
+    fixture(0); web_boot();
+    for (uint32_t n = 0; n < 180; n++) web_render(128);
+    for (uint32_t src = 0; src < 5; src++) {
+        track_t *t = &trk[0]; host_preset(t, grain ? ENGI_GRAIN : ENGI_SAMPLE, 0);
+        t->p[P_E0] = src;
+        const smp_set_t *set = &SMP_SETS[src];
+        if (set->z0 >= NELEM(SMP_ZONES) || !set->nz || set->nz > NELEM(SMP_ZONES) - set->z0) return 0;
+        uint32_t missing = !SMP_ZONES[set->z0].n;
+        if (smp_set_missing(src) != missing || (gr_find(src, 60) == GR_SINE) != missing) return 0;
+        voice_t voice = {0}; voice.note = 60; sample_note_on(t, &voice);
+        if ((voice.s[6] == 2) != missing) return 0;
+        web_keys(1u << 7); float peak = 0;
+        for (uint32_t n = 0; n < 40; n++) {
+            web_render(128);
+            for (uint32_t i = 0; i < 128; i++) {
+                float a = fabsf(out_l[i]) + fabsf(out_r[i]);
+                if (!isfinite(a)) return 0;
+                if (a > peak) peak = a;
+            }
+        }
+        if (peak <= 0.00001f) return 0;
+        web_keys(0); for (uint32_t n = 0; n < 40; n++) web_render(128);
+    }
+    return unchanged();
+}
+static int source_boundaries(uint32_t unused)
+{
+    (void)unused; fixture(0); web_boot();
+    const param_desc_t *desc[] = {&ENG_SAMPLE.edit[0], &ENG_GRAIN.edit[0]};
+    for (uint32_t e = 0; e < NELEM(desc); e++) {
+        const param_desc_t *d = desc[e];
+        if (d->min != 0 || d->max != 12 || d->names != SMP_ALL_NAMES) return 0;
+        for (int32_t src = 0; src <= 12; src++) if (param_fit(d, src) != src) return 0;
+        /* Preserve existing clamp and alias behavior; 13 is not a new source. */
+        if (param_fit(d, 13) != 12 || param_fit(d, -1) != 0 || enum_orig(d, 4) != 0 ||
+            enum_orig(d, 5) != 5 || enum_orig(d, 12) != 12) return 0;
+    }
+    return unchanged();
+}
+
 static int source_ids(uint32_t unused)
 {
     (void)unused;
     static const uint32_t ids[8] = {1, 2, 3, 5, 6, 7, 8, 9};
     fixture(0); web_boot();
     if (SMP_NSETS != 5 || SMP_NALL != 13 || SLC_SRC_PIANO != 4 || SLC_NSRC != 10 || SLC_SINE != 15) return 0;
+    for (uint32_t src = 0; src < 5; src++)
+        if (strcmp(SMP_SETS[src].name, S5_FACTORY[src]) || strcmp(SMP_ALL_NAMES[src], S5_FACTORY[src]) ||
+            SMP_SET_ORIG[src] != ((src == 1 || src == 4) ? 0u : src)) return 0;
     if (ENG_SAMPLE.edit[0].max != 12 || ENG_GRAIN.edit[0].max != 12 || ENG_SLICE.edit[0].max != 9) return 0;
     if (slc_slot_from_src(0) != 8 || slc_slot_from_src(4) != 8 || slc_slot_from_src(10) != 8 ||
         slc_slot_from_src(UINT32_MAX) != 8 || slc_src_from_slot(8) != 10) return 0;
@@ -147,12 +196,15 @@ static int stored_sources(uint32_t which)
         up_values(&preset, values);
         if (values[P_E0] != src || up_value(&preset, P_E0) != src) return 0;
     }
-    return PROJ_MAGIC == 0x46554E41u && PROJ_STORE_SIZE == 3840 && SMP_USER_POOL_SIZE == 0x3C000u;
+    return PROJ_MAGIC == 0x46554E42u && PROJ_MAGIC_V10 == 0x46554E41u && PROJ_STORE_SIZE == 3840 && SMP_USER_POOL_SIZE == 0x3C000u;
 }
 int main(void)
 {
     struct rlimit limit = {0, 0}; setrlimit(RLIMIT_CORE, &limit);
     run("S2 stable source IDs, names, PIANO and SAMPLE slot encoding", source_ids, 0, 0);
+    run("S5 factory/user boundaries 4/5 and 12/13, aliases and saved values", source_boundaries, 0, 0);
+    run("S5 SAMPLE factory material or safe missing-source fallback", factory_playback, 0, 0);
+    run("S5 GRAIN factory material or safe missing-source fallback", factory_playback, 1, 0);
     run("S2 exhaustive transient voice field isolation", packed_fields, 0, 0);
     for (uint32_t k = 0; k < 8; k++) {
         char name[100]; snprintf(name, sizeof name, "S2 USR%u manual edits, RAM-only notification and missing-source sine", k + 1);
@@ -161,6 +213,6 @@ int main(void)
         run(name, segment_and_reverse, k, 0);
     }
     for (uint32_t e = 0; e < 3; e++) run("S2 legacy FUN9 source round trips, runtime load, presets and locks", stored_sources, e, 0);
-    printf("S2 limitation: current FUN10 writer is unchanged; pre-existing P_COUNT/store-boundary failure is covered by baseline comparison, not repaired here.\n");
+    printf("S6: FUNB writer retains the 3840-byte payload; legacy source imports remain covered.\n");
     return failures ? 1 : 0;
 }

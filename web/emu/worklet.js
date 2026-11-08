@@ -9,8 +9,9 @@
 // slots 0x97000..0xDFFFF; the autosave 0xE5000..0xE6FFF (1.2) and FM6's voice bank 0xE7000 (1.4.1); the settings and
 // the second FM6 copy 0xFC000..0xFFFFF), only the sectors that hold something (an erased sector is all 0xFF). {offset: bytes}
 import { WasmReadonlyEndpoint } from "./editor_transport.js";
+import {STARTUP, MEMORY_BYTES, STORE_AREAS, attemptOK, matches, keysOnly, envelope, sectorsOK} from "./startup.js";
+export {STORE_AREAS} from "./startup.js";
 
-export const STORE_AREAS = [[0x97000, 0xE0000], [0xE5000, 0xE8000], [0xFC000, 0x100000]];
 export function storeSectors(nor) {
   const out = {};
   for (const [a, b] of STORE_AREAS)
@@ -55,8 +56,14 @@ export function midiKnob(last, cc, value, mode = "abs") {
 if (typeof registerProcessor === "function") {
   const clock = globalThis.performance ? () => globalThis.performance.now() : () => Date.now();
   class Felucca extends AudioWorkletProcessor {
-    constructor() {
+    constructor(options = {}) {
       super();
+      const config=options.processorOptions || {};
+      if(config.startupMode!==undefined && config.startupMode!=="worker-v1")throw Error("Unknown startup mode");
+      this.workerMode=config.startupMode==="worker-v1";
+      this.attempt=config.attempt;
+      if(this.workerMode && !attemptOK(this.attempt))throw Error("Invalid startup attempt");
+      this.loading=false;this.loadFailed=false;this.renderEnabled=!this.workerMode;this.started=false;
       this.ex = null;
       this.sentDraws = -1;
       this.sentWrites = -1;
@@ -70,27 +77,54 @@ if (typeof registerProcessor === "function") {
       this.port.onmessage = (e) => this.onMessage(e.data);
     }
 
+    startupError(message) {
+      this.loadFailed=true;this.renderEnabled=false;this.ex=null;
+      this.port.postMessage(this.workerMode ? envelope('error',this.attempt,{error:String(message).slice(0,256)}) : {type:'error',message:String(message).slice(0,256)});
+    }
     async onMessage(m) {
-      if (m.type === "load") {
+      if(!m || typeof m!=='object')return;
+      if(this.workerMode && m.protocol===STARTUP) {
+        if(m.attempt!==this.attempt)return; // stale startup generation
+        if(!matches(m,this.attempt)){this.startupError('Startup version mismatch');return;}
+        if(m.type==='cancel' && keysOnly(m,['protocol','version','type','attempt'])) {
+          this.loadFailed=true;this.renderEnabled=false;this.ex=null;return;
+        }
+        if(m.type==='start') {
+          if(!keysOnly(m,['protocol','version','type','attempt']) || !this.ex || this.loadFailed || this.renderEnabled) this.startupError('Invalid/duplicate render start');
+          else this.renderEnabled=true;
+          return;
+        }
+        if(m.type!=='initialize'){this.startupError('Unknown startup message');return;}
+      }
+      const initialize=this.workerMode ? m.protocol===STARTUP && m.type==='initialize' : m.type==='load';
+      if(this.workerMode && m.type==='load'){this.startupError('Worker startup requires compiled module');return;}
+      if(initialize) {
+        if(this.workerMode && m.attempt!==this.attempt)return;
+        if(this.loading || this.loadFailed){this.startupError('Duplicate initialization');return;}
+        this.loading=true; // claim before await: never allocate overlapping authorities
         try {
-          const { instance } = await WebAssembly.instantiate(m.wasm, {});
-          const ex = instance.exports;
+          if(this.workerMode && (!matches(m,this.attempt)||!keysOnly(m,['protocol','version','type','attempt','module','sectors','master']) ||
+             !(m.module instanceof WebAssembly.Module)||!sectorsOK(m.sectors)||!Number.isInteger(m.master)||m.master<0||m.master>1023))throw Error('Invalid authoritative initialization');
+          const result=await WebAssembly.instantiate(this.workerMode ? m.module : m.wasm, {});
+          if(this.loadFailed)return;
+          const instance=this.workerMode ? result : result.instance, ex=instance.exports;
+          if(this.workerMode && (ex.memory.buffer.byteLength!==MEMORY_BYTES || (typeof SharedArrayBuffer!=='undefined' && ex.memory.buffer instanceof SharedArrayBuffer)))throw Error('Invalid authoritative memory');
           ex._initialize();
           ex.web_nor_erase();
           restoreSectors(new Uint8Array(ex.memory.buffer, ex.web_nor(), ex.web_nor_size()), m.sectors);
           ex.web_master(m.master ?? 700);
           ex.web_boot();
+          if(this.workerMode && (ex.web_now_ms()!==0 || ex.web_playing()!==0 || ex.web_sample_rate()!==44100 || ex.web_flash_writes_count()!==0 || ex.web_editor_forbidden_count()!==0))throw Error('Authoritative boot invariant failed');
           this.ex = ex;
           this.editor = new WasmReadonlyEndpoint(ex, m => this.port.postMessage(m));
           this.sentWrites = ex.web_flash_writes_count();
-          this.port.postMessage({ type: "ready", rate: ex.web_sample_rate() });
-        } catch (err) {
-          this.port.postMessage({ type: "error", message: String(err && err.message || err) });
-        }
+          this.port.postMessage(this.workerMode ? envelope('initialized',this.attempt,{rate:ex.web_sample_rate()}) : {type:'ready',rate:ex.web_sample_rate()});
+        } catch(err) { this.startupError(err?.message||err); }
         return;
       }
       const ex = this.ex;
       if (!ex) return;
+      if(this.workerMode && !this.started)return;
       if (m.type?.startsWith("editor-")) { this.editor.receive(m); return; }
       if (m.type === "buttons" || m.type === "keys") this.queue.push(m);
       else if (m.type === "enc") ex.web_enc(m.role, m.n | 0);
@@ -146,11 +180,12 @@ if (typeof registerProcessor === "function") {
 
     process(inputs, outputs) {
       const ex = this.ex;
-      if (!ex) return true;
+      if (!ex || !this.renderEnabled || this.loadFailed) return true;
       if (this.queue.length) this.input();
       const out = outputs[0], n = out[0].length;
       const t0 = clock();
       ex.web_render(n);
+      if(this.workerMode && !this.started){this.started=true;this.port.postMessage(envelope("started",this.attempt));}
       this.editor.drain();
       this.busy += clock() - t0;
       this.frames += n;
