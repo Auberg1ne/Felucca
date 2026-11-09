@@ -76,11 +76,13 @@ Contents-write plus mandatory Metadata-read. No new App permission is requested.
   cancellation is not used to start a replacement run. No Pages or OIDC permission.
 - Ordinary GITHUB_TOKEN has explicit **Contents-write**, solely for the negative
   control. This deliberately differs from the Contents-read production controller.
+- A distinct read-only audit App token uses Actions-read, Administration-read and
+  mandatory Metadata-read, exact owner/repo and default post-job revocation.
 - Protected App5678740 token uses the same pinned v2.1.4 action, exact owner/repo,
-  Contents-write only and default post-job revocation.
+  Contents-write only and default post-job revocation, after audit preflight passes.
 - No simulator code, source revisions, cache, downloaded executable or artifact
   input is executed. The workflow first runs offline tests, then read-only
-  preflight, then mints the credential and runs the six operations.
+  audit-token minting/preflight, then mints the writer and runs the six operations.
 - Neither credentials nor raw Git/API output is logged or saved. Only fixed
   status messages and allowlisted JSON fields are emitted. Authorization headers
   are process-local, never Git config files or command-line arguments. Subprocess
@@ -113,8 +115,8 @@ inconclusive. Allowed operations also require passing/bypassed rule-suite eviden
 These checks distinguish a valid ruleset negative control from read-only tokens,
 unauthenticated requests, network failures and local Git rejection. Successful
 playback, YAML permissions alone, generic 403s and dry-run pushes are not evidence.
-The read-only rule-suite API must be accessible to the ordinary token; no broader
-App permission will be added to work around inaccessible evidence. If a GitHub
+The read-only rule-suite API must be accessible to the separate audit token;
+no writer permission or ruleset bypass will be broadened to obtain that evidence. If a GitHub
 version reports different actor/SHA/rule semantics, stop for review rather than
 loosening matching. Official schema used: github/rest-api-description,
 `GET /repos/{owner}/{repo}/rulesets/rule-suites[/{rule_suite_id}]` and
@@ -178,8 +180,119 @@ python3 -B tools/hosting/source_policy_test.py
 python3 -B tools/hosting/state_authorization_test.py
 ```
 
-Results: H9 **26**, H1 recovery **23**, assembly **12**, source policy **11**,
+Original H9 results: H9 **26**, H1 recovery **23**, assembly **12**, source policy **11**,
 H8 authorization **8** passed (80 total). Python AST, YAML structure, action SHA
 pin shape, 22 shell blocks and whitespace checks passed. No live GitHub workflow,
 authorization result, key mint, ruleset modification or production deployment was
 tested. These unit checks do not substitute for the pending server-side canary.
+
+
+## H11 — separate read-only audit credential
+
+The original preflight used the ordinary Contents-write workflow token for all
+API requests. Official GitHub documentation for API version 2022-11-28 requires:
+
+| Evidence endpoint (GET only) | Minimum repository permission |
+|---|---|
+| Environment and deployment branch policies | Actions-read |
+| Active rules for the canary branch | Metadata-read |
+| Rule-suite list and details | Administration-read |
+
+Adding only `actions: read` to GITHUB_TOKEN is incomplete; Administration is not a
+supported workflow GITHUB_TOKEN permission key. Do not use write-all or remove the
+rule-suite checks. H11 leaves that ordinary token Contents-write for the genuine
+negative controls and leaves State Writer App5678740 Contents-write unchanged.
+
+### Exact owner setup (not performed by this implementation)
+
+The owner reports provisioning Audit App **5686993** and the protected environment
+private-key secret. Keep `COFFEE_GRAINS_AUDIT_APP_ID` as a github-pages environment
+**variable** with value `5686993`; the PEM belongs only in the environment secret
+`COFFEE_GRAINS_AUDIT_APP_PRIVATE_KEY`. This records owner-reported setup, not an
+independent inspection of the App grant or a successful live API check. Required
+grants remain Actions-read, Administration-read and Metadata-read, no Contents-write.
+
+1. Create a **separate** GitHub App, for example **Coffee Grains Audit Reader**,
+   owned by Auberg1ne. It must have a different numeric App ID from **5678740**.
+   Disable webhooks if unused. No callback, OAuth flow or event subscription is
+   needed for this installation-token-only reader.
+2. Set Repository permissions to **Actions: Read-only** and
+   **Administration: Read-only**. Keep mandatory **Metadata: Read-only**.
+   Leave Contents and all other optional permissions **No access**. No account or
+   organization permission is needed. Do not change State Writer App permissions.
+3. Install the audit App only on **Auberg1ne/Felucca** using selected repositories.
+   Do not add the audit App to either state ruleset bypass list. It needs no Git
+   write capability, Pages/OIDC grant, secret-reading permission or settings-write
+   permission. Read-only Administration is required for rule-suite evidence.
+4. In Settings → Environments → **github-pages**, after verifying its required
+   reviewer gate and exact main-only branch policy, add environment variable
+   **COFFEE_GRAINS_AUDIT_APP_ID** containing the assigned positive numeric App ID.
+   Add environment secret **COFFEE_GRAINS_AUDIT_APP_PRIVATE_KEY** containing its
+   generated PEM key. Never put the key in repository-wide secrets or chat.
+   Existing **COFFEE_GRAINS_STATE_APP_PRIVATE_KEY** remains unchanged.
+5. Review installation scope and permission grants. The pinned token action
+   explicitly requests only Actions-read, Administration-read and Metadata-read,
+   with owner Auberg1ne and repositories Felucca. The configuration gate rejects
+   missing/invalid IDs, App ID5678740 and missing keys without printing them.
+6. Review and integrate H11 separately, then obtain explicit approval for any
+   future canary dispatch. No App, key, secret, installation, ruleset or workflow
+   run has been created by this local implementation.
+
+The workflow mints the reader only after github-pages approval, performs all
+read-only API preflight checks, and only then requests the existing writer token.
+It supplies `CANARY_AUDIT_TOKEN` solely to preflight and probe. The reader remains
+available for rule-suite evidence after each probe; it is never sent to Git.
+Both token actions retain default post-job revocation. Cancellation can prevent
+revocation, so normal short token expiry remains the backstop.
+
+### Runtime routing and safety
+
+| Credential | Allowed use |
+|---|---|
+| GH_TOKEN / ordinary workflow token | Git ref reads; negative-control create/update |
+| CANARY_APP_TOKEN / State Writer | Authorized create/update and force/delete denial probes |
+| CANARY_AUDIT_TOKEN / Audit Reader | GET-only security settings and rule-suite evidence |
+
+A role container requires distinct nonempty ordinary/audit tokens. Probe also
+requires a third distinct writer token; preflight rejects an early writer token.
+API construction requires that container and selects only its audit member.
+Git push and credentialed Git commands explicitly reject the audit member and
+any unrecognized credential before subprocess execution. Git subprocesses use
+sanitized environments; no audit token/key is inherited. There is no fallback to
+ordinary or writer credentials for API errors. Headers, raw Git/API output and
+credential values are never included in the allowlisted report.
+
+These checks validate routing, not cryptographic token identity: identities and
+scopes are authenticated/minted by GitHub and the pinned token action. The reviewed
+workflow binds the exact three outputs to the correct roles. Repository-level
+trust is still accepted; secrets are not workflow-specific. The audit reader can
+read sensitive security metadata and Actions logs, so protect its key accordingly.
+It has no repository mutation permission. Live API effectiveness remains unverified
+until the approved run. A 403, missing permission,
+ambiguous rule insight or network failure still stops without mutation retry.
+Neither full bypass-list visibility nor settings-edit permission is assumed from
+Administration-read; retain the owner's independent ruleset verification.
+
+All six operations, exact ref, order, GH013/active-rule/actor/SHA evidence,
+production absence checks and environment/concurrency guards are preserved.
+The production Pages controller, rulesets, source policy and simulator are unchanged.
+
+Official sources: [GitHub Apps permission tables](https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps),
+[workflow token permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions).
+The tables were checked from github/docs revision
+`fd4c5e6ee88cd56ec15cc7d71324b12bccc3b578`, generated
+`src/github-apps/data/shared/entries.json` and `version-index.json`, fpt-2022-11-28.
+The pinned token action supports all three explicit read-only permission inputs.
+
+H11 local validation: canary/credential routing **36**, H1 recovery **23**,
+assembly **12**, source-policy **11**, H8 authorization **8** passed (**90 total**).
+Python AST, YAML/permissions, pinned action SHAs, 24 shell blocks and diff checks
+passed. AST comparisons confirmed context, settings validation, rule-suite checks
+and the six-operation probe are unchanged from the approved baseline. Tests cover
+missing/identical/misrouted credentials, reader exclusion from Git, API audit-only
+headers, sanitized child environments, HTTP403 fail-closed behavior, both CLI phases
+and distinct audit App configuration. No live audit token was minted or tested.
+
+Recommendation: **PASS for local integration review**. Provisioning is now
+owner-reported complete. A live canary still requires reviewed integration and
+separate explicit dispatch authorization; live token/API effectiveness is unverified.

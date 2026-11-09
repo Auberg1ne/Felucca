@@ -21,9 +21,29 @@ jobs:
           persist-credentials: false
       - name: Offline harness checks (no credentials supplied)
         run: python3 -B tools/hosting/authorization_canary_test.py
+      - name: Require distinct read-only audit App configuration
+        env:
+          AUDIT_APP_ID: ${{ vars.COFFEE_GRAINS_AUDIT_APP_ID }}
+          APP_KEY: ${{ secrets.COFFEE_GRAINS_AUDIT_APP_PRIVATE_KEY }}
+        run: |
+          set -eu
+          [[ "$AUDIT_APP_ID" =~ ^[1-9][0-9]*$ && "$AUDIT_APP_ID" != 5678740 ]]
+          test -n "$APP_KEY"
+      - name: Obtain repository-scoped read-only audit token after approval
+        id: auditor
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: ${{ vars.COFFEE_GRAINS_AUDIT_APP_ID }}
+          private-key: ${{ secrets.COFFEE_GRAINS_AUDIT_APP_PRIVATE_KEY }}
+          owner: Auberg1ne
+          repositories: Felucca
+          permission-actions: read
+          permission-administration: read
+          permission-metadata: read
       - name: Verify reviewer gate, main-only restriction, rules and fresh refs
         env:
           GH_TOKEN: ${{ github.token }}
+          CANARY_AUDIT_TOKEN: ${{ steps.auditor.outputs.token }}
         run: python3 -B tools/hosting/authorization_canary.py preflight
       - name: Require protected environment App key
         env:
@@ -41,6 +61,7 @@ jobs:
       - name: Six isolated authorization operations (never production state)
         env:
           GH_TOKEN: ${{ github.token }}
+          CANARY_AUDIT_TOKEN: ${{ steps.auditor.outputs.token }}
           CANARY_APP_TOKEN: ${{ steps.writer.outputs.token }}
           CANARY_APP_SLUG: ${{ steps.writer.outputs.app-slug }}
         run: python3 -B tools/hosting/authorization_canary.py probe
