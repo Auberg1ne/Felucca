@@ -1,5 +1,11 @@
 # COFFEE GRAINS — Granular Synthesizer web deployment
 
+**H8 local dedicated-writer integration prepared.** The accepted trust model is
+GitHub protected environments with repository-level trust, not workflow-specific
+secret isolation. See [H8 setup, canary and gates](deployment-state-h8.md).
+H6/H7 documents are historical alternatives superseded by that explicit decision.
+First DEV deployment remains blocked until the documented live authorization checks.
+
 ## Status and addresses
 
 This is a prepared deployment, **not a live-site claim**. No Pages settings have
@@ -85,14 +91,16 @@ private browsing. Clear browser data only after safely exporting valuable conten
    already hosting another application in this repository, stop and review how
    to retain that site; this workflow owns the entire Pages root and must not
    silently replace an existing installer/site.
-4. Permit the workflow's `contents:write`, `pages:write`, `id-token:write` only in
-   the publish job. The build job has read-only repository permissions and no
-   deployment credentials. No personal access token or secret is required.
-5. Permit workflow writes to the dedicated `coffee-grains-pages-state` branch.
-   Protect source branches normally; no source branch is pushed by deployment.
-   Keep the state branch restricted to the workflow/maintainers. It retains
-   previously approved, successfully deployed releases, channel pointers and
-   their approval markers for rollback. It is not a source development branch.
+4. Keep ordinary workflow credentials Contents-read. Only publish adds
+   Pages-write and ID-token-write; reconcile adds Actions-read and Pages-read.
+   Configure the protected github-pages environment secret
+   `COFFEE_GRAINS_STATE_APP_PRIVATE_KEY` for App5678740, following
+   [the H8 setup](deployment-state-h8.md). No personal access token is required.
+5. Keep both complementary Active state-branch rulesets: creation/update allowed
+   only to the App bypass identity; deletion/force-push denied with no bypass.
+   Never allow the ordinary GitHub Actions identity to bypass. Complete the
+   isolated canary before production bootstrap; do not create an empty state
+   branch manually. Retained approved releases and channel markers support rollback.
 6. Keep the workflow dispatch-only. Do not add a blanket push trigger.
 
 ## Approve DEV, then explicitly promote STABLE

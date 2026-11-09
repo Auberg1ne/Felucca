@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 """Durable Pages transaction. Ordinary runs cannot bypass an unresolved guard.
-Git writes exist only in the explicitly gated Actions CLI, never in test backends.
+Git writes require an independent App credential; GitHub rulesets authorize its identity.
 The state branch is the journal; the Pages service is an independent participant.
 """
 import argparse
@@ -185,6 +185,7 @@ class GitStore:
         if not token:raise ValueError('Scoped Actions token unavailable')
         self.env=dict(os.environ,GIT_CONFIG_COUNT='1',GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                       GIT_CONFIG_VALUE_0='AUTHORIZATION: basic '+base64.b64encode(('x-access-token:'+token).encode()).decode())
+        self.env.pop('STATE_WRITER_TOKEN',None)
         self.remote='https://github.com/Auberg1ne/Felucca.git'
     def git(self,root,*args,**kw):
         r=subprocess.run(['git','-C',str(root),*args],env=self.env,capture_output=True,**kw)
@@ -206,9 +207,10 @@ class GitStore:
             with tarfile.open(fileobj=io.BytesIO(data)) as t:t.extractall(out,filter='data')
             return head,read_tree(out)
     def cas(self,expected,files,message):
-        # This production path is deliberately not executed by local unit tests.
-        if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('GITHUB_JOB') not in ('publish','reconcile'):
-            raise ValueError('Remote mutation is restricted to approved Actions jobs')
+        # Credential presence is not identity proof: the server rulesets enforce App identity.
+        writer=os.environ.get('STATE_WRITER_TOKEN')
+        if not writer or writer==os.environ.get('GH_TOKEN'):
+            raise ValueError('Independent state-writer credential required')
         actual,_=self.read()
         if actual!=expected:raise ValueError('State compare-and-swap conflict')
         with tempfile.TemporaryDirectory(prefix='pages-state-write-') as d:
@@ -226,6 +228,8 @@ class GitStore:
             if files:run('add','--pathspec-from-file=-','--pathspec-file-nul',input=b''.join(n.encode()+b'\0' for n in sorted(files)))
             tree=run('write-tree').decode().strip()
             head=run('commit-tree',tree,*(['-p',expected] if expected else []),input=(message+'\n').encode()).decode().strip()
+            # Only this remote mutation receives the short-lived App credential.
+            env['GIT_CONFIG_VALUE_0']='AUTHORIZATION: basic '+base64.b64encode(('x-access-token:'+writer).encode()).decode()
             run('push',self.remote,head+':refs/heads/'+BRANCH)
             return head
 
@@ -287,7 +291,6 @@ def main():
     elif args.command=='finalize':
         t.finish(json.loads(args.receipt.read_text()),owner=f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}")
     else:
-        if os.environ.get('GITHUB_JOB')!='reconcile':raise ValueError('Explicit approved reconciliation job required')
         head,files=store.read();p,_,_=pending(files)
         if p['transaction']!=args.transaction:raise ValueError('Wrong reconciliation transaction')
         t.finish(dict(transaction=args.transaction,guard_head=head),recovery=dict(outcome=args.outcome,stable=args.stable,dev=args.dev),settle=settled)
