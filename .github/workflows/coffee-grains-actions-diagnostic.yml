@@ -1,0 +1,11 @@
+name: COFFEE GRAINS Actions diagnostic
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  diagnostic:
+    if: github.repository == 'Auberg1ne/Felucca' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo 'COFFEE GRAINS Actions diagnostic OK'
