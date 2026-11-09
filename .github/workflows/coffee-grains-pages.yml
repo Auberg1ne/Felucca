@@ -1,0 +1,296 @@
+name: COFFEE GRAINS controlled Pages deployment
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Explicit deployment action (never runs on push)
+        type: choice
+        options: [build-dev, promote-stable, rollback-dev, rollback-stable, reconcile]
+        required: true
+      revision:
+        description: Full approved source commit SHA for build-dev
+        type: string
+      release:
+        description: Existing SHA-run-attempt release ID for promotion or rollback
+        type: string
+      transaction:
+        description: Pending RUN-ATTEMPT identity (reconcile only)
+        type: string
+      outcome:
+        description: adopt-candidate or retain-previous (reconcile only; no default)
+        type: string
+      expected_stable:
+        description: Exact live STABLE release ID or none (reconcile only)
+        type: string
+      expected_dev:
+        description: Exact live DEV release ID or none (reconcile only)
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: coffee-grains-pages
+  cancel-in-progress: false
+jobs:
+  approve:
+    if: github.repository == 'Auberg1ne/Felucca' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    # Configure required reviewers on BOTH environments before enabling workflow.
+    environment: ${{ (contains(inputs.operation, 'stable') || inputs.operation == 'reconcile') && 'coffee-grains-stable' || 'coffee-grains-dev' }}
+    steps:
+      - name: Validate explicit request
+        env:
+          OP: ${{ inputs.operation }}
+          REVISION: ${{ inputs.revision }}
+          RELEASE: ${{ inputs.release }}
+          TRANSACTION: ${{ inputs.transaction }}
+          OUTCOME: ${{ inputs.outcome }}
+          STABLE: ${{ inputs.expected_stable }}
+          DEV: ${{ inputs.expected_dev }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$OP" == build-dev || "$OP" == promote-stable || "$OP" == rollback-dev || "$OP" == rollback-stable || "$OP" == reconcile ]]
+          if [[ "$OP" == reconcile ]]; then
+            [[ -z "$REVISION" && -z "$RELEASE" && "$TRANSACTION" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]]
+            [[ "$OUTCOME" == adopt-candidate || "$OUTCOME" == retain-previous ]]
+            [[ "$STABLE" =~ ^([0-9a-f]{40}-[0-9]+-[0-9]+|none)$ && "$DEV" =~ ^([0-9a-f]{40}-[0-9]+-[0-9]+|none)$ ]]
+          elif [[ "$OP" == build-dev ]]; then
+            [[ "$REVISION" =~ ^[0-9a-f]{40}$ && -z "$RELEASE" ]]
+          else
+            [[ "$RELEASE" =~ ^[0-9a-f]{40}-[0-9]+-[0-9]+$ && -z "$REVISION" ]]
+          fi
+          if [[ "$OP" != reconcile ]]; then
+            [[ -z "$TRANSACTION" && -z "$OUTCOME" && -z "$STABLE" && -z "$DEV" ]]
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Refuse unapproved or abbreviated source revisions
+        if: inputs.operation == 'build-dev'
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: python3 tooling/tools/hosting/source_policy.py "$REVISION"
+      - name: All operations check the durable guard before build or publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OP: ${{ inputs.operation }}
+          TRANSACTION: ${{ inputs.transaction }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [[ "$OP" == reconcile ]]; then ARGS+=(--transaction "$TRANSACTION"); fi
+          python3 tooling/tools/hosting/deployment_state.py check "${ARGS[@]}"
+      - name: Refuse publication without configured reviewer gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL_ENV: ${{ (contains(inputs.operation, 'stable') || inputs.operation == 'reconcile') && 'coffee-grains-stable' || 'coffee-grains-dev' }}
+        run: |
+          set -euo pipefail
+          for NAME in "$CHANNEL_ENV" github-pages; do
+            HAS_REVIEWERS=$(gh api "repos/$GITHUB_REPOSITORY/environments/$NAME" --jq '.protection_rules | any(.type == "required_reviewers" and (.reviewers | length) > 0)')
+            test "$HAS_REVIEWERS" = true || { echo "Required reviewers not configured for $NAME; refusing deployment."; exit 1; }
+          done
+  build:
+    needs: approve
+    if: inputs.operation == 'build-dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Rerun-safe source policy check before source checkout
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: python3 tooling/tools/hosting/source_policy.py "$REVISION"
+      - name: Rerun-safe guard check before building DEV
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tooling/tools/hosting/deployment_state.py check
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: source
+          ref: ${{ inputs.revision }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify source and prepare pinned dependencies
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -eu
+          python3 tooling/tools/hosting/source_policy.py "$REVISION" --checkout source --require-submodules
+          python3 -m pip install -r tooling/tools/hosting/requirements.txt playwright==1.62.0
+          python3 -m playwright install --with-deps chromium
+          npm install --prefix "$RUNNER_TEMP/hosting-dom" --ignore-scripts --no-audit --no-fund jsdom@26.1.0
+          cd source
+          python3 -c "import sys; sys.path.insert(0,'tools'); import build; build.generate()"
+      - name: Build with digest-pinned Emscripten 3.1.74, offline
+        run: |
+          set -eu
+          docker pull emscripten/emsdk@sha256:af45409f3199d88db4b1b03af0098532c8fb33a375ac257463eeb0a622870d06
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/source:/src" -w /src \
+            emscripten/emsdk@sha256:af45409f3199d88db4b1b03af0098532c8fb33a375ac257463eeb0a622870d06 \
+            bash -ec 'export EM_CACHE=/tmp/cache; mkdir -p "$EM_CACHE"; cp -R /emsdk/upstream/emscripten/cache/. "$EM_CACHE/"; emcc --version | head -1 | grep " 3.1.74 "; sh web/emu/build.sh'
+      - name: Required native and JavaScript gates
+        working-directory: source
+        run: S4A_DOM_MODULE="$RUNNER_TEMP/hosting-dom/node_modules/jsdom/lib/api.js" sh ../tooling/tools/hosting/check.sh "$PWD"
+      - name: Package immutable release
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -eu
+          python3 tooling/tools/hosting/source_policy.py "$REVISION" --checkout source --require-submodules
+          python3 tooling/tools/hosting/site.py package --source source --build source/build/emu --out candidate \
+            --revision "$REVISION" --release "$REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --tooling-revision "$GITHUB_SHA"
+      - name: Required packaged-site browser and assembly gates
+        env:
+          COFFEE_GRAINS_TEST_SOURCE: ${{ github.workspace }}/source
+          COFFEE_GRAINS_TEST_SHA: ${{ inputs.revision }}
+        run: |
+          set -eu
+          python3 tooling/tools/hosting/source_policy_test.py
+          python3 tooling/tools/hosting/site_test.py
+          python3 tooling/tools/hosting/deployment_state_test.py
+          python3 tooling/tools/hosting/state_authorization_test.py
+          BROWSER=$(python3 -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          python3 source/web/emu/browser_startup_test.py --wasm source/build/emu/felucca.wasm \
+            --sha256 "$(sha256sum source/build/emu/felucca.wasm | cut -d' ' -f1)" --chromium "$BROWSER"
+          python3 tooling/tools/hosting/browser_test.py --site candidate --chromium "$BROWSER"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tested-release
+          path: candidate/
+          if-no-files-found: error
+  publish:
+    needs: [approve, build]
+    if: always() && !cancelled() && inputs.operation != 'reconcile' && needs.approve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Check guard again and verify retained state against the actual published site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          python3 tooling/tools/hosting/deployment_state.py export --site site --receipt "$RUNNER_TEMP/state-receipt.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.operation == 'build-dev'
+        with:
+          name: tested-release
+          path: candidate
+      - name: Assemble channel update (other channel and immutable builds retained)
+        env:
+          OP: ${{ inputs.operation }}
+          REVISION: ${{ inputs.revision }}
+          REQUESTED_RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if [[ "$OP" == build-dev ]]; then
+            RELEASE="$REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            test ! -e "site/releases/$RELEASE"
+            mkdir -p site/releases
+            cp -R "candidate/releases/$RELEASE" site/releases/
+            CHANNEL=dev
+          else
+            RELEASE="$REQUESTED_RELEASE"
+            if [[ "$OP" == *stable ]]; then CHANNEL=stable; else CHANNEL=dev; fi
+          fi
+          # Rollbacks also require a previously approved DEV build.
+          ARGS=()
+          if [[ "$OP" != build-dev ]]; then ARGS+=(--promotion); fi
+          python3 tooling/tools/hosting/site.py channel --site site --name "$CHANNEL" --release "$RELEASE" "${ARGS[@]}"
+          for build in site/releases/*; do python3 tooling/tools/hosting/site.py verify "$build"; done
+          test "$(du -sm site | cut -f1)" -lt 900
+      - name: Require protected environment App key
+        env:
+          APP_KEY: ${{ secrets.COFFEE_GRAINS_STATE_APP_PRIVATE_KEY }}
+        run: test -n "$APP_KEY"
+      - name: Obtain repository-scoped state writer
+        id: state-writer
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: '5678740'
+          private-key: ${{ secrets.COFFEE_GRAINS_STATE_APP_PRIVATE_KEY }}
+          owner: Auberg1ne
+          repositories: Felucca
+          permission-contents: write
+      - name: Durably record pending transaction BEFORE any Pages publication
+        env:
+          STATE_WRITER_TOKEN: ${{ steps.state-writer.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          OP: ${{ inputs.operation }}
+          REVISION: ${{ inputs.revision }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if [[ "$OP" == build-dev ]]; then RELEASE="$REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; fi
+          python3 tooling/tools/hosting/deployment_state.py begin --site site --receipt "$RUNNER_TEMP/state-receipt.json" \
+            --operation "$OP" --release "$RELEASE"
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
+        with:
+          path: site
+      - name: Deploy combined site atomically
+        id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
+      - name: Verify actual publication, atomically retain matching state and clear the guard
+        env:
+          STATE_WRITER_TOKEN: ${{ steps.state-writer.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # No always()/failure cleanup: every unresolved outcome keeps its durable guard.
+          python3 tooling/tools/hosting/deployment_state.py finalize --receipt "$RUNNER_TEMP/state-receipt.json"
+  reconcile:
+    needs: approve
+    if: inputs.operation == 'reconcile'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: github-pages
+    permissions:
+      contents: read
+      actions: read
+      pages: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Require protected environment App key
+        env:
+          APP_KEY: ${{ secrets.COFFEE_GRAINS_STATE_APP_PRIVATE_KEY }}
+        run: test -n "$APP_KEY"
+      - name: Obtain repository-scoped state writer
+        id: state-writer
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: '5678740'
+          private-key: ${{ secrets.COFFEE_GRAINS_STATE_APP_PRIVATE_KEY }}
+          owner: Auberg1ne
+          repositories: Felucca
+          permission-contents: write
+      - name: Explicit recovery only; never publish, retry or fall back
+        env:
+          STATE_WRITER_TOKEN: ${{ steps.state-writer.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          TRANSACTION: ${{ inputs.transaction }}
+          OUTCOME: ${{ inputs.outcome }}
+          STABLE: ${{ inputs.expected_stable }}
+          DEV: ${{ inputs.expected_dev }}
+        run: |
+          set -eu
+          python3 tooling/tools/hosting/deployment_state.py reconcile --transaction "$TRANSACTION" \
+            --outcome "$OUTCOME" --stable "$STABLE" --dev "$DEV"
