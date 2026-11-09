@@ -1,0 +1,2 @@
+# Asset generators only. No third-party samples fetched during a build.
+Pillow==13.0.0
