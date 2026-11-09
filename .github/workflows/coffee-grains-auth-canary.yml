@@ -1,0 +1,54 @@
+name: COFFEE GRAINS isolated state authorization canary
+on:
+  workflow_dispatch: # No branch, source, ref, or operation inputs.
+permissions:
+  contents: read
+concurrency:
+  group: coffee-grains-pages # Serialize with deployment/reconciliation, not just other canaries.
+  cancel-in-progress: false
+jobs:
+  canary:
+    if: github.repository == 'Auberg1ne/Felucca' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: github-pages
+    permissions:
+      contents: write # Deliberate isolated negative control; NOT the production controller token.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Offline harness checks (no credentials supplied)
+        run: python3 -B tools/hosting/authorization_canary_test.py
+      - name: Verify reviewer gate, main-only restriction, rules and fresh refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B tools/hosting/authorization_canary.py preflight
+      - name: Require protected environment App key
+        env:
+          APP_KEY: ${{ secrets.COFFEE_GRAINS_STATE_APP_PRIVATE_KEY }}
+        run: test -n "$APP_KEY"
+      - name: Obtain scoped canary App token after approval
+        id: writer
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: '5678740'
+          private-key: ${{ secrets.COFFEE_GRAINS_STATE_APP_PRIVATE_KEY }}
+          owner: Auberg1ne
+          repositories: Felucca
+          permission-contents: write
+      - name: Six isolated authorization operations (never production state)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANARY_APP_TOKEN: ${{ steps.writer.outputs.token }}
+          CANARY_APP_SLUG: ${{ steps.writer.outputs.app-slug }}
+        run: python3 -B tools/hosting/authorization_canary.py probe
+      - name: Retain nonsecret evidence, including partial failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: state-auth-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: canary-evidence/report.json
+          if-no-files-found: warn
+          retention-days: 30
