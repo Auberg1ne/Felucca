@@ -52,8 +52,29 @@ def context(env):
             'Not an approved main workflow-dispatch context')
 
 
+class Credentials:
+    """Explicit routing, not issuer authentication; pinned Actions mint scoped tokens.
+
+    Do not add a repr containing values. Role separation fails closed before I/O.
+    """
+    def __init__(self, ordinary, audit, writer='', require_writer=False):
+        require(ordinary and audit, 'Ordinary and read-only audit credentials required')
+        require(ordinary != audit, 'Ordinary and audit credentials must be distinct')
+        require(bool(writer) == require_writer,
+                'Writer credential required only during the probe phase')
+        require(not writer or writer not in (ordinary, audit),
+                'Writer credential must be distinct from ordinary and audit credentials')
+        self.ordinary, self.audit, self.writer = ordinary, audit, writer
+
+    def require_git(self, token):
+        require(token and token in (self.ordinary, self.writer) and token != self.audit,
+                'Misrouted credential rejected: Git requires ordinary or writer authorization')
+
+
 class Git:
-    def __init__(self, root):
+    def __init__(self, root, credentials):
+        require(isinstance(credentials, Credentials), 'Explicit Git credential roles required')
+        self.credentials = credentials
         self.root = Path(root)
         # Do not inherit keys, tokens, Git traces, helpers, hooks or host Git config.
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.root),
@@ -67,6 +88,7 @@ class Git:
     def command(self, args, token=None, data=None):
         env = self.env.copy()
         if token:
+            self.credentials.require_git(token)
             env.update(GIT_CONFIG_COUNT='1',
                        GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                        GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' +
@@ -111,6 +133,7 @@ class Git:
 
     def push(self, token, target, operation):
         # Every mutation has this one fixed destination. No caller branch/ref input.
+        self.credentials.require_git(token)
         require(operation in ('create', 'update', 'force', 'delete'), 'Unknown operation')
         require(SHA.fullmatch(target) and (target == ZERO) == (operation == 'delete'),
                 'Invalid canary commit')
@@ -120,8 +143,9 @@ class Git:
 
 
 class API:
-    def __init__(self, token):
-        self.token = token
+    def __init__(self, credentials):
+        require(isinstance(credentials, Credentials), 'Explicit audit credential role required')
+        self.token = credentials.audit
 
     def get(self, suffix):
         # Read-only API, fixed origin/repository. No arbitrary URL or redirect follow.
@@ -267,12 +291,15 @@ def main():
         report['run'] = os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
         report['controller_sha'] = os.environ['GITHUB_SHA']
         save()
-        token = os.environ.get('GH_TOKEN', '')
-        require(token, 'Ordinary write-capable workflow token missing')
-        api = API(token)
+        credentials = Credentials(os.environ.get('GH_TOKEN', ''),
+                                  os.environ.get('CANARY_AUDIT_TOKEN', ''),
+                                  os.environ.get('CANARY_APP_TOKEN', ''),
+                                  require_writer=args.phase == 'probe')
+        token = credentials.ordinary
+        api = API(credentials)
         sources = settings(api)
         with tempfile.TemporaryDirectory(prefix='coffee-grains-canary-') as root:
-            git = Git(root)
+            git = Git(root, credentials)
             require(git.head(token, production=True) == ZERO and git.head(token) == ZERO,
                     'Preflight requires absent production and canary refs')
             report['preflight'] = {'environment': 'github-pages', 'main_only': True,
@@ -280,7 +307,7 @@ def main():
                                    'production_absent': True, 'canary_absent': True}
             save()
             if args.phase == 'probe':
-                probe(git, api, token, os.environ.get('CANARY_APP_TOKEN', ''),
+                probe(git, api, token, credentials.writer,
                       os.environ.get('CANARY_APP_SLUG', ''), sources, report, save)
             else:
                 report['status'] = 'PREFLIGHT_PASS'
