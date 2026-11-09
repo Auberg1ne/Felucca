@@ -1,4 +1,23 @@
-# Felucca
+# COFFEE GRAINS
+
+**Granular Synthesizer** by Auberg1ne, based on Felucca.
+
+The browser instrument runs the real firmware engines through WebAssembly and AudioWorklet.
+See [Permanent web deployment](docs/web-deployment.md) for approved STABLE/DEV builds,
+version checks, local builds and limitations. Public URLs are **not deployed or verified by this change yet**.
+The simulator editor connection is read-only; browser-to-WASM sample uploads are not implemented.
+The physical FM-1 remains an intended target; no hardware validation is implied by browser tests.
+
+Existing source IDs, file formats, APIs, credits and licenses retain their Felucca identities.
+
+---
+
+## Upstream Felucca documentation and acknowledgements
+
+The following original project information and upstream links are retained for attribution;
+upstream hosting is separate from the COFFEE GRAINS deployment.
+
+### Felucca
 
 [![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
 
