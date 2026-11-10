@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 tooling/tools/hosting/source_policy.py "$SOURCE_SHA" --checkout source --require-submodules
-          python3 -m pip install Pillow==13.0.0 playwright==1.62.0
+          python3 -m pip install Pillow==13.0.0 fonttools==4.60.1 playwright==1.62.0
           python3 -m playwright install --with-deps chromium
           npm install --prefix "$RUNNER_TEMP/hosting-dom" --ignore-scripts --no-audit --no-fund jsdom@26.1.0
       - name: Generate assets without building FM-1 firmware
