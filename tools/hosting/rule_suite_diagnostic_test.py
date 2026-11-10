@@ -20,8 +20,8 @@ spec.loader.exec_module(d)
 def row():
     return dict(id=12, ref=d.REF, before_sha='0'*40, after_sha=d.COMMIT,
                 actor_name=d.WRITER_ACTOR, result='bypass', pushed_at='2026-11-01T12:00:00Z',
-                rule_evaluations=[dict(rule_type='creation', enforcement='active', result='bypass',
-                                       rule_source={'id': 3, 'type': 'Repository'})])
+                rule_evaluations=[dict(rule_type='creation', enforcement='active', result='pass',
+                                       rule_source={'id': 3, 'type': 'ruleset'})])
 
 
 class FakeAPI:
@@ -66,6 +66,10 @@ class FakeAPI:
 
 
 class Diagnostic(unittest.TestCase):
+    def set_suite(self, api, data):
+        api.changes[d.SUITES] = [data]
+        api.changes['/rulesets/rule-suites/' + str(data['id'])] = data
+
     def assert_inconclusive(self, api):
         env = dict(GITHUB_ACTIONS='true', GITHUB_REPOSITORY=d.REPOSITORY,
                    GITHUB_REF='refs/heads/main', GITHUB_EVENT_NAME='workflow_dispatch',
@@ -78,6 +82,7 @@ class Diagnostic(unittest.TestCase):
             self.assertEqual(data['status'], 'INCONCLUSIVE')
             self.assertFalse(data['collection_complete'])
             self.assertEqual(data['h9_verdict'], 'NOT_REEVALUATED')
+            return data
 
     def collect(self, api=None):
         report = {}
@@ -94,6 +99,153 @@ class Diagnostic(unittest.TestCase):
         self.assertTrue(all(d.endpoint(p) for p, _ in api.calls))
         self.assertNotIn('DO NOT COPY', json.dumps(report))
 
+    def test_overall_fail_is_complete_collection_not_authorization(self):
+        api = FakeAPI()
+        data = row()
+        data['result'] = 'fail'
+        data['evaluation_result'] = 'fail'
+        data['rule_evaluations'][0]['result'] = 'fail'
+        data['rule_evaluations'][0]['details'] = 'RAW FAILURE SECRET'
+        self.set_suite(api, data)
+        report, _ = self.collect(api)
+        self.assertEqual(report['status'], 'COLLECTED')
+        self.assertTrue(report['collection_complete'])
+        self.assertEqual(report['h9_verdict'], 'NOT_REEVALUATED')
+        self.assertEqual(report['suites'][0]['detail']['result'], 'fail')
+        self.assertEqual(report['suites'][0]['detail']['evaluation_result'], 'fail')
+        self.assertEqual(report['suites'][0]['failed_evaluation_count'], 1)
+        self.assertNotIn('RAW FAILURE', json.dumps(report))
+
+    def test_bypass_with_failed_creation_and_other_protections_is_collected(self):
+        api = FakeAPI()
+        data = row()
+        data['evaluation_result'] = 'fail'
+        data['rule_evaluations'] = [
+            dict(rule_type='creation', enforcement='active', result='fail',
+                 rule_source={'type':'ruleset','id':3}),
+            dict(rule_type='pull_request', enforcement='active', result='fail',
+                 rule_source={'type':'protected_branch'}, details='RAW FAILURE SECRET'),
+            dict(rule_type='required_signatures', enforcement='evaluate', result='fail',
+                 rule_source={'type':'ruleset','id':99,'name':'RAW RULE NAME'}),
+            dict(rule_type='commit_message_pattern', enforcement='deleted ruleset', result='fail',
+                 rule_source={'type':'ruleset','id':None})]
+        self.set_suite(api, data)
+        report, _ = self.collect(api)
+        entry = report['suites'][0]
+        self.assertEqual(report['status'], 'COLLECTED')
+        self.assertEqual(report['h9_verdict'], 'NOT_REEVALUATED')
+        self.assertEqual(entry['detail']['result'], 'bypass')
+        self.assertEqual(entry['failed_evaluation_count'], 4)
+        self.assertEqual([r['rule_type'] for r in entry['detail']['rule_evaluations']],
+                         ['creation','pull_request','required_signatures','commit_message_pattern'])
+        self.assertIsNone(entry['detail']['rule_evaluations'][1]['rule_source_id'])
+        self.assertNotIn('RAW', json.dumps(report))
+
+    def test_unrelated_history_is_classified_and_failures_remain_visible(self):
+        api = FakeAPI()
+        unrelated = dict(row(), id=13, actor_name='github-actions[bot]', result='fail')
+        unrelated['rule_evaluations'] = [dict(rule_type='required_deployments',
+            enforcement='active', result='fail', rule_source={'type':'ruleset','id':99})]
+        api.changes[d.SUITES] = [unrelated, row()]
+        api.changes['/rulesets/rule-suites/13'] = unrelated
+        report, _ = self.collect(api)
+        self.assertEqual(report['status'], 'COLLECTED')
+        self.assertEqual(report['target_suite_count'], 1)
+        self.assertEqual(report['unrelated_suite_count'], 1)
+        self.assertEqual(report['suites'][0]['classification'], 'TARGET_CREATION')
+        self.assertEqual(report['unrelated_suites'][0]['classification'], 'UNRELATED')
+        self.assertEqual(report['unrelated_suites'][0]['failed_evaluation_count'], 1)
+        self.assertEqual(report['unrelated_suites'][0]['detail']['rule_evaluations'][0]['rule_type'],
+                         'required_deployments')
+        api.changes[d.SUITES] = [unrelated]
+        self.assert_inconclusive(api)
+
+    def test_multiple_failing_target_suites_remain_inconclusive(self):
+        api = FakeAPI()
+        first = dict(row(), result='fail')
+        second = dict(first, id=13)
+        api.changes[d.SUITES] = [first, second]
+        api.changes['/rulesets/rule-suites/12'] = first
+        api.changes['/rulesets/rule-suites/13'] = second
+        self.assert_inconclusive(api)
+
+    def test_noncreation_failures_do_not_obscure_exact_creation_event(self):
+        api = FakeAPI()
+        data = row()
+        data['rule_evaluations'] = [dict(rule_type='pull_request', enforcement='active',
+            result='fail', rule_source={'type':'protected_branch'})]
+        self.set_suite(api, data)
+        report, _ = self.collect(api)
+        self.assertEqual(report['status'], 'COLLECTED')
+        self.assertFalse(report['suites'][0]['current_creation_source_present'])
+        self.assertEqual(report['h9_verdict'], 'NOT_REEVALUATED')
+
+    def test_unknown_or_malformed_evaluations_fail_closed(self):
+        changes = [dict(rule_type='unknown_future_rule'), dict(result='unknown'),
+                   dict(enforcement='unknown'), dict(rule_source={'type':'unknown','id':3}),
+                   dict(rule_source={'type':'ruleset','id':False}),
+                   dict(rule_source={'type':'ruleset'}), dict(rule_source=None)]
+        for change in changes:
+            with self.subTest(change=change):
+                api = FakeAPI()
+                data = row()
+                data['rule_evaluations'][0].update(change)
+                self.set_suite(api, data)
+                report = self.assert_inconclusive(api)
+                self.assertEqual(report['pending_suites'][0]['classification'], 'UNVERIFIED')
+        api = FakeAPI()
+        data = dict(row(), evaluation_result='unknown')
+        self.set_suite(api, data)
+        self.assert_inconclusive(api)
+
+    def test_unrelated_malformed_or_inconsistent_records_are_not_ignored(self):
+        for change in (dict(actor_name=None), dict(before_sha='malformed'), dict(result='unknown')):
+            api = FakeAPI()
+            unrelated = dict(row(), id=13, actor_name='github-actions[bot]')
+            unrelated.update(change)
+            api.changes[d.SUITES] = [row(), unrelated]
+            api.changes['/rulesets/rule-suites/13'] = unrelated
+            self.assert_inconclusive(api)
+        api = FakeAPI()
+        unrelated = dict(row(), id=13, actor_name='github-actions[bot]')
+        api.changes[d.SUITES] = [row(), unrelated]
+        api.changes['/rulesets/rule-suites/13'] = dict(unrelated, after_sha='c'*40)
+        self.assert_inconclusive(api)
+
+    def test_failed_collection_cli_exit_zero_keeps_h9_not_reevaluated(self):
+        env = dict(GITHUB_ACTIONS='true', GITHUB_REPOSITORY=d.REPOSITORY,
+                   GITHUB_REF='refs/heads/main', GITHUB_EVENT_NAME='workflow_dispatch',
+                   GITHUB_SHA='a'*40, AUDIT_APP_ID='5686993', CANARY_AUDIT_TOKEN='audit-secret')
+        api = FakeAPI()
+        data = dict(row(), result='fail')
+        data['rule_evaluations'][0]['result'] = 'fail'
+        self.set_suite(api, data)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, env, clear=True), \
+             patch.object(d, 'REPORT', Path(tmp)/'report.json'), \
+             patch.object(d, 'API', return_value=api), patch('builtins.print'):
+            self.assertEqual(d.main(), 0)
+            report = json.loads(d.REPORT.read_text())
+            self.assertEqual(report['schema'], 2)
+            self.assertEqual(report['status'], 'COLLECTED')
+            self.assertEqual(report['h9_verdict'], 'NOT_REEVALUATED')
+            self.assertEqual(report['suites'][0]['detail']['result'], 'fail')
+
+    def test_full_history_and_page_bound_with_unrelated_rows(self):
+        api = FakeAPI()
+        listing = [row()] + [dict(row(), id=i, actor_name='github-actions[bot]') for i in range(13,112)]
+        api.changes[d.SUITES] = listing
+        for record in listing:
+            api.changes['/rulesets/rule-suites/' + str(record['id'])] = record
+        api.changes[d.SUITES + '&page=2'] = []
+        report, _ = self.collect(api)
+        self.assertEqual(report['status'], 'COLLECTED')
+        self.assertEqual(report['unrelated_suite_count'], 99)
+        with patch.object(d, 'MAX_PAGES', 1):
+            self.assert_inconclusive(api)
+        api.changes[d.SUITES + '&page=2'] = [dict(row(), id=112)]
+        api.changes['/rulesets/rule-suites/112'] = dict(row(), id=112)
+        self.assert_inconclusive(api)
+
     def test_wrong_run_identity_fails_closed(self):
         for field, value in [('id', 1), ('head_branch', 'other'), ('event', 'push'),
                               ('repository', {'full_name':'other/repo'}), ('path', 'other.yml')]:
@@ -109,7 +261,7 @@ class Diagnostic(unittest.TestCase):
                    ('before_sha','b'*40), ('after_sha','c'*40), ('after_sha','main'),
                    ('ref',d.PRODUCTION), ('repository',{'full_name':'other/repo','id':1}),
                    ('pushed_at','2026-99-01T12:00:00Z'),
-                   ('repository_id',1), ('result','fail'), ('pushed_at','2020-01-01T00:00:00Z')]
+                   ('repository_id',1), ('result','unknown'), ('pushed_at','2020-01-01T00:00:00Z')]
         changes += [(k,None) for k in ('actor_name','before_sha','after_sha','ref','result','pushed_at')]
         for key, value in changes:
             with self.subTest(key=key,value=value):
@@ -135,15 +287,11 @@ class Diagnostic(unittest.TestCase):
             api.changes['/rulesets/rule-suites/13'] = dict(row(),id=13)
             self.assert_inconclusive(api)
 
-    def test_missing_or_noncreation_evaluations_are_inconclusive(self):
-        for evaluations in (None, [], [dict(rule_type='update',enforcement='active',result='bypass',
-                                          rule_source={'id':3})],
-                            [dict(rule_type='creation',enforcement='evaluate',result='bypass',
-                                  rule_source={'id':3})],
-                            [dict(rule_type='creation',enforcement='active',result='bypass',
-                                  rule_source={'id':99})]):
+    def test_missing_or_malformed_evaluations_are_inconclusive(self):
+        for evaluations in (None, [], 'malformed', [dict(rule_type='creation', enforcement='unknown',
+                                                        result='pass', rule_source={'id':3,'type':'ruleset'})]):
             api = FakeAPI()
-            api.changes['/rulesets/rule-suites/12'] = dict(row(),rule_evaluations=evaluations)
+            api.changes['/rulesets/rule-suites/12'] = dict(row(), rule_evaluations=evaluations)
             self.assert_inconclusive(api)
 
     def test_original_writer_app_id_and_owner_are_verified(self):
@@ -201,7 +349,7 @@ class Diagnostic(unittest.TestCase):
         api = FakeAPI()
         api.changes[d.SUITES] = [row()] + [dict(row(), id=13)]
         api.changes['/rulesets/rule-suites/13'] = dict(row(), id=13)
-        with self.assertRaisesRegex(d.Unavailable, 'Multiple creation'):
+        with self.assertRaisesRegex(d.Unavailable, 'Exactly one'):
             self.collect(api)
 
     def test_missing_actor_does_not_fall_back_to_nested_actor(self):

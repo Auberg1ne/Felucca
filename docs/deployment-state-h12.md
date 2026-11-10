@@ -6,6 +6,9 @@ existing `refs/heads/coffee-grains-state-auth-canary` witness at
 It never invokes H9 or resumes its operations. `COLLECTED` means exactly one
 consistent creation suite was collected; it is not an H9 authorization PASS.
 `h9_verdict` always remains `NOT_REEVALUATED`.
+An overall `fail`, or failed evaluations within an overall `bypass`, is diagnostic
+evidence and does not prevent complete collection. Exit 0 describes collection
+completeness only, never the safety or authorization of the original operation.
 
 ## Credential and workflow boundary
 
@@ -57,23 +60,36 @@ required reviewers and exactly the selected `main` branch policy. Active creatio
 rule source IDs must be available. The canary head and independent-root commit
 must match the pinned witness.
 
-Every returned suite record must have the exact canary ref, **40 zeroes before**,
-the pinned witness **after**, and the exact State Writer actor. These identity
-fields must be present in both list and detail records, which must agree on ID,
-ref, SHAs, actor, result, timestamp and any supplied repository metadata.
+Every target suite record must have the exact canary ref, **40 zeroes before**,
+the pinned witness **after**, and the exact State Writer actor. For both target
+and unrelated records, identity fields must be present in list and detail and
+agree on ID, ref, SHAs, actor, result, timestamp and supplied repository metadata.
 Repository provenance comes from the fixed endpoint and validated original run;
 if a suite supplies repository identity, it must also agree. A nested actor login
 never substitutes for a missing `actor_name`.
 
-Exactly **one** suite must remain after complete bounded history inspection. It
-must fall within the original run window, have a pass/bypass result, and include
-nonempty successful evaluations with an active creation rule from the current
-creation-rule sources. This is deliberately strict: unrelated or malformed
-records are rejected rather than silently ignored. Empty history, nonempty
-history without the exact creation suite, wrong identities, failed/missing
-creation evaluations, duplicate IDs, inconsistent records, and multiple matching
-suites with distinct IDs all produce **INCONCLUSIVE**, exit 1. No first-match
-selection is used. H9's predicate remains unchanged.
+Exactly **one target suite** must remain after complete bounded history
+inspection. Target creation identity is the exact writer actor, canary ref and
+zero-before/pinned-after transition; the target timestamp must be in the original
+run window. It must have a recognized overall result (`pass`, `fail` or `bypass`)
+and nonempty, structurally valid evaluations. Evaluation outcomes may be `pass`
+or `fail`; failures are retained, not used as a collection-success predicate.
+The current creation-source comparison is an observation only: a historical
+suite containing other protections or sources can still be collected.
+
+Well-formed, consistent suites with different actors or SHA transitions are
+classified as **UNRELATED** and retained separately, including their failed
+evaluations. They neither count as target matches nor substitute for a missing
+target. Unknown/malformed unrelated records still stop collection. An unexpected
+ref or repository from the fixed scoped endpoint is rejected rather than ignored.
+
+Empty history, nonempty history without the exact target, missing identities or
+evaluations, unknown results/rule types/enforcement/source types, duplicate IDs,
+inconsistent records, and multiple matching target IDs all produce
+**INCONCLUSIVE**, exit 1. Both failed and successful target suites count toward
+ambiguity. There is no first-match selection and no outcome-based exclusion.
+List/detail evaluation fields must also agree when the list includes them.
+H9's predicate remains unchanged; collection never executes it.
 
 History uses the API's **month** window, up to ten pages of 100. Requests use
 fixed numbered paths, never server-supplied URLs. A short page advertising more
@@ -95,6 +111,22 @@ Unexpected exception text is replaced by a fixed message. No logs/artifacts from
 the original run are downloaded or executed. Failure before script execution can
 leave no report; cancellation can prevent upload or token revocation.
 
+Report schema **2** separates target `suites`, `unrelated_suites`, and partially
+validated `pending_suites`. Each validated entry includes classification and a
+failed-evaluation count. Structured evaluation fields retain rule type,
+enforcement, result and source type/ID for **every** evaluation, including failed
+protections such as pull requests, signatures and status checks. Overall
+`result` and optional `evaluation_result` are both retained. Protected-branch
+sources may omit IDs; deleted rulesets may have null IDs. Unknown values become
+null in the sanitized partial projection and explicitly fail validation;
+unvalidated entries cannot yield `COLLECTED`. No free-text failure details,
+source names or metadata are copied.
+
+Schema and example reference:
+[GitHub rule-suite API](https://docs.github.com/en/rest/repos/rule-suites#get-a-repository-rule-suite).
+The documented bypass example contains failing protected-branch and ruleset
+evaluations; these are evidence to retain, not reasons to reject collection.
+
 ## Local validation and review
 
 From `/workspace/Felucca`:
@@ -109,6 +141,8 @@ H12 tests reproduce the three review findings and cover valid unique evidence,
 Audit-only GET authorization on all endpoint classes, missing credentials,
 wrong App/actor/repository/ref/SHAs, list/detail mismatches, zero/duplicate/distinct
 multiple matches, incomplete history/run metadata, creation evaluation checks,
+overall failure, bypass with failed creation evaluations, unrelated history and
+failed protections, recognized source variants and unknown/malformed evaluations,
 redaction, environment isolation and ref drift. Python AST, parsed workflow YAML,
 permission/action pins, shell syntax and configuration gates are also checked
 locally. A firmware build is unnecessary.
@@ -116,7 +150,7 @@ locally. A firmware build is unnecessary.
 Local security acceptance: manual/main-only, protected environment, Audit-only
 reads, GET-only collector, no repository mutation/deployment, fixed targets,
 exact identity enforcement, fail-closed uniqueness, sanitized artifacts and
-unchanged H9 are all checked offline. Local validation: **24 H12 tests and 36 H9
+unchanged H9 are all checked offline. Local validation: **33 H12 tests and 36 H9
 tests passed**. Live grant effectiveness, writer identity lookup and actual suite
 availability remain unverified; owner-confirmed permission provisioning does not
 establish successful collection. No workflow is dispatched by this implementation

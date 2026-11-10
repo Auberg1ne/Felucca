@@ -25,6 +25,17 @@ STAMP = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
 BASE = 'https://api.github.com/repos/' + REPOSITORY
 MAX_BYTES = 2 * 1024 * 1024
 MAX_PAGES = 10
+RESULTS = ('pass', 'fail', 'bypass')
+# GitHub repository rule types; unknown future types fail closed, without copying strings.
+RULE_TYPES = ('creation', 'update', 'deletion', 'non_fast_forward', 'required_linear_history',
+              'merge_queue', 'required_deployments', 'required_signatures', 'pull_request',
+              'required_status_checks', 'commit_message_pattern', 'commit_author_email_pattern',
+              'committer_email_pattern', 'branch_name_pattern', 'tag_name_pattern', 'workflows',
+              'code_scanning', 'code_quality', 'code_coverage', 'copilot_code_review',
+              'license_compliance_scanning', 'file_path_restriction', 'max_file_path_length',
+              'file_extension_restriction', 'max_file_size')
+ENFORCEMENTS = ('active', 'evaluate', 'deleted ruleset')
+SOURCE_TYPES = ('ruleset', 'protected_branch')
 SUITES = '/rulesets/rule-suites?ref=' + urllib.parse.quote(REF, safe='') + '&time_period=month&per_page=100'
 
 
@@ -129,7 +140,8 @@ def suite(value):
               'before_sha': identity(value.get('before_sha'), SHA),
               'after_sha': identity(value.get('after_sha'), SHA),
               'actor_name': identity(value.get('actor_name'), ACTOR),
-              'result': choice(value.get('result'), ('pass', 'fail', 'bypass')),
+              'result': choice(value.get('result'), RESULTS),
+              'evaluation_result': choice(value.get('evaluation_result'), RESULTS),
               'pushed_at': identity(value.get('pushed_at'), STAMP)}
     # Record schema differences without copying arbitrary keys or values.
     result['field_types'] = {key: type(value[key]).__name__ if key in value else 'missing'
@@ -141,18 +153,54 @@ def suite(value):
         evaluations = rows(value['rule_evaluations'])
         require(len(evaluations) <= 1000, 'Too many rule evaluations')
         result['rule_evaluations'] = [{
-            'rule_type': choice(r.get('rule_type'), ('creation', 'update', 'deletion', 'non_fast_forward')),
-            'enforcement': choice(r.get('enforcement'), ('active', 'evaluate', 'disabled', 'enabled')),
-            'result': choice(r.get('result'), ('pass', 'fail', 'bypass')),
+            'rule_type': choice(r.get('rule_type'), RULE_TYPES),
+            'enforcement': choice(r.get('enforcement'), ENFORCEMENTS),
+            'result': choice(r.get('result'), ('pass', 'fail')),
             'rule_source_id': positive(r.get('rule_source', {}).get('id'))
                               if isinstance(r.get('rule_source'), dict) else None,
             'rule_source_type': choice(r.get('rule_source', {}).get('type'),
-                                       ('Repository', 'Organization', 'Enterprise'))
+                                       SOURCE_TYPES)
                                if isinstance(r.get('rule_source'), dict) else None,
             'field_types': {key: type(r[key]).__name__ if key in r else 'missing'
                             for key in ('rule_type', 'enforcement', 'result', 'rule_source')},
         } for r in evaluations]
     return result
+
+
+def validate_suite(record, repository_id, detail=False):
+    """Validate shape/identity fields, never whether a rule allowed the operation."""
+    require(record.get('ref') == REF and identity(record.get('before_sha'), SHA) and
+            identity(record.get('after_sha'), SHA) and identity(record.get('actor_name'), ACTOR),
+            'Suite identity missing, malformed or outside canary scope')
+    if 'repository' in record:
+        repository = object_data(record['repository'])
+        require(repository.get('full_name') == REPOSITORY and
+                positive(repository.get('id')) == repository_id, 'Suite repository mismatch')
+    if 'repository_id' in record:
+        require(positive(record['repository_id']) == repository_id, 'Suite repository mismatch')
+    if 'repository_name' in record:
+        require(record['repository_name'] == 'Felucca', 'Suite repository mismatch')
+    if 'actor_id' in record:
+        require(positive(record['actor_id']), 'Suite actor ID malformed')
+    require(choice(record.get('result'), RESULTS), 'Unknown or missing suite result')
+    if record.get('evaluation_result') is not None:
+        require(choice(record['evaluation_result'], RESULTS), 'Unknown evaluation summary result')
+    timestamp(record.get('pushed_at'))
+    if detail or 'rule_evaluations' in record:
+        evaluations = rows(record.get('rule_evaluations'))
+        require(0 < len(evaluations) <= 1000, 'Evaluation evidence empty or incomplete')
+        for evaluation in evaluations:
+            require(choice(evaluation.get('rule_type'), RULE_TYPES) and
+                    choice(evaluation.get('enforcement'), ENFORCEMENTS) and
+                    choice(evaluation.get('result'), ('pass', 'fail')),
+                    'Unknown or malformed rule evaluation')
+            source = object_data(evaluation.get('rule_source'))
+            require(choice(source.get('type'), SOURCE_TYPES), 'Unknown rule source type')
+            # Protected-branch sources may omit IDs; deleted rulesets may have null IDs.
+            if source.get('id') is not None:
+                require(positive(source['id']), 'Malformed rule source ID')
+            elif source['type'] == 'ruleset':
+                require(evaluation['enforcement'] == 'deleted ruleset', 'Missing live ruleset ID')
 
 
 def collect(api, report, save):
@@ -195,8 +243,9 @@ def collect(api, report, save):
     creation_sources = {r.get('ruleset_id') for r in rules if r.get('type') == 'creation'}
     require(creation_sources and all(positive(x) for x in creation_sources),
             'Active creation rules missing')
-    report['active_rules'] = [{'type': choice(r.get('type'),
-        ('creation', 'update', 'deletion', 'non_fast_forward')), 'ruleset_id': positive(r.get('ruleset_id'))}
+    require(all(choice(r.get('type'), RULE_TYPES) and positive(r.get('ruleset_id')) for r in rules),
+            'Unknown or malformed active rule')
+    report['active_rules'] = [{'type': choice(r.get('type'), RULE_TYPES), 'ruleset_id': positive(r.get('ruleset_id'))}
         for r in rules]
     for label in ('canary', 'production'):
         path = '/git/ref/heads/' + ('coffee-grains-state-auth-canary' if label == 'canary'
@@ -231,6 +280,8 @@ def collect(api, report, save):
                         for x in items]
     save()
     report['suites'] = []
+    report['unrelated_suites'] = []
+    report['pending_suites'] = [] # Partial evidence remains explicitly unvalidated after a stop.
     seen = set()
     for page in range(1, MAX_PAGES + 1):
         listing = rows(api.get(SUITES + (f'&page={page}' if page > 1 else ''), paginated=True))
@@ -252,43 +303,41 @@ def collect(api, report, save):
             start, end = (report['original_run'][k] for k in ('created_at', 'updated_at'))
             entry['within_run_window'] = (timestamp(start) <= timestamp(pushed) <= timestamp(end)
                                           if start and end and pushed else None)
-            report['suites'].append(entry)
+            entry['classification'] = 'UNVERIFIED'
+            report['pending_suites'].append(entry)
             save()
-            # No first-match selection: even a second distinct ID is ambiguous.
-            # This deliberately rejects unrelated or malformed records instead of ignoring them.
-            for record in (row, detail):
-                require(record.get('ref') == REF and record.get('before_sha') == ZERO and
-                        record.get('after_sha') == COMMIT and
-                        record.get('actor_name') == WRITER_ACTOR,
-                        'Suite does not match exact creation identity')
-                if 'repository' in record:
-                    require(object_data(record['repository']).get('full_name') == REPOSITORY and
-                            record['repository'].get('id') == run['repository']['id'],
-                            'Suite repository mismatch')
-                if 'repository_id' in record:
-                    require(record['repository_id'] == run['repository']['id'], 'Suite repository mismatch')
-                require(record.get('result') in ('pass', 'bypass') and
-                        identity(record.get('pushed_at'), STAMP), 'Suite evidence incomplete or unsuccessful')
+            validate_suite(row, run['repository']['id'])
+            validate_suite(detail, run['repository']['id'], detail=True)
             require(entry['h9_identity_fields_equal'] and
                     all(row.get(k) == detail.get(k) for k in
-                        ('pushed_at', 'repository', 'repository_id')),
+                        ('pushed_at', 'repository', 'repository_id', 'repository_name',
+                         'actor_id', 'evaluation_result')),
                     'Suite list and detail identities disagree')
-            require(entry['within_run_window'] is True, 'Suite outside original run window')
+            if 'rule_evaluations' in row:
+                require(suite(row)['rule_evaluations'] == suite(detail)['rule_evaluations'],
+                        'Suite list and detail evaluations disagree')
             evaluations = rows(detail.get('rule_evaluations'))
-            require(evaluations and any(r.get('rule_type') == 'creation' and
+            entry['current_creation_source_present'] = any(r.get('rule_type') == 'creation' and
                     r.get('enforcement') == 'active' and
                     isinstance(r.get('rule_source'), dict) and
-                    r['rule_source'].get('id') in creation_sources for r in evaluations),
-                    'Matching active creation evaluation missing')
-            require(all(r.get('result') in ('pass', 'bypass') and
-                        isinstance(r.get('rule_source'), dict) and positive(r['rule_source'].get('id'))
-                        for r in evaluations), 'Creation evaluations incomplete or unsuccessful')
-            require(len(report['suites']) == 1, 'Multiple creation suites; ambiguous evidence')
+                    r['rule_source'].get('id') in creation_sources for r in evaluations)
+            entry['failed_evaluation_count'] = sum(r['result'] == 'fail' for r in evaluations)
+            target = (row['before_sha'] == ZERO and row['after_sha'] == COMMIT and
+                      row['actor_name'] == WRITER_ACTOR)
+            entry['classification'] = 'TARGET_CREATION' if target else 'UNRELATED'
+            if target:
+                require(entry['within_run_window'] is True, 'Target suite outside original run window')
+            report['pending_suites'].pop()
+            report['suites' if target else 'unrelated_suites'].append(entry)
+            save()
         if len(listing) < 100:
             break
     else:
         raise Unavailable('Rule-suite page bound reached; history incomplete')
-    require(len(report['suites']) == 1, 'Exactly one matching creation suite required')
+    report['target_suite_count'] = len(report['suites'])
+    report['unrelated_suite_count'] = len(report['unrelated_suites'])
+    save()
+    require(len(report['suites']) == 1, 'Exactly one matching creation suite required; missing or ambiguous')
     # Detect concurrent drift without repairing it or asserting production absence.
     for label, branch in (('canary', 'coffee-grains-state-auth-canary'),
                           ('production', 'coffee-grains-pages-state')):
@@ -310,7 +359,7 @@ def collect(api, report, save):
 
 
 def main():
-    report = {'schema': 1, 'status': 'INCONCLUSIVE', 'repository': REPOSITORY,
+    report = {'schema': 2, 'status': 'INCONCLUSIVE', 'repository': REPOSITORY,
               'original_run_id': RUN, 'expected_canary_sha': COMMIT,
               'h9_verdict': 'NOT_REEVALUATED', 'collection_complete': False}
     def save():
