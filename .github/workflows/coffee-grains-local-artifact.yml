@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: GPL-3.0-only
+name: COFFEE GRAINS local simulator ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: c2be0a28f0f0ed2304d7294dc731ad55b6dbae28
+  EMSDK_IMAGE: emscripten/emsdk@sha256:af45409f3199d88db4b1b03af0098532c8fb33a375ac257463eeb0a622870d06
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out packaging tools
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Verify approved source before checkout
+        run: python3 tooling/tools/hosting/source_policy.py "$SOURCE_SHA"
+      - name: Check out the pinned simulator and engines
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: c2be0a28f0f0ed2304d7294dc731ad55b6dbae28
+          path: source
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065b # v5
+        with:
+          python-version: '3.12.14'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.22.1'
+      - name: Install pinned build and test dependencies
+        run: |
+          set -euo pipefail
+          python3 tooling/tools/hosting/source_policy.py "$SOURCE_SHA" --checkout source --require-submodules
+          python3 -m pip install Pillow==13.0.0 playwright==1.62.0
+          python3 -m playwright install --with-deps chromium
+          npm install --prefix "$RUNNER_TEMP/hosting-dom" --ignore-scripts --no-audit --no-fund jsdom@26.1.0
+      - name: Generate assets without building FM-1 firmware
+        working-directory: source
+        run: python3 -c "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"
+      - name: Build browser WASM offline with pinned Emscripten
+        run: |
+          set -euo pipefail
+          docker pull "$EMSDK_IMAGE"
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/source:/src" -w /src \
+            "$EMSDK_IMAGE" bash -ec '
+              export EM_CACHE=/tmp/cache
+              mkdir -p "$EM_CACHE"
+              cp -R /emsdk/upstream/emscripten/cache/. "$EM_CACHE/"
+              emcc --version | head -n 1 | grep -F " 3.1.74 "
+              sh web/emu/build.sh'
+      - name: Run native, JavaScript and WASM regression checks
+        working-directory: source
+        run: S4A_DOM_MODULE="$RUNNER_TEMP/hosting-dom/node_modules/jsdom/lib/api.js" sh ../tooling/tools/hosting/check.sh "$PWD"
+      - name: Assemble the local simulator and launchers
+        run: |
+          set -euo pipefail
+          python3 tooling/tools/hosting/source_policy.py "$SOURCE_SHA" --checkout source --require-submodules
+          RELEASE="$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 tooling/tools/hosting/site.py package --source source --build source/build/emu \
+            --out COFFEE-GRAINS-local --revision "$SOURCE_SHA" --release "$RELEASE" \
+            --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --tooling-revision "$GITHUB_SHA"
+          # This writes only a local entry page; it does not contact or deploy to Pages.
+          python3 tooling/tools/hosting/site.py channel --site COFFEE-GRAINS-local --name stable --release "$RELEASE"
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          root = Path('COFFEE-GRAINS-local')
+          (root / 'index.html').write_text('<!doctype html><meta charset="utf-8"><title>COFFEE GRAINS</title><h1>COFFEE GRAINS</h1><p>Local browser simulator</p><a href="stable/">Launch simulator</a>\n')
+          launcher = dedent('''\
+          #!/usr/bin/env python3
+          # SPDX-License-Identifier: GPL-3.0-only
+          """Serve the extracted simulator only on this computer."""
+          import argparse
+          from functools import partial
+          from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+          import webbrowser
+
+          parser = argparse.ArgumentParser(description=__doc__)
+          parser.add_argument('--no-browser', action='store_true')
+          args = parser.parse_args()
+          handler = partial(SimpleHTTPRequestHandler, directory=str(Path(__file__).resolve().parent))
+          try:
+              server = ThreadingHTTPServer(('127.0.0.1', 8000), handler)
+          except OSError as error:
+              parser.exit(1, f'Cannot start on port 8000: {error}. Stop any other local server and retry.\\n')
+          with server:
+              url = 'http://127.0.0.1:8000/stable/'
+              print('COFFEE GRAINS: ' + url, flush=True)
+              print('Click Switch on. Keep this terminal open; Ctrl+C stops the server.', flush=True)
+              if not args.no_browser:
+                  webbrowser.open(url)
+              try:
+                  server.serve_forever()
+              except KeyboardInterrupt:
+                  pass
+          ''')
+          compile(launcher, 'run-local.py', 'exec')
+          (root / 'run-local.py').write_text(launcher)
+          (root / 'START-WINDOWS.cmd').write_bytes(
+              b'@echo off\r\nrem SPDX-License-Identifier: GPL-3.0-only\r\ncd /d "%~dp0"\r\n'
+              b'where py >nul 2>nul\r\nif errorlevel 1 (python run-local.py) else (py -3 run-local.py)\r\npause\r\n')
+          for name in ('START-MAC.command', 'START-LINUX.sh'):
+              path = root / name
+              path.write_text('#!/bin/sh\n# SPDX-License-Identifier: GPL-3.0-only\nset -eu\ncd "$(dirname "$0")"\nexec python3 run-local.py\n')
+              path.chmod(0o755)
+          (root / 'START-HERE.txt').write_text(dedent('''\
+          COFFEE GRAINS - local browser simulator
+
+          Extract the entire ZIP first. Python 3 and Chrome/Chromium are required.
+          Windows: run START-WINDOWS.cmd (install Python 3 if needed).
+          macOS: run START-MAC.command. If execution is blocked, open Terminal in
+          this folder and run: python3 run-local.py
+          Linux: run sh START-LINUX.sh, or python3 run-local.py from this folder.
+          If the browser does not open, visit http://127.0.0.1:8000/stable/
+          Click Switch on. Keep the terminal open; Ctrl+C stops the server.
+          Do not double-click index.html: file:// cannot run the simulator.
+          If port 8000 is occupied, stop the other local server and retry.
+
+          Once Python and a browser are installed, no download or account is needed.
+          The server listens only on 127.0.0.1. Browser saves belong to this origin
+          and browser profile; they are not backups. Preserve valuable saves.
+          The editor bridge is read-only; simulator sample upload, erase and backup
+          restore are unavailable. Hardware support and audio deadlines are unverified.
+          This is a fresh source build, not a copy of the lost original ZIP.
+          Source/build identity and runtime checksums: releases/*/manifest.json
+          Credits, sample attribution and licenses are included under releases/.
+          '''))
+          PY
+          for script in COFFEE-GRAINS-local/START-MAC.command COFFEE-GRAINS-local/START-LINUX.sh; do
+            bash -n "$script"
+          done
+      - name: Create ZIP and verify its contents
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import zipfile
+
+          root = Path('COFFEE-GRAINS-local')
+          dist = Path('dist')
+          dist.mkdir()
+          archive = dist / 'COFFEE-GRAINS-local.zip'
+          with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+              for path in sorted(root.rglob('*')):
+                  if path.is_file():
+                      z.write(path, Path(root.name) / path.relative_to(root))
+          extracted = Path(os.environ['RUNNER_TEMP']) / 'coffee-grains-artifact-test'
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None, 'Corrupt archive'
+              for name in ('START-MAC.command', 'START-LINUX.sh'):
+                  assert z.getinfo(f'{root.name}/{name}').external_attr >> 16 & 0o111, name
+              z.extractall(extracted)
+          restored = extracted / root.name
+          for path in root.rglob('*'):
+              if path.is_file():
+                  assert path.read_bytes() == (restored / path.relative_to(root)).read_bytes(), path
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          (dist / 'COFFEE-GRAINS-local.zip.sha256').write_text(f'{digest}  {archive.name}\n')
+          print(f'SHA-256: {digest}')
+          PY
+      - name: Test startup, packaged site and launcher from the exact ZIP
+        run: |
+          set -euo pipefail
+          BROWSER=$(python3 -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          python3 source/web/emu/browser_startup_test.py --wasm source/build/emu/felucca.wasm \
+            --sha256 "$(sha256sum source/build/emu/felucca.wasm | cut -d' ' -f1)" --chromium "$BROWSER"
+          SITE="$RUNNER_TEMP/coffee-grains-artifact-test/COFFEE-GRAINS-local"
+          python3 tooling/tools/hosting/site.py verify "$SITE/releases/$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 tooling/tools/hosting/browser_test.py --site "$SITE" --chromium "$BROWSER"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'coffee-grains-artifact-test/COFFEE-GRAINS-local'
+          release = next((root / 'releases').iterdir()).name
+          with subprocess.Popen([sys.executable, str(root / 'run-local.py'), '--no-browser']) as server:
+              try:
+                  for attempt in range(100):
+                      assert server.poll() is None, 'Local launcher exited before readiness'
+                      try:
+                          with urllib.request.urlopen('http://127.0.0.1:8000/stable/', timeout=1) as response:
+                              assert b'COFFEE GRAINS' in response.read()
+                          break
+                      except urllib.error.URLError:
+                          time.sleep(0.1)
+                  else:
+                      raise AssertionError('Local launcher did not become ready')
+                  with urllib.request.urlopen(f'http://127.0.0.1:8000/releases/{release}/emu/felucca.wasm', timeout=5) as response:
+                      assert response.headers.get_content_type() == 'application/wasm'
+                      assert response.read() == (root / 'releases' / release / 'emu/felucca.wasm').read_bytes()
+                  print('Extracted ZIP launcher: entry page and exact WASM passed')
+              finally:
+                  server.terminate()
+                  server.wait(timeout=10)
+          PY
+          (cd dist && sha256sum --check COFFEE-GRAINS-local.zip.sha256)
+      - name: Upload the tested local ZIP and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: COFFEE-GRAINS-local
+          path: |
+            dist/COFFEE-GRAINS-local.zip
+            dist/COFFEE-GRAINS-local.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
