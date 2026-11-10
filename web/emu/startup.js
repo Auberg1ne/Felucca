@@ -150,10 +150,14 @@ export class PreparedStartup {
           else this.initialFrame=m;
         }
       };
+      // Connect before initialization: Chromium can defer a disconnected worklet's
+      // message handling. The worklet remains render-gated until an explicit
+      // validated 'start' message after the initialization acknowledgement.
+      node.connect(context.destination);
       node.port.postMessage(envelope('initialize',id,{module:this.module,sectors,master}));
       await this.bounded(ready,this.timeouts.init,'Authoritative initialization');this.check(id);
       if(context.state!=='running')throw Error('Audio stopped during initialization; reload required');
-      node.connect(context.destination);startSent=true;node.port.postMessage(envelope('start',id));
+      startSent=true;node.port.postMessage(envelope('start',id));
       await this.bounded(running,this.timeouts.start,'First render');this.check(id);this.setState('RUNNING');
       if(this.initialFrame){this.onFrame(this.initialFrame);this.initialFrame=null;}
     }catch(e){this.fail(e);throw e;}

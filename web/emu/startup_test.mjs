@@ -44,13 +44,15 @@ async function prepared(s){const p=s.prepare();await tick();const w=s.worker;w.e
 async function initializing(s){const p=s.start();await tick();return {p,n:s.node};}
 await test('preparation has no AudioContext; explicit start and first-render ack gate readiness',async()=>{
  const before=FakeContext.all.length,s=fixture();await prepared(s);assert.equal(FakeContext.all.length,before);assert.equal(s.state,'READY_TO_START');
- const {p,n}=await initializing(s);assert.equal(n.connects,0);assert.equal(n.posts[0].module,module);assert.equal(s.state,'BOOTING');
+ const {p,n}=await initializing(s);assert.equal(n.connects,1);assert.equal(n.posts[0].module,module);assert.equal(s.state,'BOOTING');
+ // Connection permits message handling but cannot render before the validated start ack.
+ assert.equal(n.posts.some(m=>m.type==='start'),false);
  n.emit(envelope('initialized',s.attempt,{rate:44100}));await tick();assert.equal(n.connects,1);assert.equal(s.state,'READY_TO_RENDER');
  n.emit(envelope('started',s.attempt));await p;assert.equal(s.state,'RUNNING');s.cancel();assert(n.closed);assert(s.state==='CANCELLED');
 });
 await test('stale Worker and worklet attempts cannot activate startup',async()=>{
  const s=fixture(),p=s.prepare();await tick();s.worker.emit(envelope('prepared',s.attempt+1,{module,diagnostics}));assert.equal(s.state,'PREPARING');s.worker.emit(envelope('prepared',s.attempt,{module,diagnostics}));await p;
- const {p:q,n}=await initializing(s);n.emit(envelope('initialized',s.attempt+1,{rate:44100}));assert.equal(n.connects,0);s.cancel();await assert.rejects(q);
+ const {p:q,n}=await initializing(s);n.emit(envelope('initialized',s.attempt+1,{rate:44100}));assert.equal(n.connects,1);assert.equal(n.posts.some(m=>m.type==='start'),false);s.cancel();await assert.rejects(q);
 });
 await test('cancel preparation terminates Worker and rejects pending work',async()=>{const s=fixture(),p=s.prepare();await tick();const w=s.worker,late=w.onmessage;s.cancel();await assert.rejects(p);late({data:envelope('prepared',1,{module,diagnostics})});assert.equal(s.state,'CANCELLED');assert(w.terminated);assert.equal(s.context,null);});
 await test('cancel during context registration cannot allocate a late node',async()=>{let release;class Context extends FakeContext {constructor(){super();this.audioWorklet.addModule=()=>new Promise(r=>release=r);}}const s=fixture({ContextClass:Context});await prepared(s);const p=s.start();await tick();const context=s.context;s.cancel();await assert.rejects(p);release();await tick();assert.equal(s.node,null);assert(context.closed);});
