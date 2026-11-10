@@ -253,6 +253,77 @@ jobs:
           if test "$found" -eq 0; then
             echo "No browser startup report was produced."
           fi
+      - name: Probe experimental Worker startup after a browser gate failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import asyncio
+          import importlib.util
+          import json
+          from pathlib import Path
+          import tempfile
+          from playwright.async_api import async_playwright
+
+          src=Path('source').resolve()
+          spec=importlib.util.spec_from_file_location('smoke',src/'web/emu/browser_startup_test.py')
+          smoke=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(smoke)
+          root=Path(tempfile.mkdtemp(prefix='coffee-grains-worker-probe-'))
+          smoke.snapshot(src,root,(src/'build/emu/felucca.wasm').read_bytes())
+          server,thread=smoke.serve(root/'snapshot')
+          async def probe():
+              output={'purpose':'diagnostic only, NOT a passing test','console':[],'page_errors':[]}
+              try:
+                  async with async_playwright() as pw:
+                      browser=await pw.chromium.launch_persistent_context(
+                          str(root/'profile'),executable_path=str(pw.chromium.executable_path),
+                          headless=True,chromium_sandbox=True,ignore_default_args=True,
+                          args=['--headless','--remote-debugging-pipe','--no-first-run',
+                                '--no-default-browser-check',
+                                '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'])
+                      try:
+                          await browser.add_init_script(smoke.OBSERVE)
+                          origin=f'http://127.0.0.1:{server.server_port}'
+                          async def local_only(route):
+                              if route.request.url.startswith(origin+'/') or route.request.url.startswith(('data:','blob:','about:')):
+                                  await route.continue_()
+                              else:
+                                  await route.abort()
+                          await browser.route('**/*',local_only)
+                          page=await browser.new_page()
+                          page.on('console',lambda m:output['console'].append(m.text) if m.type in ('error','warning') else None)
+                          page.on('pageerror',lambda e:output['page_errors'].append(str(e)))
+                          await page.goto(origin+'/web/emu/index.html?worker_prepare=1')
+                          await page.evaluate('localStorage.clear()')
+                          await page.reload()
+                          await page.locator('#go').click()
+                          await page.wait_for_function("document.querySelector('#go').textContent==='Start audio'",timeout=20000)
+                          await page.locator('#go').click()
+                          await page.wait_for_timeout(6000)
+                          output['state']=await page.evaluate("""() => ({
+                            go:document.querySelector('#go')?.textContent,
+                            startHidden:document.querySelector('#start')?.hidden,
+                            editorDisabled:document.querySelector('#open-editor')?.disabled,
+                            statusText:document.body.innerText.slice(-1250),
+                            contextStates:__startupSmoke.contexts.map(x=>x.state),
+                            nodes:__startupSmoke.nodes.length,
+                            workers:__startupSmoke.workers.length,
+                            lastEvents:__startupSmoke.events.slice(-50)
+                          })""")
+                      finally:
+                          await browser.close()
+              except Exception as e:
+                  output['probe_error']=str(e)
+              finally:
+                  print('Worker startup probe:',json.dumps(output,indent=2),flush=True)
+          try:
+              asyncio.run(probe())
+          finally:
+              server.shutdown()
+              server.server_close()
+              thread.join(3)
+          PY
       - name: Upload the tested local ZIP and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
