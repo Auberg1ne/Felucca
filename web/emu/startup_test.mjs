@@ -44,7 +44,9 @@ async function prepared(s){const p=s.prepare();await tick();const w=s.worker;w.e
 async function initializing(s){const p=s.start();await tick();return {p,n:s.node};}
 await test('preparation has no AudioContext; explicit start and first-render ack gate readiness',async()=>{
  const before=FakeContext.all.length,s=fixture();await prepared(s);assert.equal(FakeContext.all.length,before);assert.equal(s.state,'READY_TO_START');
- const {p,n}=await initializing(s);assert.equal(n.connects,0);assert.equal(n.posts[0].module,module);assert.equal(s.state,'BOOTING');
+ const {p,n}=await initializing(s);assert.equal(n.connects,1);assert.equal(n.posts[0].module,module);assert.equal(s.state,'BOOTING');
+ // Connection permits message handling but cannot render before the validated start ack.
+ assert.equal(n.posts.some(m=>m.type==='start'),false);
  n.emit(envelope('initialized',s.attempt,{rate:44100}));await tick();assert.equal(n.connects,1);assert.equal(s.state,'READY_TO_RENDER');
  n.emit(envelope('started',s.attempt));await p;assert.equal(s.state,'RUNNING');s.cancel();assert(n.closed);assert(s.state==='CANCELLED');
 });
