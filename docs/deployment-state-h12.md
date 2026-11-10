@@ -80,11 +80,12 @@ suite containing other protections or sources can still be collected.
 Well-formed, consistent suites with different actors or SHA transitions are
 classified as **UNRELATED** and retained separately, including their failed
 evaluations. They neither count as target matches nor substitute for a missing
-target. Unknown/malformed unrelated records still stop collection. An unexpected
+target. Malformed unrelated records still stop collection; opaque rule labels
+are retained using the same representation as target evaluations. An unexpected
 ref or repository from the fixed scoped endpoint is rejected rather than ignored.
 
 Empty history, nonempty history without the exact target, missing identities or
-evaluations, unknown results/rule types/enforcement/source types, duplicate IDs,
+evaluations, unknown results/enforcement/source types, malformed rule labels, duplicate IDs,
 inconsistent records, and multiple matching target IDs all produce
 **INCONCLUSIVE**, exit 1. Both failed and successful target suites count toward
 ambiguity. There is no first-match selection and no outcome-based exclusion.
@@ -111,16 +112,25 @@ Unexpected exception text is replaced by a fixed message. No logs/artifacts from
 the original run are downloaded or executed. Failure before script execution can
 leave no report; cancellation can prevent upload or token revocation.
 
-Report schema **2** separates target `suites`, `unrelated_suites`, and partially
+Report schema **3** separates target `suites`, `unrelated_suites`, and partially
 validated `pending_suites`. Each validated entry includes classification and a
 failed-evaluation count. Structured evaluation fields retain rule type,
 enforcement, result and source type/ID for **every** evaluation, including failed
 protections such as pull requests, signatures and status checks. Overall
-`result` and optional `evaluation_result` are both retained. Protected-branch
-sources may omit IDs; deleted rulesets may have null IDs. Unknown values become
-null in the sanitized partial projection and explicitly fail validation;
-unvalidated entries cannot yield `COLLECTED`. No free-text failure details,
-source names or metadata are copied.
+`result` and optional `evaluation_result` are both retained. Diagnostic source
+IDs may be null or absent, including for active ruleset sources; null is retained
+without asserting source verification. Non-null IDs must be positive integers.
+Authorization predicates still require an exact source ID for an expected failure. The documented
+`rule_type` field is an open string, not a closed enum. A bounded (1–256
+characters), printable, nonempty unknown label is retained as opaque evidence:
+`rule_type: null`, `rule_type_status: UNRECOGNIZED`, its SHA-256 fingerprint and
+length. Its text is never copied. Counts and `rule_types_fully_recognized: false`
+make the interpretation limit explicit; collection can still be complete.
+Fingerprints also detect list/detail differences between unknown labels.
+Malformed labels, unknown result/enforcement/source enums and inconsistent
+identities still fail closed. Unvalidated entries cannot yield `COLLECTED`.
+No free-text failure details, source names or metadata are copied. Recognized
+labels remain enumerated, not copied as arbitrary remote text.
 
 Schema and example reference:
 [GitHub rule-suite API](https://docs.github.com/en/rest/repos/rule-suites#get-a-repository-rule-suite).
@@ -150,7 +160,7 @@ locally. A firmware build is unnecessary.
 Local security acceptance: manual/main-only, protected environment, Audit-only
 reads, GET-only collector, no repository mutation/deployment, fixed targets,
 exact identity enforcement, fail-closed uniqueness, sanitized artifacts and
-unchanged H9 are all checked offline. Local validation: **33 H12 tests and 36 H9
+preserved H9 negative-probe protections are all checked offline. Local validation: **33 H12 tests and 59 H9
 tests passed**. Live grant effectiveness, writer identity lookup and actual suite
 availability remain unverified; owner-confirmed permission provisioning does not
 establish successful collection. No workflow is dispatched by this implementation

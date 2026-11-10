@@ -181,10 +181,11 @@ class Diagnostic(unittest.TestCase):
         self.assertEqual(report['h9_verdict'], 'NOT_REEVALUATED')
 
     def test_unknown_or_malformed_evaluations_fail_closed(self):
-        changes = [dict(rule_type='unknown_future_rule'), dict(result='unknown'),
+        changes = [dict(rule_type=None), dict(rule_type=''), dict(rule_type=7),
+                   dict(rule_type='x'*257), dict(rule_type='bad\nlabel'), dict(result='unknown'),
                    dict(enforcement='unknown'), dict(rule_source={'type':'unknown','id':3}),
                    dict(rule_source={'type':'ruleset','id':False}),
-                   dict(rule_source={'type':'ruleset'}), dict(rule_source=None)]
+                   dict(rule_source={'id':3}), dict(rule_source=None)]
         for change in changes:
             with self.subTest(change=change):
                 api = FakeAPI()
@@ -225,7 +226,7 @@ class Diagnostic(unittest.TestCase):
              patch.object(d, 'API', return_value=api), patch('builtins.print'):
             self.assertEqual(d.main(), 0)
             report = json.loads(d.REPORT.read_text())
-            self.assertEqual(report['schema'], 2)
+            self.assertEqual(report['schema'], 3)
             self.assertEqual(report['status'], 'COLLECTED')
             self.assertEqual(report['h9_verdict'], 'NOT_REEVALUATED')
             self.assertEqual(report['suites'][0]['detail']['result'], 'fail')

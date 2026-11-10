@@ -25,6 +25,11 @@ PRODUCTION = 'refs/heads/coffee-grains-pages-state' # Read only: absence is an i
 ZERO = '0' * 40
 SHA = re.compile(r'^[0-9a-f]{40}$')
 EVIDENCE = Path('canary-evidence/report.json')
+CREATION_BYPASS_ACTOR = 'coffee-grains-state-writer[bot]'
+CREATION_BYPASS_REPOSITORY_ID = 1445456236
+CREATION_BYPASS_RULESET = 26842285
+CREATION_BYPASS_SUITE = 5005936145
+CREATION_BYPASS_AFTER = '1d1b9c5a63e7b0c65d16041dc657d8e4a36fa6c4'
 
 
 class Inconclusive(Exception):
@@ -191,29 +196,128 @@ def settings(api):
     return sources
 
 
-def suite_evidence(api, before, after, actor, kind, sources):
+def _only_expected_creation_failure(evaluations):
+    """Outcome predicate only. Call only after raw shape and identity validation."""
+    failures = [r for r in evaluations if r.get('result') == 'fail']
+    return (len(failures) == 1 and all(r.get('result') in ('pass', 'fail') for r in evaluations) and
+            failures[0].get('rule_type') == 'creation' and
+            failures[0].get('enforcement') == 'active' and
+            isinstance(failures[0].get('rule_source'), dict) and
+            failures[0]['rule_source'].get('type') == 'ruleset' and
+            type(failures[0]['rule_source'].get('id')) is int and
+            failures[0]['rule_source']['id'] == CREATION_BYPASS_RULESET)
+
+
+def _validated_app_create_evidence(row, detail, before, after, actor, sources, *,
+                                   operation, started_at, observed_at):
+    # This does not replace push success, observed-head, absence or environment checks.
+    require(operation == 'app-create' and before == ZERO and after == CREATION_BYPASS_AFTER and
+            actor == CREATION_BYPASS_ACTOR, 'Bypass exception is limited to the pinned App creation')
+    require(type(row.get('id')) is int and row['id'] == CREATION_BYPASS_SUITE and
+            type(detail.get('id')) is int and detail['id'] == CREATION_BYPASS_SUITE,
+            'Pinned creation suite identity mismatch')
+    creation_sources = sources.get('creation')
+    require(isinstance(creation_sources, set) and creation_sources and all(
+            type(x) is int and x > 0 for x in creation_sources) and
+            CREATION_BYPASS_RULESET in creation_sources, 'Expected active creation ruleset missing')
+    for record in (row, detail):
+        require(type(record.get('repository_id')) is int and
+                record['repository_id'] == CREATION_BYPASS_REPOSITORY_ID and
+                record.get('repository_name') == 'Felucca' and record.get('ref') == REF and
+                record.get('before_sha') == before and record.get('after_sha') == after and
+                record.get('actor_name') == actor and record.get('result') in ('pass', 'bypass'),
+                'Creation bypass repository or event identity mismatch')
+        if 'repository' in record:
+            repository = record['repository']
+            require(isinstance(repository, dict) and repository.get('full_name') == REPOSITORY and
+                    type(repository.get('id')) is int and
+                    repository['id'] == CREATION_BYPASS_REPOSITORY_ID, 'Creation repository mismatch')
+        require(isinstance(record.get('pushed_at'), str) and
+                re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', record['pushed_at']),
+                'Missing or malformed creation timestamp')
+        if 'actor_id' in record:
+            require(type(record['actor_id']) is int and record['actor_id'] > 0,
+                    'Malformed creation actor ID')
+        require(record.get('evaluation_result') in (None, 'pass', 'fail', 'bypass'),
+                'Unknown creation evaluation summary')
+    require(all(row.get(k) == detail.get(k) for k in ('repository_id', 'repository_name',
+                'repository', 'pushed_at', 'actor_id', 'evaluation_result', 'result')),
+            'Creation list/detail metadata mismatch')
+    try:
+        require(isinstance(started_at, str) and isinstance(observed_at, str),
+                'Creation operation time window required')
+        started, observed = datetime.fromisoformat(started_at), datetime.fromisoformat(observed_at)
+        pushed = datetime.strptime(detail['pushed_at'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+        require(started.tzinfo is not None and observed.tzinfo is not None and
+                started.utcoffset() == timezone.utc.utcoffset(started) and
+                observed.utcoffset() == timezone.utc.utcoffset(observed) and started <= observed and
+                started.replace(microsecond=0) <= pushed <= observed,
+                'Creation suite outside operation time window')
+    except (ValueError, TypeError):
+        raise Inconclusive('Malformed creation operation time window') from None
+    evaluations = detail.get('rule_evaluations')
+    require(isinstance(evaluations, list) and len(evaluations) == 6 and
+            all(isinstance(r, dict) for r in evaluations), 'Creation evaluations incomplete')
+    for evaluation in evaluations:
+        label = evaluation.get('rule_type')
+        require(isinstance(label, str) and 0 < len(label) <= 256 and label.isprintable() and
+                label.strip() == label and evaluation.get('enforcement') in
+                ('active', 'evaluate', 'deleted ruleset') and evaluation.get('result') in ('pass', 'fail'),
+                'Malformed creation evaluation fields')
+        source = evaluation.get('rule_source')
+        require(isinstance(source, dict) and isinstance(source.get('type'), str) and
+                0 < len(source['type']) <= 256 and source['type'].isprintable() and
+                source['type'].strip() == source['type'] and
+                (source.get('id') is None or (type(source['id']) is int and source['id'] > 0)),
+                'Malformed creation evaluation source')
+    if 'rule_evaluations' in row:
+        require(row['rule_evaluations'] == evaluations, 'Creation list/detail evaluations mismatch')
+    return evaluations
+
+
+def _verified_app_create_bypass(row, detail, before, after, actor, sources, **context):
+    evaluations = _validated_app_create_evidence(row, detail, before, after, actor, sources, **context)
+    require(detail['result'] == 'bypass', 'Creation exception requires overall bypass')
+    require(_only_expected_creation_failure(evaluations),
+            'Creation bypass includes missing, multiple or unrelated failures')
+
+
+def suite_evidence(api, before, after, actor, kind, sources, *, operation=None,
+                   started_at=None, observed_at=None):
+    require(operation != 'app-create' or kind is None,
+            'App creation cannot use the negative-probe evidence path')
     # No push retries. Only bounded read polling for asynchronously visible rule insights.
     for attempt in range(5):
         rows = api.get('/rulesets/rule-suites?ref=' + urllib.parse.quote(REF, safe='') + '&per_page=100')
-        require(isinstance(rows, list) and len(rows) < 100, 'Ambiguous rule-suite history')
+        require(isinstance(rows, list) and len(rows) < 100 and
+                all(isinstance(r, dict) for r in rows), 'Ambiguous rule-suite history')
         matches = [r for r in rows if r.get('ref') == REF and r.get('before_sha') == before and
                    r.get('after_sha') == after and r.get('actor_name') == actor]
         if len(matches) == 1:
             row = matches[0]
             require(type(row.get('id')) is int and row['id'] > 0, 'Invalid rule-suite id')
             detail = api.get('/rulesets/rule-suites/' + str(row['id']))
+            require(isinstance(detail, dict), 'Malformed rule-suite detail')
             require(all(detail.get(k) == row.get(k) for k in
                         ('id', 'ref', 'before_sha', 'after_sha', 'actor_name', 'result')),
                     'Rule-suite detail mismatch')
-            failures = [r for r in detail.get('rule_evaluations', [])
+            evaluations = detail.get('rule_evaluations', [])
+            require(isinstance(evaluations, list) and all(isinstance(r, dict) for r in evaluations),
+                    'Malformed rule evaluations')
+            failures = [r for r in evaluations
                         if r.get('enforcement') == 'active' and r.get('result') == 'fail']
             if kind:
                 require(detail.get('result') == 'fail' and failures and all(
                     r.get('rule_type') == kind and r.get('rule_source', {}).get('id') in sources[kind]
                     for r in failures), 'Denial is not exclusively the expected active ruleset rule')
             else:
-                require(detail.get('result') in ('pass', 'bypass') and not failures,
-                        'App write has no passing ruleset evidence')
+                # No legacy fallback: every positive result validates complete App-create evidence.
+                # Positive update authorization is held for a separate future continuation mechanism.
+                validated = _validated_app_create_evidence(row, detail, before, after, actor, sources,
+                    operation=operation, started_at=started_at, observed_at=observed_at)
+                require(all(r['result'] == 'pass' for r in validated) or
+                        (detail['result'] == 'bypass' and _only_expected_creation_failure(validated)),
+                        'App creation has neither complete passing evidence nor the exact creation bypass')
             return {'suite_id': row['id'], 'actor': actor, 'result': detail['result'],
                     'expected_rule': kind, 'active_failure_count': len(failures),
                     'failed_ruleset_ids': sorted({r['rule_source']['id'] for r in failures})}
@@ -224,6 +328,7 @@ def suite_evidence(api, before, after, actor, kind, sources):
 
 
 def probe(git, api, ordinary, app, slug, sources, report, save):
+    require(report.get('operations') == [], 'Probe cannot resume an existing operation report')
     require(ordinary and app and ordinary != app, 'Independent credentials required')
     require(re.fullmatch(r'[a-z0-9-]{1,100}', slug or ''), 'Missing App actor slug')
     require(git.head(ordinary, production=True) == ZERO, 'Production state must remain absent')
@@ -235,7 +340,8 @@ def probe(git, api, ordinary, app, slug, sources, report, save):
                   ('app-update', app, 'update', a, b, None, slug + '[bot]'),
                   ('app-force', app, 'force', b, c, 'non_fast_forward', slug + '[bot]'),
                   ('app-delete', app, 'delete', b, ZERO, 'deletion', slug + '[bot]')]
-    for name, token, operation, before, target, denied_rule, actor in operations:
+    for number, (name, token, operation, before, target, denied_rule, actor) in enumerate(operations, 1):
+        require(number <= 2, 'Operations 3-6 require a separate explicitly authorized mechanism')
         require(git.head(ordinary, production=True) == ZERO, 'Production state appeared; stop')
         require(git.head(ordinary) == before, 'Unexpected canary head before operation')
         entry = {'operation': name, 'before': before, 'proposed': target,
@@ -259,7 +365,8 @@ def probe(git, api, ordinary, app, slug, sources, report, save):
             entry.update(returncode=r.returncode, observed='UNVERIFIED')
             save()
             raise
-        entry.update(returncode=r.returncode, observed=observed)
+        entry.update(returncode=r.returncode, observed=observed,
+                     observed_at=datetime.now(timezone.utc).isoformat())
         save()
         if denied_rule:
             if observed != before or r.returncode == 0:
@@ -269,13 +376,19 @@ def probe(git, api, ordinary, app, slug, sources, report, save):
             require(observed == before, 'Denied operation changed canary head; no automatic repair')
         else:
             require(r.returncode == 0 and observed == target, 'App write failed or head mismatch')
-        entry.update(suite_evidence(api, before, target, actor, denied_rule, sources), status='PASS',
+        entry.update(suite_evidence(api, before, target, actor, denied_rule, sources,
+                     operation=name, started_at=entry['started_at'], observed_at=entry['observed_at']), status='PASS',
                      finished_at=datetime.now(timezone.utc).isoformat())
         save()
-    require(git.head(ordinary) == b and git.head(ordinary, production=True) == ZERO,
-            'Final ref invariant failed')
-    report['status'] = 'PASS'
-    save()
+        if number == 2:
+            require(git.head(ordinary) == a and git.head(ordinary, production=True) == ZERO,
+                    'Operation-2 hold ref invariant failed; no repair')
+            report.update(status='HOLD_AFTER_OPERATION_2', continuation_authorized=False,
+                          hold={'original_run': report['run'], 'canary_head': a,
+                                'next_operation': 3, 'completed_operations': 2})
+            save()
+            return
+    raise Inconclusive('Operation-2 hold was not reached; continuation denied')
 
 
 def main():
@@ -312,7 +425,11 @@ def main():
             else:
                 report['status'] = 'PREFLIGHT_PASS'
                 save()
-        print('Canary phase completed; see nonsecret report.json')
+        if report['status'] == 'HOLD_AFTER_OPERATION_2':
+            print('Canary held after operation 2; operations 3-6 are not authorized')
+            return 2 # Intentional incomplete-run boundary; artifact upload uses always().
+        else:
+            print('Canary phase completed; see nonsecret report.json')
     except Exception as exc:
         report['status'] = 'FAIL' if isinstance(exc, Failed) else 'INCONCLUSIVE'
         # Unexpected exceptions are summarized without exception text or traceback.

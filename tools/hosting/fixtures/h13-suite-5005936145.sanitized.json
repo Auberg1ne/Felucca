@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "evidence_kind": "sanitized_owner_verified_summary_not_raw_api",
+  "original_h9_run_id": 42700311095,
+  "h12_run_id": 42778248967,
+  "h12_status": "INCONCLUSIVE",
+  "h9_verdict": "NOT_REEVALUATED",
+  "list_detail_identities_verified_equal": true,
+  "suite": {
+    "id": 5005936145,
+    "repository_id": 1445456236,
+    "repository_name": "Felucca",
+    "ref": "refs/heads/coffee-grains-state-auth-canary",
+    "actor_name": "coffee-grains-state-writer[bot]",
+    "before_sha": "0000000000000000000000000000000000000000",
+    "after_sha": "1d1b9c5a63e7b0c65d16041dc657d8e4a36fa6c4",
+    "result": "bypass",
+    "pushed_at": null,
+    "pushed_at_not_supplied": true,
+    "rule_evaluations": [
+      {
+        "rule_type": "creation",
+        "rule_type_recognized": true,
+        "enforcement": "active",
+        "result": "fail",
+        "rule_source": {
+          "type": "ruleset",
+          "id": 26842285
+        }
+      },
+      {
+        "rule_type": null,
+        "rule_type_redacted": true,
+        "rule_type_recognized": true,
+        "enforcement": "active",
+        "result": "pass",
+        "rule_source": {
+          "type": null,
+          "type_not_supplied": true,
+          "id": null,
+          "id_not_supplied": true
+        }
+      },
+      {
+        "rule_type": null,
+        "rule_type_redacted": true,
+        "rule_type_recognized": true,
+        "enforcement": "active",
+        "result": "pass",
+        "rule_source": {
+          "type": null,
+          "type_not_supplied": true,
+          "id": null,
+          "id_not_supplied": true
+        }
+      },
+      {
+        "rule_type": null,
+        "rule_type_redacted": true,
+        "rule_type_recognized": true,
+        "enforcement": "active",
+        "result": "pass",
+        "rule_source": {
+          "type": null,
+          "type_not_supplied": true,
+          "id": null,
+          "id_not_supplied": true
+        }
+      },
+      {
+        "rule_type": null,
+        "rule_type_redacted": true,
+        "rule_type_recognized": true,
+        "enforcement": "active",
+        "result": "pass",
+        "rule_source": {
+          "type": null,
+          "type_not_supplied": true,
+          "id": null,
+          "id_not_supplied": true
+        }
+      },
+      {
+        "rule_type": null,
+        "rule_type_redacted": true,
+        "rule_type_original_type": "string",
+        "rule_type_recognized": false,
+        "enforcement": "active",
+        "result": "pass",
+        "rule_source": {
+          "type": null,
+          "type_redacted": true,
+          "id": null
+        }
+      }
+    ]
+  }
+}

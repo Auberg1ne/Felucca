@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 """Offline H9 tests. No HTTP requests or remote Git writes are performed."""
+import copy
 import importlib.util
 import json
 import os
@@ -72,6 +73,298 @@ class FakeAPI:
 
 
 class Canary(unittest.TestCase):
+    def passing_detail(self, result='pass'):
+        detail=self.bypass_detail()
+        detail['result']=result
+        for evaluation in detail['rule_evaluations']:
+            evaluation['result']='pass'
+        return detail
+
+    def test_positive_app_create_never_accepts_missing_empty_or_incomplete_evaluations(self):
+        for result in ('pass','bypass'):
+            for value in ('missing',None,[],{},'malformed',[{}]):
+                detail=self.passing_detail(result)
+                if value=='missing':detail.pop('rule_evaluations')
+                else:detail['rule_evaluations']=value
+                with self.subTest(result=result,value=value),self.assertRaises(c.Inconclusive):
+                    self.bypass_evidence(detail)
+
+    def test_positive_app_create_validates_identity_and_time_even_without_failures(self):
+        for result in ('pass','bypass'):
+            for key,value in [('repository_id',1),('pushed_at',None),('actor_name','other[bot]'),
+                              ('ref',c.PRODUCTION),('before_sha',A),('after_sha',B)]:
+                detail=dict(self.passing_detail(result),**{key:value})
+                with self.subTest(result=result,key=key),self.assertRaises(c.Inconclusive):
+                    self.bypass_evidence(detail)
+            for operation in (None,'app-update','app-force','app-delete','ordinary-create'):
+                with self.subTest(result=result,operation=operation),self.assertRaises(c.Inconclusive):
+                    self.bypass_evidence(self.passing_detail(result),operation=operation)
+
+    def test_fully_validated_pass_and_no_failure_bypass_remain_acceptable(self):
+        for result in ('pass','bypass'):
+            evidence=self.bypass_evidence(self.passing_detail(result))
+            self.assertEqual(evidence['result'],result)
+            self.assertEqual(evidence['active_failure_count'],0)
+            self.assertEqual(evidence['failed_ruleset_ids'],[])
+
+    def test_incomplete_creation_bypass_cannot_use_a_legacy_path(self):
+        for operation in (None,'app-create','app-update','app-force'):
+            for field in ('repository_id','pushed_at','rule_evaluations'):
+                detail=self.bypass_detail()
+                detail.pop(field)
+                with self.subTest(operation=operation,field=field),self.assertRaises(c.Inconclusive):
+                    self.bypass_evidence(detail,operation=operation)
+
+    def run_complete_cli(self, detail):
+        # Entire evidence call path; only Git/API IO, clock and environment are synthetic.
+        git=FakeGit()
+        git.commits=lambda run:(c.CREATION_BYPASS_AFTER,B,C)
+        negative=dict(detail,id=11,actor_name='github-actions[bot]',result='fail',
+                      rule_evaluations=[dict(rule_type='creation',enforcement='active',result='fail',
+                      rule_source={'type':'ruleset','id':c.CREATION_BYPASS_RULESET})])
+        # Negative-control identity must not inherit mutations in the positive payload.
+        negative.update(ref=c.REF,before_sha=c.ZERO,after_sha=c.CREATION_BYPASS_AFTER)
+        class EvidenceAPI:
+            def get(self,path):
+                if '/rulesets/rule-suites/' in path:
+                    return negative if path.endswith('/11') else detail
+                return [negative,detail]
+        class Clock(c.datetime):
+            @classmethod
+            def now(cls,tz=None):
+                return cls(2026,11,1,12,0,0,tzinfo=c.timezone.utc)
+        env=dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY=c.REPOSITORY,GITHUB_REF='refs/heads/main',
+                 GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_SHA=A,GITHUB_RUN_ID='42700311095',
+                 GITHUB_RUN_ATTEMPT='1',GH_TOKEN='ordinary',CANARY_AUDIT_TOKEN='audit',
+                 CANARY_APP_TOKEN='writer',CANARY_APP_SLUG='coffee-grains-state-writer')
+        sources=dict(SOURCES,creation={c.CREATION_BYPASS_RULESET})
+        with tempfile.TemporaryDirectory() as root,patch.dict(os.environ,env,clear=True), \
+             patch.object(c,'EVIDENCE',Path(root)/'report.json'),patch('sys.argv',['canary','probe']), \
+             patch.object(c,'Git',return_value=git),patch.object(c,'API',return_value=EvidenceAPI()), \
+             patch.object(c,'settings',return_value=sources),patch.object(c,'datetime',Clock), \
+             patch.object(c.time,'sleep'),patch('builtins.print'):
+            code=c.main()
+            report=json.loads(c.EVIDENCE.read_text())
+        return code,git,report
+
+    def test_full_call_path_holds_after_valid_pass_or_expected_bypass(self):
+        for detail in (self.bypass_detail(),self.passing_detail()):
+            code,git,report=self.run_complete_cli(detail)
+            self.assertEqual(code,2)
+            self.assertEqual(report['status'],'HOLD_AFTER_OPERATION_2')
+            self.assertFalse(report['continuation_authorized'])
+            self.assertEqual(len(git.calls),2)
+            self.assertTrue(all(call[2]=='create' for call in git.calls))
+            self.assertEqual(git.ref,c.CREATION_BYPASS_AFTER)
+            self.assertEqual(report['hold']['original_run'],'42700311095-1')
+            self.assertEqual([op['status'] for op in report['operations']],['PASS','PASS'])
+
+    def test_full_call_path_rejects_demonstrated_bypasses_without_retry_or_continuation(self):
+        for result in ('pass','bypass'):
+            for changes in ({'rule_evaluations':[]},{'rule_evaluations':None},
+                            {'rule_evaluations':[], 'repository_id':1,'pushed_at':None},
+                            {'repository_id':1},{'pushed_at':None},{'actor_name':'other[bot]'}):
+                detail=dict(self.passing_detail(result),**changes)
+                with self.subTest(result=result,changes=changes):
+                    code,git,report=self.run_complete_cli(detail)
+                    self.assertEqual(code,1)
+                    self.assertEqual(report['status'],'INCONCLUSIVE')
+                    self.assertNotIn('hold',report)
+                    self.assertEqual(len(git.calls),2) # Original write already observed; no repair or retry.
+                    self.assertTrue(all(call[2]=='create' for call in git.calls))
+                    self.assertEqual(git.production,c.ZERO)
+
+    def test_hold_prevents_all_later_mutations_even_if_they_would_be_accepted(self):
+        git=FakeGit({3:'allow',4:'allow',5:'allow',6:'allow'})
+        git,report=self.run_probe(git)
+        self.assertEqual(len(git.calls),2)
+        self.assertEqual(git.ref,A)
+        self.assertEqual(report['status'],'HOLD_AFTER_OPERATION_2')
+
+    def test_operation_two_validation_failure_never_reports_a_hold_or_retries(self):
+        git=FakeGit()
+        calls=[]
+        def evidence(*args,**kwargs):
+            calls.append(kwargs['operation'])
+            if kwargs['operation']=='app-create':raise c.Inconclusive('Synthetic evidence failure')
+            return {'suite_id':1}
+        with self.assertRaises(c.Inconclusive):self.run_probe(git,suite=evidence)
+        self.assertEqual(calls,['ordinary-create','app-create'])
+        self.assertEqual(len(git.calls),2)
+        self.assertEqual(git.ref,A)
+
+    def test_held_report_cannot_restart_even_if_a_head_is_later_absent(self):
+        git=FakeGit()
+        report=dict(run='42700311095-1',status='HOLD_AFTER_OPERATION_2',operations=[{'operation':'app-create'}])
+        with self.assertRaises(c.Inconclusive):
+            c.probe(git,FakeAPI(),'ordinary','writer','coffee-grains-state-writer',SOURCES,report,lambda:None)
+        self.assertFalse(git.calls)
+
+    def test_app_create_cannot_misroute_into_a_negative_evidence_branch(self):
+        for kind in ('creation','update','deletion','non_fast_forward'):
+            with self.subTest(kind=kind),self.assertRaises(c.Inconclusive):
+                c.suite_evidence(self.suite(),c.ZERO,A,'github-actions[bot]',kind,SOURCES,
+                                 operation='app-create')
+
+    def test_hold_ref_validation_failure_never_retries_repairs_or_continues(self):
+        for production in (False,True):
+            git=FakeGit()
+            def evidence(*args,**kwargs):
+                if kwargs['operation']=='app-create':
+                    if production:git.production=C
+                    else:git.ref=C
+                return {'suite_id':1}
+            with self.subTest(production=production),self.assertRaises(c.Inconclusive):
+                self.run_probe(git,suite=evidence)
+            self.assertEqual(len(git.calls),2)
+
+    def bypass_detail(self):
+        # Synthetic complete API payload, NOT a reconstruction of redacted artifact fields.
+        return dict(id=c.CREATION_BYPASS_SUITE, repository_id=c.CREATION_BYPASS_REPOSITORY_ID,
+            repository_name='Felucca', ref=c.REF, before_sha=c.ZERO, after_sha=c.CREATION_BYPASS_AFTER,
+            actor_name=c.CREATION_BYPASS_ACTOR, result='bypass', pushed_at='2026-11-01T12:00:00Z',
+            rule_evaluations=[dict(rule_type='creation',enforcement='active',result='fail',
+                rule_source={'type':'ruleset','id':c.CREATION_BYPASS_RULESET})] + [
+                dict(rule_type=kind,enforcement='active',result='pass',
+                     rule_source={'type':'ruleset','id':99}) for kind in
+                ('update','deletion','non_fast_forward','pull_request','required_signatures')])
+
+    def bypass_evidence(self, detail=None, row=None, listing=None, **context):
+        detail = self.bypass_detail() if detail is None else detail
+        row = copy.deepcopy(detail) if row is None else row
+        api = FakeAPI()
+        api.get = lambda path: detail if '/rulesets/rule-suites/' in path else (
+            [row] if listing is None else listing)
+        options = dict(operation='app-create', started_at='2026-11-01T12:00:00+00:00',
+                       observed_at='2026-11-01T12:00:01+00:00')
+        options.update(context)
+        sources = dict(SOURCES, creation={c.CREATION_BYPASS_RULESET})
+        with patch.object(c.time,'sleep'):
+            return c.suite_evidence(api,c.ZERO,c.CREATION_BYPASS_AFTER,c.CREATION_BYPASS_ACTOR,
+                                    None,sources,**options)
+
+    def test_integrated_app_create_bypass_recognizes_only_expected_failure(self):
+        result = self.bypass_evidence()
+        self.assertEqual(result['result'],'bypass')
+        self.assertEqual(result['active_failure_count'],1)
+        self.assertEqual(result['failed_ruleset_ids'],[26842285])
+
+    def test_sanitized_six_evaluation_fixture_is_not_raw_authorization(self):
+        fixture = json.loads((HERE/'fixtures/h13-suite-5005936145.sanitized.json').read_text())
+        suite = fixture['suite']
+        self.assertEqual(len(suite['rule_evaluations']),6)
+        self.assertTrue(c._only_expected_creation_failure(suite['rule_evaluations']))
+        unknown = suite['rule_evaluations'][-1]
+        self.assertIsNone(unknown['rule_type'])
+        self.assertTrue(unknown['rule_type_redacted'])
+        self.assertEqual(unknown['rule_type_original_type'],'string')
+        self.assertIsNone(unknown['rule_source']['type'])
+        self.assertTrue(unknown['rule_source']['type_redacted'])
+        with self.assertRaises(c.Inconclusive):
+            self.bypass_evidence(suite)
+
+    def test_creation_bypass_rejects_each_other_failure_and_duplicate_creation(self):
+        for index in range(1,6):
+            detail = self.bypass_detail()
+            detail['rule_evaluations'][index]['result']='fail'
+            with self.subTest(index=index), self.assertRaises(c.Inconclusive):
+                self.bypass_evidence(detail)
+        detail = self.bypass_detail()
+        detail['rule_evaluations'].append(copy.deepcopy(detail['rule_evaluations'][0]))
+        with self.assertRaises(c.Inconclusive):self.bypass_evidence(detail)
+
+    def test_creation_bypass_rejects_overall_fail_and_forbidden_operations(self):
+        with self.assertRaises(c.Inconclusive):self.bypass_evidence(dict(self.bypass_detail(),result='fail'))
+        for operation in (None,'app-update','app-force','app-delete','ordinary-create'):
+            with self.subTest(operation=operation), self.assertRaises(c.Inconclusive):
+                self.bypass_evidence(operation=operation)
+
+    def test_creation_bypass_rejects_identity_mismatch_and_ambiguous_suites(self):
+        for key,value in [('actor_name','github-actions[bot]'),('repository_id',1),('repository_name','other'),
+                          ('ref',c.PRODUCTION),('before_sha',A),('after_sha',B),
+                          ('id',c.CREATION_BYPASS_SUITE+1)]:
+            with self.subTest(key=key), self.assertRaises(c.Inconclusive):
+                self.bypass_evidence(dict(self.bypass_detail(),**{key:value}))
+        detail=self.bypass_detail()
+        for listing in ([detail,detail],[detail,dict(detail,id=detail['id']+1)]):
+            with self.assertRaises(c.Inconclusive):self.bypass_evidence(listing=listing)
+        with self.assertRaises(c.Inconclusive):
+            self.bypass_evidence(row=dict(detail,pushed_at='2026-11-01T12:00:01Z'))
+
+    def test_creation_bypass_rejects_missing_malformed_and_stale_timestamps(self):
+        for context in (dict(started_at=None),dict(observed_at=None),
+                        dict(started_at='2026-11-01T12:00:00'),
+                        dict(started_at='2026-11-01T12:00:02+00:00'),
+                        dict(observed_at='2026-11-01T11:59:59+00:00'),
+                        dict(started_at='2026-11-01T12:00:00+01:00')):
+            with self.subTest(context=context),self.assertRaises(c.Inconclusive):
+                self.bypass_evidence(**context)
+        for pushed in (None,'2026-99-01T12:00:00Z','2026-11-01T11:59:59Z','2026-11-01T12:00:02Z'):
+            with self.subTest(pushed=pushed),self.assertRaises(c.Inconclusive):
+                self.bypass_evidence(dict(self.bypass_detail(),pushed_at=pushed))
+
+    def test_creation_bypass_rejects_missing_required_evaluation_fields(self):
+        for field in ('rule_type','enforcement','result','rule_source'):
+            detail=self.bypass_detail()
+            detail['rule_evaluations'][1].pop(field)
+            with self.subTest(field=field),self.assertRaises(c.Inconclusive):self.bypass_evidence(detail)
+        for value in (None,[],{},''):
+            detail=self.bypass_detail()
+            detail['rule_evaluations'][1]['rule_source']={'type':value,'id':None}
+            with self.subTest(value=value),self.assertRaises(c.Inconclusive):self.bypass_evidence(detail)
+
+    def test_creation_bypass_requires_exact_failed_source_and_enforcement(self):
+        for changes in (dict(enforcement='evaluate'),dict(rule_type='update'),
+                        dict(rule_source={'type':'ruleset','id':None}),
+                        dict(rule_source={'type':'ruleset','id':99}),
+                        dict(rule_source={'type':'protected_branch','id':26842285})):
+            detail=self.bypass_detail()
+            detail['rule_evaluations'][0].update(changes)
+            with self.subTest(changes=changes),self.assertRaises(c.Inconclusive):
+                self.bypass_evidence(detail)
+
+    def test_probe_supplies_operation_and_fresh_window_without_changing_order(self):
+        calls=[]
+        def evidence(api,before,after,actor,kind,sources,**context):
+            calls.append(context)
+            self.assertLessEqual(c.datetime.fromisoformat(context['started_at']),
+                                 c.datetime.fromisoformat(context['observed_at']))
+            return {'suite_id':1}
+        self.run_probe(suite=evidence)
+        self.assertEqual([x['operation'] for x in calls],['ordinary-create','app-create'])
+
+    def test_creation_bypass_unknown_labels_use_open_string_shape_not_h12_enums(self):
+        # Generated schema coverage, not the redacted original label/source type.
+        detail=self.bypass_detail()
+        label='schema_extension_under_test'
+        source_type='schema_source_under_test'
+        detail['rule_evaluations'][1].update(rule_type=label,
+            rule_source={'type':source_type,'id':None})
+        result=self.bypass_evidence(detail)
+        self.assertEqual(result['active_failure_count'],1)
+        self.assertNotIn(label,json.dumps(result))
+        self.assertNotIn(source_type,json.dumps(result))
+        detail['rule_evaluations'][1]['result']='fail'
+        with self.assertRaises(c.Inconclusive):self.bypass_evidence(detail)
+
+    def test_pinned_creation_suite_requires_all_six_evaluations(self):
+        for count in (5,7):
+            detail=self.bypass_detail()
+            detail['rule_evaluations']=(detail['rule_evaluations'][:5] if count==5 else
+                detail['rule_evaluations']+[copy.deepcopy(detail['rule_evaluations'][-1])])
+            with self.subTest(count=count),self.assertRaises(c.Inconclusive):self.bypass_evidence(detail)
+
+    def test_negative_probe_denials_never_accept_overall_bypass(self):
+        for kind in ('creation','update','deletion','non_fast_forward'):
+            api=self.suite(kind=kind,result='bypass',rule_evaluations=[dict(rule_type=kind,
+                enforcement='active',result='fail',rule_source={'id':next(iter(SOURCES[kind]))})])
+            operation={'creation':'ordinary-create','update':'ordinary-update',
+                       'deletion':'app-delete','non_fast_forward':'app-force'}[kind]
+            with self.subTest(kind=kind),patch.object(c,'_verified_app_create_bypass') as exception:
+                with self.assertRaises(c.Inconclusive):
+                    c.suite_evidence(api,c.ZERO,A,'github-actions[bot]',kind,SOURCES,operation=operation)
+                exception.assert_not_called()
+
     def run_probe(self, git=None, suite=None, ordinary='ordinary', app='app'):
         git = git or FakeGit()
         report = {'run': '123-1', 'operations': [], 'status': 'UNVERIFIED'}
@@ -80,15 +373,16 @@ class Canary(unittest.TestCase):
             c.probe(git, FakeAPI(), ordinary, app, 'coffee-grains-state-writer', SOURCES, report, lambda: None)
         return git, report
 
-    def test_six_operations_and_final_witness(self):
+    def test_operation_two_hold_keeps_first_witness_without_continuation(self):
         git, report = self.run_probe()
-        self.assertEqual(git.calls, [('ordinary', A, 'create'), ('app', A, 'create'),
-                                   ('ordinary', B, 'update'), ('app', B, 'update'),
-                                   ('app', C, 'force'), ('app', c.ZERO, 'delete')])
-        self.assertEqual(git.ref, B)
+        self.assertEqual(git.calls, [('ordinary', A, 'create'), ('app', A, 'create')])
+        self.assertEqual(git.ref, A)
         self.assertEqual(git.production, c.ZERO)
-        self.assertEqual(report['status'], 'PASS')
-        self.assertEqual([r['status'] for r in report['operations']], ['PASS']*6)
+        self.assertEqual(report['status'], 'HOLD_AFTER_OPERATION_2')
+        self.assertFalse(report['continuation_authorized'])
+        self.assertEqual(report['hold'],dict(original_run='123-1',canary_head=A,
+                                           next_operation=3,completed_operations=2))
+        self.assertEqual([r['status'] for r in report['operations']], ['PASS']*2)
 
     def test_existing_canary_blocks_all_mutations(self):
         git = FakeGit();git.ref = A
@@ -113,14 +407,14 @@ class Canary(unittest.TestCase):
             self.assertEqual(len(git.calls), 1)
 
     def test_wrongly_allowed_denial_stops_without_repair(self):
-        for number in (1, 3, 5, 6):
+        for number in (1,):
             git = FakeGit({number: 'allow'})
             with self.assertRaises(c.Inconclusive):self.run_probe(git)
             self.assertEqual(len(git.calls), number)
             self.assertEqual(git.production, c.ZERO)
 
     def test_app_rejection_stops(self):
-        for number in (2, 4):
+        for number in (2,):
             git = FakeGit({number: 'reject'})
             with self.assertRaises(c.Inconclusive):self.run_probe(git)
             self.assertEqual(len(git.calls), number)
@@ -190,7 +484,8 @@ class Canary(unittest.TestCase):
         with self.assertRaises(c.Inconclusive):
             c.suite_evidence(self.suite(),c.ZERO,A,'github-actions[bot]',None,SOURCES)
         api=self.suite(result='bypass',rule_evaluations=[])
-        self.assertEqual(c.suite_evidence(api,c.ZERO,A,'github-actions[bot]',None,SOURCES)['result'],'bypass')
+        with self.assertRaises(c.Inconclusive):
+            c.suite_evidence(api,c.ZERO,A,'github-actions[bot]',None,SOURCES)
 
     def test_push_destination_always_fixed_never_production(self):
         with tempfile.TemporaryDirectory() as root:
@@ -284,7 +579,7 @@ class Canary(unittest.TestCase):
 
     def test_production_appearance_stops_further_operations(self):
         git=FakeGit()
-        def suite(*args):
+        def suite(*args, **kwargs):
             git.production=A
             return {'suite_id':1}
         with self.assertRaises(c.Inconclusive):self.run_probe(git,suite=suite)
@@ -375,21 +670,21 @@ class Canary(unittest.TestCase):
             def settings(api):
                 api_tokens.append(api.token)
                 return SOURCES
-            def suite(api,*args):
+            def suite(api,*args, **kwargs):
                 api_tokens.append(api.token)
                 return {'suite_id':1}
             with tempfile.TemporaryDirectory() as root,patch.dict(os.environ,env,clear=True), \
                  patch.object(c,'EVIDENCE',Path(root)/'report.json'),patch('sys.argv',['canary',phase]), \
                  patch.object(c,'settings',side_effect=settings),patch.object(c,'suite_evidence',side_effect=suite), \
                  patch.object(c,'Git',return_value=git) as constructor,patch('builtins.print'):
-                self.assertEqual(c.main(),0)
+                self.assertEqual(c.main(),2 if phase=='probe' else 0)
                 self.assertEqual(set(api_tokens),{audit})
                 self.assertEqual(constructor.call_args.args[1].audit,audit)
                 report=c.EVIDENCE.read_text()
                 for token in (ordinary,audit,writer):self.assertNotIn(token,report)
                 if phase=='probe':
-                    self.assertEqual([x[0] for x in git.calls],[ordinary,writer,ordinary,writer,writer,writer])
-                    self.assertEqual(json.loads(report)['status'],'PASS')
+                    self.assertEqual([x[0] for x in git.calls],[ordinary,writer])
+                    self.assertEqual(json.loads(report)['status'],'HOLD_AFTER_OPERATION_2')
                 else:
                     self.assertFalse(git.calls)
                     self.assertEqual(json.loads(report)['status'],'PREFLIGHT_PASS')
