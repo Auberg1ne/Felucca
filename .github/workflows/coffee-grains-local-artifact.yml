@@ -236,6 +236,23 @@ jobs:
                   server.wait(timeout=10)
           PY
           (cd dist && sha256sum --check COFFEE-GRAINS-local.zip.sha256)
+      # Print diagnostics only when the strict test gate fails. No ZIP is uploaded.
+      - name: Print failed browser startup report
+        if: failure()
+        run: |
+          set -euo pipefail
+          found=0
+          for report in /tmp/coffee-grains-browser-startup-*/report.json; do
+            if test -f "$report"; then
+              found=1
+              echo "::group::$(basename "$(dirname "$report")") startup report"
+              python3 -m json.tool "$report"
+              echo "::endgroup::"
+            fi
+          done
+          if test "$found" -eq 0; then
+            echo "No browser startup report was produced."
+          fi
       - name: Upload the tested local ZIP and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
