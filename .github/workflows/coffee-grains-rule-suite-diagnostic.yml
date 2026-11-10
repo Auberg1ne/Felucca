@@ -1,0 +1,55 @@
+name: COFFEE GRAINS H12 read-only rule-suite diagnostic
+on:
+  workflow_dispatch: # Fixed original run and witness; no inputs.
+permissions: {}
+concurrency:
+  group: coffee-grains-pages
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    if: github.repository == 'Auberg1ne/Felucca' && github.ref == 'refs/heads/main' && github.event.repository.default_branch == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: github-pages
+    permissions: {} # No ordinary workflow token is used, including for checkout.
+    steps:
+      - name: Require existing fixed Audit App configuration
+        env:
+          AUDIT_APP_ID: ${{ vars.COFFEE_GRAINS_AUDIT_APP_ID }}
+          APP_KEY: ${{ secrets.COFFEE_GRAINS_AUDIT_APP_PRIVATE_KEY }}
+        run: |
+          set -eu
+          test "$AUDIT_APP_ID" = 5686993
+          test -n "$APP_KEY"
+      - name: Obtain repository-scoped audit reader after approval
+        id: auditor
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
+        with:
+          app-id: '5686993'
+          private-key: ${{ secrets.COFFEE_GRAINS_AUDIT_APP_PRIVATE_KEY }}
+          owner: Auberg1ne
+          repositories: Felucca
+          permission-actions: read
+          permission-administration: read
+          permission-metadata: read
+          permission-contents: read # Existing ref/commit reads and explicit audit-token checkout.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          token: ${{ steps.auditor.outputs.token }}
+          persist-credentials: false
+      - name: Offline diagnostic checks
+        run: python3 -B tools/hosting/rule_suite_diagnostic_test.py
+      - name: Inspect original H9 run and existing witness using GET only
+        env:
+          AUDIT_APP_ID: ${{ vars.COFFEE_GRAINS_AUDIT_APP_ID }}
+          CANARY_AUDIT_TOKEN: ${{ steps.auditor.outputs.token }}
+        run: python3 -B tools/hosting/rule_suite_diagnostic.py
+      - name: Retain sanitized diagnostic evidence including partial failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: h12-rule-suite-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/h12-evidence/report.json
+          if-no-files-found: warn
+          retention-days: 30
