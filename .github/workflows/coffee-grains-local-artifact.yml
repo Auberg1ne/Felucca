@@ -175,6 +175,26 @@ jobs:
           (dist / 'COFFEE-GRAINS-local.zip.sha256').write_text(f'{digest}  {archive.name}\n')
           print(f'SHA-256: {digest}')
           PY
+      # Ubuntu 24.04 restricts user namespaces for unprofiled developer Chromium.
+      # Grant userns only to this exact Playwright Chromium binary on the ephemeral runner.
+      # Do not disable the kernel/AppArmor restriction or Chromium's own sandbox.
+      - name: Allow sandboxed Chromium via scoped AppArmor userns profile
+        run: |
+          set -euo pipefail
+          BROWSER=$(python3 -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          test -f "$BROWSER"
+          test "$BROWSER" = "$HOME/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome"
+          command -v apparmor_parser
+          cat > "$RUNNER_TEMP/coffee-grains-ci-chromium.profile" <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile coffee-grains-ci-chromium $BROWSER flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo install -m 0644 "$RUNNER_TEMP/coffee-grains-ci-chromium.profile" /etc/apparmor.d/coffee-grains-ci-chromium
+          sudo apparmor_parser -r /etc/apparmor.d/coffee-grains-ci-chromium
       - name: Test startup, packaged site and launcher from the exact ZIP
         run: |
           set -euo pipefail
