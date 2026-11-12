@@ -5,7 +5,13 @@
  * also goes to flash through storage.c, and an
  * empty RAM slot is filled from flash on load.
  *
- * Format 7 ("FUN7", written) stores P_COUNT (byte 66) and maps an older count as user presets do: FUN7 of
+ * Format 11 ("FUNB", written): the same 3840-byte allocation as FUN10,
+ * with four losslessly bit-packed seven-bit FM6 patches (112 bytes each).
+ * MIDI moves to 3373 and FM6 to 3376, leaving 49 spare bytes with P_COUNT 118.
+ * FUN10 and earlier imports retain their original formats and migrations.
+ * The in-memory/noinit schema and magic are unchanged. See docs/project-format-fun11.md.
+ *
+ * Format 7 ("FUN7", historical) stores P_COUNT (byte 66) and maps an older count as user presets do: FUN7 of
  * 89 parameters (before the chord keys P_CHRD / P_VOIC) loads its engine values at today's P_E0..P_E7,
  * the chord keys OFF / CLOSE, and its motion events' ids from its P_E0 on move up with them (proj_motion_ids).
  * 68 + 4 x (91 + 2 + 64 x 9) + chain + motion = 3040 of the 3372 bytes before the name: 332 spare, room for
@@ -94,7 +100,9 @@
  *
  * Built on the Mac too (tests/project_test.c, -DPROJ_HOST): the part above the #ifndef
  * PROJ_HOST needs core.h, params.c (TP) and engines.c. */
-#define PROJ_MAGIC 0x46554E41u                 /* "FUNA" (FUN10): 104 (1.5: 111) parameters, 128 motion records, nudges */
+#define PROJ_MAGIC_V11 0x46554E42u             /* FUNB: seven-bit FM6 storage, 3840 bytes */
+#define PROJ_MAGIC_V10 0x46554E41u
+#define PROJ_MAGIC PROJ_MAGIC_V10             /* retain the internal/cache schema magic */
 #define PROJ_MAGIC_V9 0x46554E39u              /* "FUN9": FUN8, 64 bytes longer (the DRUM lane levels, 99 parameters) */
 #define PROJ_MAGIC_V8 0x46554E38u              /* "FUN8": FUN7 + the tracks' FM6 patches */
 #define PROJ_MAGIC_V7 0x46554E37u              /* "FUN7": serialized (byte params, packed steps), chain, motion */
@@ -151,13 +159,17 @@ _Static_assert(sizeof(project_v5_t) == 3352u && sizeof(project_v6_t) == 3388u, "
  * never reads them, so every FUN7 file stays valid both ways; FUN6..FUN1 imports get no name.
  * FUN8: the same, 3584 bytes, the four packed FM6 patches at PROJ_FM6_OFF (before the name); 16 bytes of the
  * reserved tail were left for parameters added later. FUN9: the same, 3648 bytes (see the top). */
-#define PROJ_STORE_SIZE 3840u                  /* FUN10: a whole storage object (storage.c ST_PAYLOAD_MAX) */
+#define PROJ_STORE_SIZE 3840u                  /* FUN10/11: one unchanged storage object */
 #define PROJ_STORE_V9 3648u                    /* FUN9 */
 #define PROJ_MOTION_V9 260u                    /* the motion block of FUN7..FUN9: 64 x (place, id, i16 value) */
 #define PROJ_STORE_V8 3584u                    /* FUN8 */
 #define PROJ_STORE_V7 3388u                    /* FUN7 */
 #define PROJ_NAME_OFF (PROJ_STORE_SIZE - 4u - PROJ_NAME_LEN)
-#define PROJ_FM6_OFF (PROJ_NAME_OFF - NTRK * FM6_PACKED)
+/* FUN11 (FUNB): lossless seven-bit FM6 storage only; runtime/wire patches
+ * remain 128 bytes. FUN10's offsets and decoding are frozen. */
+#define PROJ_FM6_STORE (FM6_PACKED * 7u / 8u)
+#define PROJ_FM6_V10_OFF (PROJ_NAME_OFF - NTRK * FM6_PACKED)
+#define PROJ_FM6_OFF (PROJ_NAME_OFF - NTRK * PROJ_FM6_STORE)
 /* 1.5.5 (#202): MIDI IN TRACK, the last 3 of FUN10's 16 spare bytes (just before the patches: the parameters a later
  * version adds grow from the other end, 13 bytes, 3 more track parameters). 24 bits LE: bits 5k..5k+4 track k's channel
  * as song.mch holds it (0..15 its distance up from channel k + 1, 16 OMNI, 17 OFF; 18..31 read as 0), bit 23 set: MIDI IN
@@ -165,6 +177,10 @@ _Static_assert(sizeof(project_v5_t) == 3352u && sizeof(project_v6_t) == 3388u, "
  * channels make, else CH1-4), which is all a firmware before 1.5.5 reads (these bytes it never did): a TRACK project plays
  * there as that block. Every project before has them 0: channels 1..4, MIDI IN as its G_ROUTE says */
 #define PROJ_MIDI_OFF (PROJ_FM6_OFF - 3u)
+_Static_assert(FM6_PACKED == 128u && PROJ_FM6_STORE == 112u, "FUN11 FM6 geometry");
+_Static_assert(68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) +
+               sizeof(chain_config_t) + sizeof(motion_store_t) <= PROJ_MIDI_OFF,
+               "project parameters overlap MIDI / FM6 storage");
 typedef union { uint32_t align; uint8_t raw[PROJ_STORE_SIZE]; } project_store_t;
 _Static_assert(G_COUNT == 27u, "FUN7 globals retain original IDs");
 _Static_assert(sizeof(project_store_t) == 3840u && PROJ_STORE_V7 == sizeof(project_v6_t), "FUN10 / FUN7 sizes");
@@ -507,7 +523,7 @@ static int proj_import(project_t *q, const void *b, int n)
 }
 static int proj_import_any(project_t *q, const void *b, int n)
 {
-    if (n == PROJ_STORE_SIZE && ((const uint32_t *)b)[0] == PROJ_MAGIC)
+    if (n == PROJ_STORE_SIZE && (((const uint32_t *)b)[0] == PROJ_MAGIC_V11 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V10))
         return proj_unpack(q, b, PROJ_STORE_SIZE);
     if (n == PROJ_STORE_SIZE && ((const uint32_t *)b)[1] >= 8u && ((const uint32_t *)b)[1] < PROJ_STORE_SIZE)
         n = (int)((const uint32_t *)b)[1];      /* a retained slot holding an older, shorter record: its own size
@@ -604,9 +620,9 @@ static void proj_midi_pack(uint8_t *b, const project_t *q)
     }
     b[PROJ_MIDI_OFF] = (uint8_t)v; b[PROJ_MIDI_OFF + 1u] = (uint8_t)(v >> 8); b[PROJ_MIDI_OFF + 2u] = (uint8_t)(v >> 16);
 }
-static void proj_midi_unpack(project_t *q, const uint8_t *b)
+static void proj_midi_unpack(project_t *q, const uint8_t *b, uint32_t off)
 {
-    uint32_t k, v = b[PROJ_MIDI_OFF] | (uint32_t)b[PROJ_MIDI_OFF + 1u] << 8 | (uint32_t)b[PROJ_MIDI_OFF + 2u] << 16, f;
+    uint32_t k, v = b[off] | (uint32_t)b[off + 1u] << 8 | (uint32_t)b[off + 2u] << 16, f;
     for (k = 0; k < NTRK; k++) {
         f = (v >> (5u * k)) & 31u;
         q->mch[k] = (uint8_t)(f < MCH_N ? f : 0u);
@@ -615,11 +631,36 @@ static void proj_midi_unpack(project_t *q, const uint8_t *b)
         q->g[G_ROUTE] = ROUTE_TRACK;
 }
 
+/* Fixed-size, LSB-first bit stream; each 128-byte patch occupies 112 bytes.
+ * Callers validate input values before packing. No padding bits are unused. */
+static void proj_fm6_pack(uint8_t *out, const uint8_t *in)
+{
+    memset(out, 0, PROJ_FM6_STORE);
+    for (uint32_t i = 0; i < FM6_PACKED; i++)
+        for (uint32_t j = 0; j < 7u; j++) {
+            uint32_t bit = i * 7u + j;
+            out[bit >> 3] |= ((in[i] >> j) & 1u) << (bit & 7u);
+        }
+}
+static void proj_fm6_unpack(uint8_t *out, const uint8_t *in)
+{
+    for (uint32_t i = 0; i < FM6_PACKED; i++) {
+        uint32_t value = 0;
+        for (uint32_t j = 0; j < 7u; j++) {
+            uint32_t bit = i * 7u + j;
+            value |= ((in[bit >> 3] >> (bit & 7u)) & 1u) << j;
+        }
+        out[i] = (uint8_t)value;
+    }
+}
+
 /* A stable serialized schema: first header retains FUN6's fields; at byte66
  * np, format flags, then four byte-param tracks and nine-byte steps; FUN8: the patches at PROJ_FM6_OFF. */
 static int proj_pack(project_store_t *out, const project_t *q)
 {
-    uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC, size = PROJ_STORE_SIZE, sum;
+    uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC_V11, size = PROJ_STORE_SIZE, sum;
+    if (68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) +
+        sizeof q->chain + sizeof q->motion > PROJ_MIDI_OFF || !proj_engines_ok(q)) return 0;
     for (t = 0; t < NTRK; t++)
         for (i = 0; i < FM6_PACKED; i++)
             if (q->fm6[t][i] > 127u) return 0;
@@ -651,7 +692,8 @@ static int proj_pack(project_store_t *out, const project_t *q)
     memcpy(b + pos, &q->chain, sizeof q->chain); pos += sizeof q->chain;
     memcpy(b + pos, &q->motion, sizeof q->motion);
     proj_midi_pack(b, q);
-    memcpy(b + PROJ_FM6_OFF, q->fm6, sizeof q->fm6);
+    for (t = 0; t < NTRK; t++)
+        proj_fm6_pack(b + PROJ_FM6_OFF + t * PROJ_FM6_STORE, q->fm6[t]);
     {   /* the name (0-padded; stops at the first 0) */
         char n[PROJ_NAME_LEN + 1u];
         memcpy(b + PROJ_NAME_OFF, n, proj_name_get(n, (const uint8_t *)q->name));
@@ -696,15 +738,23 @@ static int proj_motion_v9(motion_store_t *m, const uint8_t *b)
     }
     return 1;
 }
-/* a stored FUN10 (st = PROJ_STORE_SIZE), FUN9 (PROJ_STORE_V9: 64 motion records of 4 bytes, no nudges), FUN8
+/* FUN11 and FUN10 share the 3840-byte allocation but have distinct magic and
+ * FM6/MIDI offsets. Older FUN10 imports retain their raw seven-bit bytes.
+ * A stored FUN10 (st = PROJ_STORE_SIZE), FUN9 (PROJ_STORE_V9: 64 motion records of 4 bytes, no nudges), FUN8
  * (PROJ_STORE_V8: FUN9 with its tail 64 bytes shorter) or FUN7 (PROJ_STORE_V7: no patches, the init one) */
 static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
 {
+    if (st != PROJ_STORE_SIZE && st != PROJ_STORE_V9 && st != PROJ_STORE_V8 && st != PROJ_STORE_V7)
+        return 0;
     uint32_t pos = 68u, t, i, magic, size, sum, np = b[66], v7 = st == PROJ_STORE_V7, v10 = st == PROJ_STORE_SIZE;
-    uint32_t name_off = st - 4u - PROJ_NAME_LEN, end = v7 ? name_off : name_off - NTRK * FM6_PACKED;
+    memcpy(&magic, b, 4);
+    uint32_t v11 = v10 && magic == PROJ_MAGIC_V11;
+    uint32_t name_off = st - 4u - PROJ_NAME_LEN;
+    uint32_t fm6_off = v7 ? name_off : name_off - NTRK * (v11 ? PROJ_FM6_STORE : FM6_PACKED);
+    uint32_t end = fm6_off - (v10 ? 3u : 0u);
     uint32_t mot = v10 ? sizeof q->motion : PROJ_MOTION_V9, chn = v10 ? sizeof q->chain : sizeof(chain_v9_t);
     memcpy(&magic, b, 4); memcpy(&size, b + 4, 4); memcpy(&sum, b + st - 4u, 4);
-    if (magic != (v7 ? PROJ_MAGIC_V7 : st == PROJ_STORE_V8 ? PROJ_MAGIC_V8 : st == PROJ_STORE_V9 ? PROJ_MAGIC_V9 : PROJ_MAGIC) ||
+    if (magic != (v7 ? PROJ_MAGIC_V7 : st == PROJ_STORE_V8 ? PROJ_MAGIC_V8 : st == PROJ_STORE_V9 ? PROJ_MAGIC_V9 : (v11 ? PROJ_MAGIC_V11 : PROJ_MAGIC_V10)) ||
         size != st || sum != proj_hash(b, st - 4u) ||
         np < 8u || np > P_COUNT || 68u + NTRK * (np + 2u + NSTEP * 9u) + chn + mot > end)
         return 0;
@@ -751,13 +801,15 @@ static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
         return 0;
     if (!proj_motion_ids(&q->motion, np) || !chain_valid(&q->chain) || !motion_valid(&q->motion)) return 0;
     if (v10)
-        proj_midi_unpack(q, b);                         /* (1.5.5: 0 in every FUN10 before, FUN9..FUN7 have none) */
+        proj_midi_unpack(q, b, fm6_off - 3u);                         /* (1.5.5: 0 in every FUN10 before, FUN9..FUN7 have none) */
     for (t = 0; t < NTRK; t++) {
         if (v7)
             memcpy(q->fm6[t], FM6_INIT, FM6_PACKED);
+        else if (v11)
+            proj_fm6_unpack(q->fm6[t], b + fm6_off + t * PROJ_FM6_STORE);
         else
             for (i = 0; i < FM6_PACKED; i++)
-                q->fm6[t][i] = b[end + t * FM6_PACKED + i] & 0x7Fu;
+                q->fm6[t][i] = b[fm6_off + t * FM6_PACKED + i] & 0x7Fu;
     }
     {
         char n[PROJ_NAME_LEN + 1u];

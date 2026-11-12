@@ -161,6 +161,6 @@ int main(void)
         run(name, segment_and_reverse, k, 0);
     }
     for (uint32_t e = 0; e < 3; e++) run("S2 legacy FUN9 source round trips, runtime load, presets and locks", stored_sources, e, 0);
-    printf("S2 limitation: current FUN10 writer is unchanged; pre-existing P_COUNT/store-boundary failure is covered by baseline comparison, not repaired here.\n");
+    printf("S2 source IDs unchanged; FUN11 current-format saves are covered by project_format_test.\n");
     return failures ? 1 : 0;
 }
