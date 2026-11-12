@@ -31,6 +31,8 @@ static const struct { const char *title, *hint; } HELP_PAGE[] = {
     {"CHORD", "[K1]CHORD[KEYS]ONE FINGER[SCL]SCL"},
     {"EDIT 1", H_EDIT},
     {"EDIT 2", H_EDIT},
+    {"PERS", "[K1]TYPE[K2]AMOUNT[K3]AMOUNT"},
+    {"A-FILT", "[K1]LP BP HP[K2]CUTOFF[EDIT]VOICE"},
     {"FILTER", "[K1]LP BP HP[K2]CUTOFF[EDIT]VOICE"},
     {"LANES", H_LANES},
     {"LANES 2", H_LANES},

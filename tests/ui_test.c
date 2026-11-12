@@ -42,9 +42,16 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "sample_storage.h"
-/* Isolated logical audio fixtures, not physical NOR partitions. */
-static uint32_t host_slots[SMP_USER_LOGICAL_SLOTS * SMP_USER_SIZE / 4u];
-#define SMP_USER_XIP(k) ((const uint8_t *)host_slots + (k) * SMP_USER_SIZE)
+/* The UI consumes recovered sample publications through the real physical map. */
+#include <assert.h>
+#include "../firmware/hal/fm1_xip.h"
+static uint8_t host_sample_nor[0x100000];
+static const uint8_t *host_ui_sample_ptr(uint32_t off)
+{
+    assert(off < sizeof host_sample_nor);
+    return host_sample_nor + off;
+}
+#define fm1_xip_ptr host_ui_sample_ptr
 #define main hostsim_main
 #include "hostsim.c"
 #undef main
@@ -159,6 +166,12 @@ static struct { uint32_t stage; } felucca_dbg;
 #include "../firmware/src/ui_layer.c"
 #include "../firmware/src/upreset.c"
 #include "../firmware/src/project.c"
+/* Use the real CRC implementation for recovered sample images. UI project
+ * persistence remains RAM-only (FELUCCA_FLASH=0); no storage I/O is enabled. */
+static int st_read(uint32_t off, void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
+static int st_prog(uint32_t off, const void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
+static int st_erase(uint32_t off) { (void)off; return -1; }
+#include "../firmware/src/storage.c"
 
 static int check(const char *what, int ok)
 {
@@ -410,9 +423,14 @@ static int test_sound_loads(void)
     track_t *t = &trk[0], before;
     ui_power_on();
     for (i = 0; i < NTRK; i++)
-        empty &= (uint32_t)seq_is_empty(&trk[i]);
-    bad += check("power-on: the four sounds, every sequencer empty, no undo copy", empty && undo.trk == 0 && undo_depth == 0 &&
-                 trk[3].eng_req == ENGI_DRUM && trk[3].preset == 0u && trk[0].preset == TRK_DEF[0][1]);
+        empty &= (uint32_t)seq_is_empty(&trk[i]) && TRK_DEF[i][0] == ENGI_GRAIN && TRK_DEF[i][1] == 4u &&
+                 !TRK_DEF[i][2] && trk[i].eng_req == ENGI_GRAIN && trk[i].preset == 0u &&
+                 str_eq(ENGINES[ENGI_GRAIN]->presets[trk[i].preset].name, "CLOUD PAD");
+    /* TRK_DEF's preset 4 wraps over GRAIN's four presets (apply_preset_to). */
+    bad += check("power-on: four GRAIN CLOUD PAD sounds, empty sequencers, no undo copy",
+                 empty && undo.trk == 0 && undo_depth == 0);
+    /* Sound-load/ARP/undo cases exercise the historical ANALOG ACID fixture. */
+    undo_depth++; set_engine_of(t, 0u); apply_preset_to(t, 4); undo_depth--;
     my_steps(t);
     t->p[P_E0 + 1] = 77;                          /* a sound edit */
     t->p[P_AMODE] = 2;                            /* and the track's own settings */
@@ -819,7 +837,11 @@ static int test_midi(void)
                      !midi_sel_on[1][64] && !midi_in_overflow && mi_r == mi_w && song.playing);
         midi_in_event(0x643D9009u);
         events_block(CTL);
-        bad += check("MIDI accepts a fresh note after overflow recovery", midi_sel_on[0][61] == 1u && trk[0].v[0].gate);
+        uint32_t fresh = 0;
+        for (i = 0; i < NVOICE; i++)
+            fresh += trk[0].v[i].active && trk[0].v[i].gate && trk[0].v[i].note == 61u;
+        bad += check("MIDI accepts a fresh note after overflow recovery", midi_sel_on[0][61] == 1u &&
+                     midi_owners[0] == 1u && fresh == 1u && gated_notes(&trk[0]) == 1u);
     }
     {   /* 1.2: MENU > MIDI > MIDI IN (up to 1.1.5 GLO > SYSTEM K3 ROUT): the project's G_ROUTE, its names ROUT's */
         uint32_t k;
@@ -1354,9 +1376,10 @@ static int test_screen(void)
 static int test_favorites(void)
 {
     int bad = 0;
-    uint32_t total, pos;
+    uint32_t total, pos, first_engine, first_preset;
     track_t before;
     ui_power_on();
+    first_engine = TSEL->eng_req; first_preset = TSEL->preset;
     my_steps(TSEL);
     TSEL->p[P_AMODE] = 2;
     go_page(GR_BROWSE);
@@ -1376,12 +1399,13 @@ static int test_favorites(void)
                  favorite_has(ENGI_DRUM, 0) && !memcmp(TSEL, &before, sizeof before));
     turn(EN_PRESET, 1);
     bad += check("filtered browsing crosses DRUM and synth sounds while retaining the track's pattern and ARP",
-                 TSEL->eng_req == 0 && preset_favorite() && !memcmp(TSEL->step, before.step, sizeof before.step) &&
+                 TSEL->eng_req == first_engine && TSEL->preset == first_preset && preset_favorite() &&
+                 !memcmp(TSEL->step, before.step, sizeof before.step) &&
                  TSEL->p[P_AMODE] == 2);
     turn(EN_K3, -1);
     pos = preset_pos(&total);
     bad += check("unmarking the current sound leaves it loaded even when outside the filtered list",
-                 !preset_favorite() && total == 1 && pos == total && TSEL->eng_req == 0);
+                 !preset_favorite() && total == 1 && pos == total && TSEL->eng_req == first_engine && TSEL->preset == first_preset);
     turn(EN_PRESET, -1);
     bad += check("browsing from a nonfavorite selects the last favorite", TSEL->eng_req == ENGI_DRUM);
     turn(EN_K3, -1);
@@ -1587,10 +1611,12 @@ static int test_display_preferences(void)
                  settings.palette == 6 && T_BG == UI_PALETTES[6].bg && ux.light && ui.menu == 1 && !song.octave &&
                  memcmp(before, host_screen, sizeof before) && !memcmp(sounds, trk, sizeof sounds));
     turn(EN_K1, 1);
-    bad += check("COLOR KNOB 1 steps on to HI-CON, NIGHT (#50: true black), MONO (1.0.2: black and white), then wraps to GREY",
+    bad += check("COLOR KNOB 1 steps on to HI-CON, NIGHT (#50: true black), MONO, COFFEE, then wraps to GREY",
                  settings.palette == 7 && (turn(EN_K1, 1), settings.palette == 8u) && T_BG == 0u &&
                  str_eq(UI_PALETTES[8].name, "NIGHT") && (turn(EN_K1, 1), settings.palette == UI_BW_INDEX) &&
                  str_eq(UI_PALETTES[UI_BW_INDEX].name, "MONO") && T_BG == 0u && T_TEXT == 0xFFFFu &&
+                 (turn(EN_K1, 1), settings.palette == 10u) && str_eq(UI_PALETTES[10].name, "COFFEE") &&
+                 T_BG == UI_PALETTES[10].bg && NPALETTES == 11u &&
                  (turn(EN_K1, 1), settings.palette == UI_GREY_INDEX) && str_eq(UI_PALETTES[UI_GREY_INDEX].name, "GREY"));
     settings.lowcut = 2;
     ui.menu_sel = MI_LOWCUT;
@@ -3592,7 +3618,7 @@ static int engine_cycle(const char *const *want, uint32_t n)   /* EDIT tapped fr
 }
 static int test_edit_cycle(void)
 {
-    static const char *const CYC_A[] = {"EDIT 1", "EDIT 2", "FILTER", "VOICE", "VOICE 2", "VOICE 3", "EDIT 1"};   /* (1.5: FILTER) */
+    static const char *const CYC_A[] = {"EDIT 1", "EDIT 2", "A-FILT", "VOICE", "VOICE 2", "VOICE 3", "EDIT 1"};   /* (1.5: FILTER) */
     static const char *const CYC_D[] = {"EDIT 1", "EDIT 2", "OP1 ENV", "OP2 ENV", "OP3 ENV", "OP4 ENV",
                                         "OP LEVEL", "VOICE", "VOICE 2", "VOICE 3", "EDIT 1"};
     int bad = 0, ok;
@@ -3606,7 +3632,7 @@ static int test_edit_cycle(void)
         ok &= !str_eq(PAGES[i].title, "ENGINE");
     bad += check("no ENGINE page (engines are the EDIT layer's)", ok);
     set_engine_of(TSEL, 0);
-    bad += check("EDIT cycle (ANALOG): EDIT 1 EDIT 2 FILTER VOICE VOICE 2 VOICE 3 EDIT 1", engine_cycle(CYC_A, NELEM(CYC_A)));
+    bad += check("EDIT cycle (ANALOG): EDIT 1 EDIT 2 A-FILT VOICE VOICE 2 VOICE 3 EDIT 1", engine_cycle(CYC_A, NELEM(CYC_A)));
 #if FELUCCA_FM4
     set_engine_of(TSEL, 1);
     bad += check("EDIT cycle (DIGITAL): EDIT 1 EDIT 2 OP1..OP4 ENV OP LEVEL VOICE VOICE 2 VOICE 3 EDIT 1",
@@ -3724,12 +3750,64 @@ static int test_sample_alert(void)
  * edit takes the slices shown (8 equal) as MAN and sets DIV MAN; KNOB 1 the marker (then END), KNOB 2 moves it,
  * KNOB 3 / 4 pick SPLIT / JOIN and OCT+ does it (it stays picked), OCT- drops the pick, then goes HOME; a key picks
  * its slice and the keys of the selected slice are lit; the slot is marked for the store; another engine: EDIT 1 */
+/* Construct a committed boot image; upload/power-cut paths are tested in
+ * editor_test and sample_delete_test. No runtime ownership flags are forged. */
+static void host_slot_program(uint32_t off, const void *data, uint32_t n)
+{
+    const uint8_t *p = data;
+    assert(off >= SMP_USER_BASE && n <= SMP_USER_POOL_SIZE &&
+           off - SMP_USER_BASE <= SMP_USER_POOL_SIZE - n);
+    for (uint32_t i = 0; i < n; i++) {
+        assert((host_sample_nor[off + i] & p[i]) == p[i]);
+        host_sample_nor[off + i] &= p[i];
+    }
+}
+static void host_slot_record(uint32_t off, smp_alloc_desc_t d)
+{
+    d.commit = SMP_ALLOC_COMMITTED;
+    d.record_crc = 0;
+    d.record_crc = st_crc32(&d, 28u);
+    host_slot_program(off, &d, sizeof d);
+}
+static void host_slots_reboot(void)
+{
+    smp_user_alloc_boot();
+    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) smp_user_scan(k);
+}
+static void host_slot_publish(uint32_t k, uint32_t phys)
+{
+    smp_user_hdr_t *h = (smp_user_hdr_t *)(host_sample_nor + phys);
+    smp_alloc_desc_t d = {0};
+    uint32_t next = smp_journal_next;
+    assert(k < SMP_USER_SLOTS && !(phys % SMP_USER_SECTOR_SIZE));
+    assert(h->data_len <= SMP_USER_POOL_SIZE - SMP_USER_DATA);
+    h->crc = st_crc32((const uint8_t *)h + SMP_USER_DATA, h->data_len);
+    d.magic = SMP_ALLOC_MAGIC; d.version = SMP_ALLOC_VERSION;
+    d.logical_slot = (uint8_t)k;
+    d.sector_count = (uint8_t)((SMP_USER_DATA + h->data_len + SMP_USER_SECTOR_SIZE - 1u) / SMP_USER_SECTOR_SIZE);
+    d.generation = smp_user_generation[k] + 1u;
+    d.data_len = h->data_len; d.data_crc = h->crc;
+    d.reserved = st_crc32(h, sizeof *h);
+    host_slot_record(phys + SMP_ALLOC_OFFSET, d);
+    if (smp_journal_state == SMP_JOURNAL_BLANK)
+        host_slot_record(SMP_USER_BASE, smp_journal_header());
+    else
+        assert(smp_journal_state == SMP_JOURNAL_READY);
+    assert(next >= SMP_ALLOC_SIZE && next + 2u * SMP_ALLOC_SIZE <= SMP_USER_SECTOR_SIZE);
+    d.magic = SMP_JOURNAL_CLAIM; d.version = SMP_JOURNAL_V1;
+    d.data_crc = 0; d.reserved = (phys - SMP_USER_BASE) / SMP_USER_SECTOR_SIZE;
+    host_slot_record(SMP_USER_BASE + next, d);
+    d.magic = SMP_JOURNAL_PUBLISH; d.version = SMP_JOURNAL_PUBLISH_VERSION;
+    d.data_crc = st_crc32(h, sizeof *h);
+    host_slot_record(SMP_USER_BASE + next + SMP_ALLOC_SIZE, d);
+}
 static void host_slot_make(uint32_t k)                /* USR k + 1: 2 s at 22.05 kHz, a noise burst every 0.25 s */
 {
-    smp_user_hdr_t *h = (smp_user_hdr_t *)((uint8_t *)host_slots + k * SMP_USER_SIZE);
+    const uint32_t phys = SMP_USER_BASE + SMP_USER_SECTOR_SIZE;
+    smp_user_hdr_t *h = (smp_user_hdr_t *)(host_sample_nor + phys);
     uint8_t *d = (uint8_t *)h + SMP_USER_DATA;
     uint32_t n = 44100u, i, r = 12345u;
-    memset(h, 0, SMP_USER_SIZE);
+    memset(h, 0, sizeof *h);
     h->magic = SMP_USER_MAGIC;
     h->version = 1;
     h->nz = 1;
@@ -3744,6 +3822,7 @@ static void host_slot_make(uint32_t k)                /* USR k + 1: 2 s at 22.05
     h->zone[0].rate = 32768u;                        /* 22050 / 44100, Q16 */
     h->zone[0].root16 = 60 * 16;
     h->zone[0].hi = 127;
+    host_slot_publish(k, phys);
 }
 static int test_slices(void)
 {
@@ -3751,6 +3830,8 @@ static int test_slices(void)
     int bad = 0, ok;
     uint32_t n, j, p0, k, note;
     ui_power_on();
+    memset(host_sample_nor, 0xFF, sizeof host_sample_nor);
+    host_slots_reboot();
     set_engine_of(TSEL, 13u);                        /* SLICE CHOP: BREAK, 16 */
     bad += check("SLICES: SLICE's EDIT cycle EDIT 1 EDIT 2 SLICES VOICE VOICE 2 VOICE 3 EDIT 1", engine_cycle(CYC_S, NELEM(CYC_S)));
     go_page(GR_SLICES); frame();
@@ -3766,16 +3847,20 @@ static int test_slices(void)
     ok &= TSEL->p[P_E1] == p0 && msg_is("USR2 EMPTY");
     TSEL->p[P_E0] = 0;
     bad += check("SLICES on an empty USR2: NO SAMPLE, no slices; edits: \"USR2 EMPTY\"", ok);
-    TSEL->p[P_E0] = 4;                               /* SRC PIANO: its 16 slices shown, no edits */
+    TSEL->p[P_E0] = 4;                               /* SRC GUITAR: legacy source 4 audio unchanged, its 16 slices shown, no edits */
     frame();
     turn(EN_K2, 1);
     ok = slice_count() == 16u && TSEL->p[P_E1] == p0 && msg_is("SRC USR1-8 TO EDIT");
     TSEL->p[P_E0] = 0;
     frame();
-    bad += check("SLICES on PIANO: its 16 slices shown; edits need USR1-8 (DIV unchanged)", ok);
+    bad += check("SLICES on GUITAR: source 4 keeps its audio and 16 slices; edits need USR1-8 (DIV unchanged)", ok);
 
     host_slot_make(0);
-    smp_user_scan(0);
+    bad += check("SLICES fixture: publication leaves runtime empty until reboot", !smp_user_phys[0] && !usr_nz[0]);
+    host_slots_reboot();
+    bad += check("SLICES fixture: recovery verifies the journal, header and audio",
+                 smp_journal_state == SMP_JOURNAL_READY && smp_user_header_bound[0] && usr_nz[0] == 1u &&
+                 smp_user_phys[0] == SMP_USER_BASE + SMP_USER_SECTOR_SIZE && smp_user_generation[0] == 1u);
     TSEL->p[P_E0] = 1;                               /* SRC USR1, DIV 8 */
     TSEL->p[P_E1] = 1;
     frame();
@@ -3860,8 +3945,11 @@ static int test_slices(void)
     }
     {   /* another sample of the same length uploaded into the slot: the waveform is decoded again */
         int8_t lo0[SP_COLS], hi0[SP_COLS];
-        uint8_t *d = (uint8_t *)host_slots + SMP_USER_DATA;
-        smp_user_hdr_t *h = (smp_user_hdr_t *)host_slots;
+        const uint32_t old_phys = smp_user_phys[0];
+        const uint32_t new_phys = old_phys + smp_user_sectors[0] * SMP_USER_SECTOR_SIZE;
+        smp_user_hdr_t *h = (smp_user_hdr_t *)(host_sample_nor + new_phys);
+        uint8_t *d = (uint8_t *)h + SMP_USER_DATA;
+        memcpy(h, host_sample_nor + old_phys, sizeof *h);
         set_engine_of(TSEL, 13u);
         TSEL->p[P_E0] = 1;
         TSEL->p[P_E1] = 2;
@@ -3870,8 +3958,12 @@ static int test_slices(void)
         memcpy(hi0, sp.hi, sizeof hi0);
         for (k = 0; k < h->data_len; k++)
             d[k] = 0x80u;                            /* silence, the same length */
-        h->crc ^= 1u;
-        smp_user_scan(0);                            /* (the upload's END) */
+        host_slot_publish(0, new_phys);
+        bad += check("SLICES fixture: replacement publication retains the running extent",
+                     smp_user_phys[0] == old_phys && smp_user_generation[0] == 1u);
+        host_slots_reboot();
+        bad += check("SLICES fixture: reboot activates the verified replacement",
+                     smp_user_phys[0] == new_phys && smp_user_generation[0] == 2u && usr_nz[0] == 1u);
         ui.force = 1; frame();
         ok = memcmp(lo0, sp.lo, sizeof lo0) || memcmp(hi0, sp.hi, sizeof hi0);
         for (k = 0; k < SP_COLS; k++)
@@ -3879,8 +3971,8 @@ static int test_slices(void)
         bad += check("SLICES: a re-upload of the same length redraws the waveform", ok);
         set_engine_of(TSEL, 0); frame();
     }
-    memset(host_slots, 0, sizeof host_slots);        /* (the other tests: empty slots) */
-    smp_user_scan(0);
+    memset(host_sample_nor, 0xFF, sizeof host_sample_nor); /* the other tests: empty slots */
+    host_slots_reboot();
     slc_man_save = 0;
     return bad;
 }
@@ -4238,7 +4330,7 @@ static int test_bughunt_ui(void)
         uint32_t before;
         step_t s0;
         ui_power_on();
-        track_select(3); frame();                       /* T4 DRUM */
+        track_select(3); set_engine_of(TSEL, ENGI_DRUM); frame(); /* explicit DRUM fixture */
         go_page(GR_EVENTS); frame();
         before = lane_steps(TSEL, ui.lane);
         tap_key(white(2));
@@ -5030,8 +5122,9 @@ static int test_fm4_retired(void)
     int16_t p[P_COUNT];
     uint8_t v[FP_SIZE + 1u];
     ui_power_on();
-    bad += check("power-on: track 2 is FM6 PAD (TRK_DEF, was DIGITAL PAD)", trk[1].eng_req == ENGI_FM6 &&
-                 str_eq(ENGINES[ENGI_FM6]->presets[trk[1].preset].name, "PAD"));
+    bad += check("power-on: track 2 is GRAIN CLOUD PAD, never retired DIGITAL", trk[1].eng_req == ENGI_GRAIN &&
+                 trk[1].preset == 0u && TRK_DEF[1][0] == ENGI_GRAIN &&
+                 str_eq(ENGINES[ENGI_GRAIN]->presets[trk[1].preset].name, "CLOUD PAD"));
     preset_all_pos(&total);
     for (i = 0; i < total; i++) {
         e = preset_all_at(i, &k);
@@ -9082,7 +9175,8 @@ static int test_fm6_ops(void)
     uint8_t before[FP_SIZE + 1u], v[FP_SIZE + 1u], mine[FP_SIZE + 1u];
     fm6_snd_t s0, s1;
     ui_power_on();
-    song.sel = 1;                                    /* T2: FM6 PAD (SLOT F5) */
+    song.sel = 1;                                    /* explicit FM6 PAD (SLOT F5), independent of boot defaults */
+    undo_depth++; set_engine_of(TSEL, ENGI_FM6); apply_preset_to(TSEL, 4); undo_depth--;
     tr = song.sel;
     bad += check("FM6 ops: FM6's EDIT cycle EDIT 1 EDIT 2 OPERATOR OP ENV OPERATOR 2 VOICE VOICE 2 EDIT 1",
                  TSEL->eng_req == ENGI_FM6 && engine_cycle(CYC_F, NELEM(CYC_F)));
@@ -9321,6 +9415,13 @@ static int test_help(void)
         ok &= help_fits(HELP_LAYER[l]);
     bad += check("1.5 HELP: a hint for every page, HOME, LEVELS, the grid and every layer; each fits its row, no word dropped", ok);
 
+    set_engine_of(TSEL, ENGI_GRAIN); go_title("PERS"); frame();
+    bad += check("HELP PERS: TYPE and personality amounts; parsed hints fit the footer",
+                 str_eq(help_page(), "[K1]TYPE[K2]AMOUNT[K3]AMOUNT") && help_fits(help_page()));
+    set_engine_of(TSEL, 0u); go_title("A-FILT"); frame();
+    bad += check("HELP A-FILT: LP BP HP and CUTOFF; parsed hints fit the footer",
+                 str_eq(help_page(), "[K1]LP BP HP[K2]CUTOFF[EDIT]VOICE") && help_fits(help_page()));
+
     ui_power_on();
     menu_put(MI_HELP, 1);
     press(B_ENV);
@@ -9494,7 +9595,8 @@ static int test_home_tracks(void)
     bad += check("1.3 HOME > TRACKS: LEN > 16: the play head's page (stopped: the cursor's, selected), pips, past LEN blank", ok);
 
     song.sel = 1;
-    t = &trk[3];                                        /* T4, DRUM: one hit, two hits, an accented hit */
+    t = &trk[3];                                        /* DRUM: one hit, two hits, an accented hit */
+    set_engine_of(t, ENGI_DRUM);
     ok = drum_track(t);
     for (i = 0; i < NSTEP; i++) step_clear(&t->step[i]);
     t->p[P_SLEN] = 16;

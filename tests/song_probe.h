@@ -18,6 +18,17 @@ static uint32_t song_probe(uint32_t *blocks)
     static const int16_t LEN[2][NTRK] = {{16, 12, 7, 5}, {8, 16, 10, 3}}, DIV[2][NTRK] = {{2, 1, 2, 3}, {1, 2, 0, 2}};
     uint32_t s, k, i, h = 2166136261u, n = 0;
     ui_power_on();
+    /* This golden predates song lanes and the all-GRAIN startup change.
+     * Preserve its original instruments explicitly, rather than hashing new
+     * engine note semantics against a historical sequencer reference. */
+    static const uint8_t historical[NTRK][2] = {{0, 4}, {ENGI_FM6, 4}, {3, 0}, {ENGI_DRUM, 0}};
+    undo_depth++;
+    for (k = 0; k < NTRK; k++) {
+        set_engine_of(&trk[k], historical[k][0]);
+        apply_preset_to(&trk[k], historical[k][1]);
+        trk[k].engine = trk[k].eng_req;
+    }
+    undo_depth--;
     for (s = 0; s < 2u; s++) {
         for (k = 0; k < NTRK; k++) {
             track_t *t = &trk[k];
