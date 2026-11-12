@@ -532,7 +532,7 @@ static int test_sound_loads(void)
                      enum_orig(&ENGINES[8]->edit[0], 1) == 0);
         bad += check("SAMPLE / GRAIN SET 4 (PERC, retired): a GUITAR alias, knobs skip it, USR1..3 stay 5..7",
                      str_eq(sd->names[SMP_SET_PERC], "GUITAR") && enum_orig(sd, SMP_SET_PERC) == 0 &&
-                     enum_step(sd, 3, 4) == 5 && enum_step(sd, 5, 4) == 3 && str_eq(sd->names[5], "USR1") &&
+                     param_turn(sd, 3, 1) == 13 && param_turn(sd, 13, -1) == 3 && param_turn(sd, 5, -1) == 14 && str_eq(sd->names[5], "USR1") &&
                      str_eq(sd->names[7], "USR3") && sd->max == SMP_NALL - 1 &&
                      enum_orig(&ENGINES[8]->edit[0], SMP_SET_PERC) == 0 && SMP_SETS[SMP_SET_PERC].z0 == SMP_SETS[0].z0);
     }

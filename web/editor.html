@@ -2443,7 +2443,8 @@ function aliasOf(names, i) {
 }
 
 /* #48: note divisions (1/4, 8T, 2BAR, 1.5.1's dotted 1/8D ...) are listed by length, longest first, as the device's
-   knobs step them (src/params.c enum_order); the values stay. Any other list: in value order. -> d's values in the order shown */
+   knobs step them (src/params.c enum_order); the values stay. SAMPLE/GRAIN sources put factories before user slots.
+   Other lists: in value order. -> d's values in the order shown */
 function divLength(n) {
   const m = /^(\d+)\/(\d+)(D?)$/.exec(n) || /^(\d+)(T|BAR)$/.exec(n);
   return !m ? null : m[2] === "BAR" ? +m[1] : m[2] === "T" ? 2 / 3 / +m[1] : (m[3] ? 1.5 : 1) * +m[1] / +m[2];
@@ -2451,6 +2452,17 @@ function divLength(n) {
 function enumShown(d) {
   const vals = [];
   for (let v = d.min; v <= d.max; v++) vals.push(v);
+  // SAMPLE/GRAIN: factories before USR1..8, preserving option values and aliases.
+  // Recognize the frozen source layout; do not reorder SLICE or unrelated enums.
+  if (d.fmt === F.ENUM && d.min === 0 && d.names?.length >= 13 &&
+      d.names[0] === d.names[1] && d.names[0] === d.names[4] &&
+      d.names.slice(5, 13).every((name, i) => name === `USR${i + 1}`))
+    return vals.sort((a, b) => {
+      // Keep hidden legacy aliases beside GUITAR so keyboard navigation from
+      // a restored alias reaches VOICE too, rather than jumping past factories.
+      const ca = aliasOf(d.names, a), cb = aliasOf(d.names, b);
+      return Number(ca >= 5 && ca <= 12) - Number(cb >= 5 && cb <= 12) || ca - cb || a - b;
+    });
   const len = d.fmt === F.ENUM && d.names ? d.names.map(divLength) : [null];
   return len.includes(null) ? vals : vals.sort((a, b) => len[b - d.min] - len[a - d.min] || a - b);
 }

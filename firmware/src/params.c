@@ -312,6 +312,18 @@ static int32_t enum_step(const param_desc_t *d, int32_t from, int32_t v)
     return w == from ? v : w;
 }
 
+/* Presentation order only: persistent source IDs and descriptor name indices
+ * remain frozen. Retired aliases 1/4 navigate as their displayed GUITAR. */
+static const uint8_t SAMPLE_SOURCE_ORDER[] = {0, 2, 3, 13, 14, 5, 6, 7, 8, 9, 10, 11, 12};
+_Static_assert(NELEM(SAMPLE_SOURCE_ORDER) == SMP_NALL - 2u, "visible sample sources exclude two legacy aliases");
+static int32_t sample_source_rank(int32_t source)
+{
+    source = (int32_t)smp_source_orig((uint32_t)source);
+    for (uint32_t i = 0; i < NELEM(SAMPLE_SOURCE_ORDER); i++)
+        if (SAMPLE_SOURCE_ORDER[i] == source) return (int32_t)i;
+    return 0;
+}
+
 /* #48: the note divisions in the order of their length, longest first (triplets between their neighbours), on the
  * knobs and the gauges; the stored values (N_DIV, N_SLDIV indices: projects, presets, the editor protocol) stay.
  * -> the shown order of d's values (index: position, entry: value), 0 = the values' own order */
@@ -325,6 +337,8 @@ static const uint8_t *enum_order(const param_desc_t *d)
 }
 static int32_t enum_rank(const param_desc_t *d, int32_t v)   /* v's place in the shown order (+ min): the gauges */
 {
+    if (d->names == SMP_ALL_NAMES)
+        return sample_source_rank(v) * (d->max - d->min) / (NELEM(SAMPLE_SOURCE_ORDER) - 1u) + d->min;
     const uint8_t *o = enum_order(d);
     int32_t r;
     for (r = 0; o && r < d->max - d->min; r++)
@@ -335,6 +349,8 @@ static int32_t enum_rank(const param_desc_t *d, int32_t v)   /* v's place in the
 /* a knob turned `steps` (signed) from v: clamped, over the shown order, past aliases (enum_step) */
 static int32_t param_turn(const param_desc_t *d, int32_t v, int32_t steps)
 {
+    if (d->names == SMP_ALL_NAMES)
+        return steps ? SAMPLE_SOURCE_ORDER[clamp(sample_source_rank(v) + steps, 0, NELEM(SAMPLE_SOURCE_ORDER) - 1)] : v;
     const uint8_t *o = enum_order(d);
     if (o)
         return o[clamp(enum_rank(d, v) - d->min + steps, 0, d->max - d->min)] + d->min;

@@ -21,6 +21,14 @@ SAMPLE/GRAIN use the same mapping. SLICE source 4 keeps its exact shared GUITAR
 audio and now displays GUITAR; the internal SLC_PIANO identifiers remain stable.
 No user flash allocator, journal, migration or simulator code is changed.
 
+The SAMPLE SET and GRAIN SRC controls browse **GUITAR, VOICE, HIT, FLUTE, SAX,
+USR1..USR8** (source IDs `0, 2, 3, 13, 14, 5..12`). The official browser editor
+uses the same order while retaining raw source IDs in option values. Legacy
+aliases 1/4 stay hidden and display GUITAR. Knobs clamp at GUITAR/USR8; the
+factory-only preset browser retains its existing GUITAR/SAX wrap. Direct SET,
+saved projects, presets and motion records continue to use the source IDs above,
+never the display positions. SLICE's separate source numbering is unchanged.
+
 Old saved projects retain their selections and audio. New FLUTE/SAX projects
 require this firmware's source map; older firmware has no corresponding selections.
 FUN11 serialization and the 3840-byte project allocation are unchanged.
