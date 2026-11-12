@@ -1,3 +1,8 @@
+Scope: the CC0 attribution below covers the listed Versilian assets only.
+GUITAR, VOICE and HIT were added separately; their provenance and asset-specific
+licensing are unverified. The samples-cc0 directory name does not establish their
+licence. See docs/factory-samples.md; existing audio is retained unchanged.
+
 Felucca SAMPLE engine - source material
 Retrieved: 2026-10-02 (first ~400 KB of each file)
 Licence: CC0 1.0 Universal (public domain dedication)

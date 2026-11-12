@@ -1273,12 +1273,12 @@ static int param_kept(uint32_t i)
            (i >= P_SLCR && i <= P_SLDEPTH) || i == P_CHRD || i == P_VOIC || i == P_SQNT;
 }
 
-/* a retired preset kept as an alias, so stored preset numbers stay valid: SAMPLE 1, once TRANH, is PIANO
+/* a retired preset kept as an alias, so stored preset numbers stay valid: SAMPLE 1, once TRANH, aliases GUITAR
  * (tools/gen_samples.py SMP_SET_ORIG). It loads as the original; browsing skips it. -> the preset k stands for.
- * (SAMPLE 4, once PERC, is past SMP_NPRESETS: apply_preset_to loads it as DRUM) */
+ * (SAMPLE preset 4 remains hidden: apply_preset_to loads it as DRUM) */
 static uint32_t preset_orig(const engine_t *e, uint32_t k)
 {
-    return e->presets == SMP_PRESET_TABLE && k < SMP_NSETS ? SMP_SET_ORIG[k] : k;
+    return e->presets == SMP_PRESET_TABLE && k < SMP_NFACTORY ? SMP_SET_ORIG[k] : k;
 }
 
 /* the presets of engine e that browsing shows before preset k (k = npresets: all of them) */

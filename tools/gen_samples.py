@@ -1,50 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
-"""Build the SAMPLER engine's sample sets from WAV files into a C header.
+"""Build IMA ADPCM factory samples without changing persisted source IDs.
 
-Samples are stored as IMA ADPCM (4 bit) at their native rate; loop points
-and roots come from the WAV 'smpl' chunk and the file name (C3 = MIDI 60
-naming), single-cycle waves get their root from rate / loop length.
-The ADPCM state at the loop start is stored so loops restart exactly.
+Current audio: GUITAR, VOICE, HIT, FLUTE and SAX. Sources 0..4 retain
+GUITAR / alias / VOICE / HIT / alias; sources 5..12 remain USR1..8.
+FLUTE and SAX append at source 13/14, factory/preset index 5/6.
+Preset indices 0..4 remain unchanged; retired PERC preset 4 still migrates
+SAMPLE to DRUM. Alias presets 1/4 are hidden from factory browsing.
 
-Libraries:
-  cc0        assets/samples-cc0/ (tools/fetch_cc0.py, Versilian Studios, CC0):
-             PIANO, FLUTE, SAX (set 1, once TRANH, and set 4, once PERC, are aliases of PIANO).
-             PIANO is the 5-zone piano of 1.0 .. 1.1.5 (1.2 .. 1.4.1 built a reduced 2-zone
-             one at 11,025 Hz; 1.5 went back to the full one, the same bytes as 1.1.5)
-SAMPLE's factory presets end before set 4 (SMP_PERC_SLOT); every sample set and SET / USR
-index stays in its original place.
-A retired set keeps its index as an alias: the original's name and zones (no data), and a
-preset equal to the original's (SMP_SET_ORIG), so old projects and presets play it and
-browsing skips it (params.c enum_orig, ui.c preset_orig).
-Set 4 was PERC, the GM-mapped drum kit (Felucca's generated drums and CC0 hand percussion,
-~66 KB of flash): retired, the DRUM engine plays the same GM map. A sound that selected it
-loads as DRUM with its default kit (core.h drum_from_perc); what that cannot reach (GRAIN's
-SRC, a value sent live) plays the alias, PIANO.
+FLUTE/SAX use documented Versilian CC0 assets. GUITAR/VOICE/HIT retain
+exact existing audio; their unverified provenance is documented separately
+in docs/factory-samples.md. A directory name is not a licensing assertion.
 
-The SLICE engine's built-in BREAK (eng_slice.c) is rendered here: one bar of 16ths arranged
-from Felucca's generated drums (tools/gen_waves.py, the Hügelton Sample Pack; no third-party
-loop), stored after every set (their
-offsets do not move) and NOT one of the SAMPLE sets (the SET list, its presets and the
-USR1-3 numbers stay as they were). Its slice table (decoder states on a 128-point grid,
-the hits as AUTO slices) is written with it: SLC_BREAK_INIT.
-
-SLICE's SRC PIANO (added in 1.0.4 after BREAK and USR1-3) is the PIANO set's middle C zone itself:
-no data of its own, only its slice table (one AUTO slice, the note's attack): SLC_PIANO_INIT.
-(1.2 .. 1.4.1 kept a copy of that zone after BREAK, as their PIANO had none; 1.5 shares it again.)
-Without the CC0 library (no PIANO set) it has no material (SLICE plays a sine there).
-
-  gen_samples.py OUT.h                                       the header (tools/build.py)
-  gen_samples.py --user-slot PIANO "PIANO HD" build/piano_hd/PIANO_HD
-                  a CC0 set as built from its own files (PIANO: the 5 zones of 1.0 .. 1.1.5, 1.5) as a user slot:
-                  PREFIX.hdr / .bin (the editor's SMP_END header / SMP_WRITE data), PREFIX.slot (as in flash).
-                  Kept for reference and tests only (1.2's PIANO HD file, which old users may hold in USR1..3:
-                  it plays as the built-in PIANO does); nothing in the build or the app depends on it.
-
-The header is cached (build/gen_samples.cache) under a hash of every
-input file, this script, sampleio.py and the Python version, so unchanged
-inputs skip the slow pitch detection.
+SLICE source 4 retains the shared GUITAR middle-C zone. Internal SLC_PIANO_*
+names are retained for compatibility; the displayed source name is GUITAR.
+BREAK follows all factory audio and remains generated from CC0 gen_waves.py.
+The FSMP user-slot export helper and 480-byte header format are unchanged.
 """
 import hashlib
 import math
@@ -65,13 +37,10 @@ CACHE = SRC / "build" / "gen_samples.cache"
 CC0 = SRC / "assets" / "samples-cc0"
 TR = 22050                                   # stored sample rate
 
-# CC0 library: set -> kind ("oneshot" decaying, "sus" looped sustain, "kit" one sample per key)
-# Built-in sets (piano, flute, sax); the other slots of the 8 are for the user (USR1-3, loaded
-# from the web editor). TRANH was removed (66 KB of flash); its index 1 stays, an alias of PIANO
-# ("alias": the set named). PERC (the GM kit) was removed (66 KB); its index 4 stays, an alias of
-# PIANO too (PERC_SLOT; its sounds load as the DRUM engine)
-CC0_SETS = [("GUITAR", "oneshot"), ("GUITAR", "alias"), ("VOICE", "sus"), ("HIT", "oneshot"), ("GUITAR", "alias")]
-PERC_SLOT = 4                                # core.h SMP_SET_PERC: SAMPLE's factory presets end before it
+# Factory table order is stable and distinct from persisted source IDs.
+# The legacy aliases occupy indices 1 and 4; new factories append at 5 and 6.
+CC0_SETS = [("GUITAR", "oneshot"), ("GUITAR", "alias"), ("VOICE", "sus"), ("HIT", "oneshot"), ("GUITAR", "alias"), ("FLUTE", "sus"), ("SAX", "sus")]
+PERC_SLOT = 4                                # core.h SMP_SET_PERC: hidden historical preset, never repurposed
 MEASURED_TUNING = ()                         # sets whose recordings are not at A440 (was TRANH, ~+35 ct)
 
 
@@ -328,6 +297,11 @@ class Builder:
 
     def header(self):
         zones, sets, blob = self.zones, self.sets, self.blob
+        if not sets:
+            sets = [(name, 0, 0) for name, _ in CC0_SETS]
+        source_ids = [0, 1, 2, 3, 4, 13, 14]
+        if len(sets) != len(source_ids):
+            raise ValueError("factory asset inventory incomplete; source IDs must never shift")
         L = ["/* generated by tools/gen_samples.py: IMA ADPCM sample sets */", "#pragma once",
              "#include <stdint.h>", ""]
         L.append(f"static const uint8_t SMP_DATA[{max(1, len(blob))}] = {{")
@@ -347,32 +321,33 @@ class Builder:
         L.append("static const smp_set_t SMP_SETS[] = {")
         for name, z0, nz in sets:
             L.append(f'    {{"{name}", {z0}, {nz}}},')
-        if not sets:
-            L.append('    {"NONE", 0, 1},')
         L.append("};")
-        L.append(f"#define SMP_NSETS {max(1, len(sets))}")
-        named = sets or [("NONE", 0, 0)]
-        perc = PERC_SLOT if len(named) > PERC_SLOT else len(named)
-        L.append(f"#define SMP_NPRESETS {perc}")
+        L.append("#define SMP_NSETS 5 /* frozen legacy factory prefix; USR1 remains source 5 */")
+        L.append(f"#define SMP_NFACTORY {len(sets)}")
+        named = sets
+        L.append(f"#define SMP_NPRESETS {len(named)}")
         if len(named) > PERC_SLOT:
             L.append(f"#define SMP_PERC_SLOT {PERC_SLOT}   /* once PERC (the GM kit): an alias, its sounds load as DRUM */")
-        L.append("/* the initializers from SMP_NPRESETS on (the retired PERC's alias) are outside factory browsing */")
+        L.append("/* Presets 1 and 4 remain aliases; new presets append without renumbering. */")
         L.append("static const preset_t SMP_PRESET_TABLE[] = {")
         for i, (name, _, _) in enumerate(named):
             k = self.kinds.get(name, "wave")
             a, d, s_, r = ENV[k]
             loop = 0 if k == "kit" else 1
             pat = ", PAT(12)" if k == "kit" else ""     # a kit: engines.c PATTERNS[11] BEAT
-            si = self.alias.get(i, i)                   # an alias: the original's preset (hidden by its name)
+            si = source_ids[self.alias.get(i, i)]                   # an alias: the original's preset (hidden by its name)
             L.append(f'    {{"{name}", {{{si}, 0, 0, {loop}, 127, 0, 0, 0}}, {{{a}, {d}, {s_}, {r}}}, 0, 0{pat}}},')
         L.append("};")
-        orig = [self.alias.get(i, i) for i in range(len(named))]
-        L.append("/* SET i plays SMP_SET_ORIG[i]: != i for a retired set kept as an alias (its preset i too) */")
+        orig = [0, 0, 2, 3, 0, 5, 6]
+        L.append("/* Factory/preset index i aliases SMP_SET_ORIG[i]; public source IDs use SMP_FACTORY_SOURCE. */")
         L.append("static const uint8_t SMP_SET_ORIG[] = {" + ", ".join(map(str, orig)) + "};")
-        L.append(f"#define SMP_NALIAS {sum(1 for i, o in enumerate(orig) if o != i and i < perc)}   /* among the presets */")
+        L.append(f"#define SMP_NALIAS {sum(1 for i, o in enumerate(orig) if o != i)}   /* among the presets */")
         names = ", ".join(f'"{n}"' for n, _, _ in named)
         L.append("#define SMP_SET_NAMES_INIT " + names)
         L.append("static const char *const SMP_SET_NAMES[] = {" + names + "};")
+        L.append("static const uint8_t SMP_FACTORY_SOURCE[] = {" + ", ".join(map(str, source_ids)) + "};")
+        source_names = [n for n, _, _ in named[:5]] + [f"USR{k}" for k in range(1, 9)] + [n for n, _, _ in named[5:]]
+        L.append("#define SMP_SOURCE_NAMES_INIT " + ", ".join(f'"{n}"' for n in source_names))
         L += self.break_header()
         L += self.piano_header()
         return "\n".join(L) + "\n"
@@ -403,7 +378,7 @@ class Builder:
         b = self.pno
         if not b:
             return ["#define SLC_PIANO_INIT {0}"]
-        return ["", f"/* SLICE's PIANO: the PIANO zone of MIDI {SLC_PIANO_NOTE} ({b['n']} samples at SMP_DATA[{b['off']}]) */",
+        return ["", f"/* SLICE source 4 (GUITAR): the shared zone of MIDI {SLC_PIANO_NOTE} ({b['n']} samples at SMP_DATA[{b['off']}]) */",
                 f"#define SLC_PIANO_NOTE {SLC_PIANO_NOTE}"] + self.slc_init("SLC_PIANO_INIT", b)
 
     def summary(self):

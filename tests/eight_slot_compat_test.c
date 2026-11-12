@@ -9,8 +9,8 @@ static int source_ids(uint32_t unused)
     (void)unused;
     static const uint32_t ids[8] = {1, 2, 3, 5, 6, 7, 8, 9};
     fixture(0); web_boot();
-    if (SMP_NSETS != 5 || SMP_NALL != 13 || SLC_SRC_PIANO != 4 || SLC_NSRC != 10 || SLC_SINE != 15) return 0;
-    if (ENG_SAMPLE.edit[0].max != 12 || ENG_GRAIN.edit[0].max != 12 || ENG_SLICE.edit[0].max != 9) return 0;
+    if (SMP_NSETS != 5 || SMP_NALL != 15 || SLC_SRC_PIANO != 4 || SLC_NSRC != 10 || SLC_SINE != 15) return 0;
+    if (ENG_SAMPLE.edit[0].max != 14 || ENG_GRAIN.edit[0].max != 14 || ENG_SLICE.edit[0].max != 9) return 0;
     if (slc_slot_from_src(0) != 8 || slc_slot_from_src(4) != 8 || slc_slot_from_src(10) != 8 ||
         slc_slot_from_src(UINT32_MAX) != 8 || slc_src_from_slot(8) != 10) return 0;
     for (uint32_t k = 0; k < 8; k++) {
@@ -152,7 +152,7 @@ static int stored_sources(uint32_t which)
 int main(void)
 {
     struct rlimit limit = {0, 0}; setrlimit(RLIMIT_CORE, &limit);
-    run("S2 stable source IDs, names, PIANO and SAMPLE slot encoding", source_ids, 0, 0);
+    run("S2 stable source IDs, names, GUITAR and SAMPLE slot encoding", source_ids, 0, 0);
     run("S2 exhaustive transient voice field isolation", packed_fields, 0, 0);
     for (uint32_t k = 0; k < 8; k++) {
         char name[100]; snprintf(name, sizeof name, "S2 USR%u manual edits, RAM-only notification and missing-source sine", k + 1);

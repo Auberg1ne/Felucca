@@ -568,13 +568,14 @@ static struct {
 static uint32_t sample_wave_zone(const track_t *t)
 {
     uint32_t si = (uint32_t)t->p[P_E0] % SMP_NALL, i, zi = 0xFFFFu;
-    if (si < SMP_NSETS) {
-        const smp_set_t *set = &SMP_SETS[si];
+    uint32_t f = smp_factory_from_source(si);
+    if (f < SMP_NFACTORY) {
+        const smp_set_t *set = &SMP_SETS[f];
         for (i = 0; i < set->nz; i++)
             if (last_note >= SMP_ZONES[set->z0 + i].lo && last_note <= SMP_ZONES[set->z0 + i].hi) zi = set->z0 + i;
         if (zi == 0xFFFFu && set->nz) zi = set->z0;
     } else {
-        uint32_t k = si - SMP_NSETS;
+        uint32_t k = smp_user_from_source(si);
         for (i = 0; i < usr_nz[k]; i++)
             if (last_note >= usr_zone[k][i].lo && last_note <= usr_zone[k][i].hi) zi = 0x8000u | k << 5 | i;
         if (zi == 0xFFFFu && usr_nz[k]) zi = 0x8000u | k << 5;

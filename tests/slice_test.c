@@ -790,9 +790,9 @@ int main(int argc, char **argv)
 #else
     check("PIANO (SRC 4): none in a build without the CC0 samples", !slc_get(SLC_SRC_PIANO), 0);
 #endif
-    check("SRC: BREAK USR1 USR2 USR3 PIANO (append-only: 1.0.3's numbers kept)",
+    check("SRC: BREAK USR1 USR2 USR3 GUITAR (append-only: 1.0.3's numbers kept)",
           ENG_SLICE.edit[0].max == 9 && str_eq(N_SLC_SRC[0], "BREAK") && str_eq(N_SLC_SRC[1], "USR1") &&
-          str_eq(N_SLC_SRC[3], "USR3") && str_eq(N_SLC_SRC[4], "PIANO") && SLC_BREAK.len != 0u, 0);
+          str_eq(N_SLC_SRC[3], "USR3") && str_eq(N_SLC_SRC[4], "GUITAR") && SLC_BREAK.len != 0u, 0);
     sine_ok("SLICE on an empty USR2: A4", sine_run(SLC_ENG, 2, 69), 440.0);
     sine_ok("SLICE on an empty USR2: A3", sine_run(SLC_ENG, 2, 57), 220.0);
     sine_ok("SAMPLE on an empty USR2: A4", sine_run(4u, (int16_t)(SMP_NSETS + 1), 69), 440.0);

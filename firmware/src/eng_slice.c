@@ -64,7 +64,7 @@ static slc_src_t slc_usr[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")
 typedef int16_t slc_rbuf_t[NVOICE][SLC_RB];           /* reverse windows, one per part voice (the part's eng_mem) */
 ENG_MEM_FITS("SLICE", sizeof(slc_rbuf_t));
 /* append-only: stored sounds keep their SRC numbers (1.0.4 added PIANO) */
-static const char *const N_SLC_SRC[] = {"BREAK", "USR1", "USR2", "USR3", "PIANO", "USR4", "USR5", "USR6", "USR7", "USR8"};
+static const char *const N_SLC_SRC[] = {"BREAK", "USR1", "USR2", "USR3", "GUITAR", "USR4", "USR5", "USR6", "USR7", "USR8"};
 #define SLC_SRC_PIANO 4u
 #define SLC_NSRC ((uint32_t)NELEM(N_SLC_SRC))
 #define SLC_SINE 15u                  /* a voice's source when it has no material: the sine */

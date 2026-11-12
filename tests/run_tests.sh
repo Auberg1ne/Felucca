@@ -305,6 +305,9 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "1.5.6: the matrix's VEL / TIME (#213), DRUM kits DEEP TIGHT PERC (#216), LEDS INV LO / HI (#212), SELECT MODW / VEL (#84)" "$OUT/v156_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/v16_test" tests/v16_test.c -lm
     run "1.6: SEQ's piano roll follows the play position (#242: STEP, DETAIL; held by the knobs, 3 s or one pass)" "$OUT/v16_test"
+    $CC -O1 -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/factory_sample_test" tests/factory_sample_test.c -lm
+    run "five factory sounds: stable IDs, browsing, renders, presets and projects" "$OUT/factory_sample_test"
+    run "factory assets: preserved custom audio, CC0 additions and storage cost" python3 tests/factory_assets_test.py
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/project_format_test" tests/project_format_test.c -lm
     run "FUN11 lossless storage, FUN10 import, corruption and source compatibility" "$OUT/project_format_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/fun10_test" tests/fun10_test.c -lm
@@ -502,6 +505,8 @@ else
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
     $SCC -ffp-contract=off -o "$A/eight_slot_compat_test" tests/eight_slot_compat_test.c -lm
     run "ASan/UBSan: eight-slot source compatibility and SLICE voice packing" "$A/eight_slot_compat_test"
+    $SCC -ffp-contract=off -o "$A/factory_sample_test" tests/factory_sample_test.c -lm
+    run "ASan/UBSan: factory mapping, renders and saved selections" "$A/factory_sample_test"
     $SCC -ffp-contract=off -o "$A/project_format_test" tests/project_format_test.c -lm
     run "ASan/UBSan: FUN11 and legacy project serialization" "$A/project_format_test"
     # This regression uses strict ASan/UBSan, without the broad DSP exclusions.

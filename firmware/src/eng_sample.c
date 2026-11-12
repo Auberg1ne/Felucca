@@ -46,7 +46,7 @@ static uint32_t pow2_q16(int32_t d16)
 #include "sample_alloc.h"
 
 static uint32_t st_crc32(const void *, uint32_t);
-#define SMP_NALL (SMP_NSETS + SMP_USER_SLOTS)
+#define SMP_NALL 15u /* frozen source IDs: factory 0..4, users 5..12, factory 13..14 */
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -59,7 +59,26 @@ _Static_assert(sizeof(smp_user_hdr_t) == 480u && sizeof(smp_user_hdr_t) == SMP_A
                "header integrity must cover exactly all 480 FSMP bytes");
 static smp_zone_t usr_zone[SMP_USER_LOGICAL_SLOTS][16] __attribute__((section(".pool")));     /* RAM copy, off rebased onto SMP_DATA */
 static uint8_t usr_nz[SMP_USER_LOGICAL_SLOTS] __attribute__((section(".pool")));
-static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", "USR2", "USR3", "USR4", "USR5", "USR6", "USR7", "USR8"};
+static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SOURCE_NAMES_INIT};
+
+/* Public source IDs and factory/preset table indices are distinct namespaces.
+ * Keep the legacy prefix and all eight user IDs fixed when appending factories. */
+_Static_assert(SMP_NSETS == 5 && SMP_NFACTORY == 7 && SMP_USER_SLOTS == 8, "sample source ABI");
+static uint32_t smp_factory_from_source(uint32_t src)
+{
+    for (uint32_t i = 0; i < SMP_NFACTORY; i++)
+        if (SMP_FACTORY_SOURCE[i] == src) return i;
+    return SMP_NFACTORY;
+}
+static uint32_t smp_user_from_source(uint32_t src)
+{
+    return src >= 5u && src <= 12u ? src - 5u : SMP_USER_SLOTS;
+}
+static uint32_t smp_source_orig(uint32_t src)
+{
+    uint32_t f = smp_factory_from_source(src);
+    return f < SMP_NFACTORY ? SMP_FACTORY_SOURCE[SMP_SET_ORIG[f]] : src;
+}
 
 /* Logical-to-physical map. Boot clears these defaults; only journal recovery
  * authorizes a mapping. Zero means unpublished. */
@@ -440,9 +459,9 @@ static void smp_sine(int32_t *out, uint32_t n, const vmod_t *m, int32_t d16, int
 /* SET / SRC si (0..SMP_NALL - 1) has no sample data: an empty or invalid user slot, a built-in set without data */
 static int smp_set_missing(uint32_t si)
 {
-    if (si < SMP_NSETS)
-        return !SMP_ZONES[SMP_SETS[si].z0].n;
-    return !usr_nz[(si - SMP_NSETS) % SMP_USER_SLOTS];
+    uint32_t f = smp_factory_from_source(si), k = smp_user_from_source(si);
+    if (f < SMP_NFACTORY) return !SMP_SETS[f].nz || !SMP_ZONES[SMP_SETS[f].z0].n;
+    return k >= SMP_USER_SLOTS || !usr_nz[k];
 }
 
 /* zone index in a voice: < 0x8000 built-in, else 0x8000 | slot << 5 | zone */
@@ -479,8 +498,9 @@ static inline int32_t sample_next(const smp_zone_t *z, voice_t *v, int loop)
 static void sample_note_on(track_t *t, voice_t *v)
 {
     uint32_t si = (uint32_t)t->p[P_E0] % SMP_NALL, i, zi = 0xFFFFu, width = 128u;
-    if (si < SMP_NSETS) {                           /* a built-in set: its zones split the keyboard */
-        const smp_set_t *set = &SMP_SETS[si];
+    uint32_t f = smp_factory_from_source(si);
+    if (f < SMP_NFACTORY) {                           /* factory zones split the keyboard */
+        const smp_set_t *set = &SMP_SETS[f];
         for (i = 0; i < set->nz; i++)
             if (v->note >= SMP_ZONES[set->z0 + i].lo && v->note <= SMP_ZONES[set->z0 + i].hi) {
                 zi = set->z0 + i;
@@ -488,7 +508,7 @@ static void sample_note_on(track_t *t, voice_t *v)
             }
         v->s[4] = (int32_t)(zi == 0xFFFFu ? set->z0 : zi);
     } else {                                        /* user slot: silent if empty; the narrowest zone plays */
-        uint32_t k = si - SMP_NSETS;
+        uint32_t k = smp_user_from_source(si);
         for (i = 0; i < usr_nz[k]; i++) {
             const smp_zone_t *z = &usr_zone[k][i];
             if (v->note >= z->lo && v->note <= z->hi && z->hi - z->lo <= width) {
