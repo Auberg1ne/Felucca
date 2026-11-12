@@ -9673,7 +9673,9 @@ static int test_edit_quick_actions(void)
 
     /* DRUM (T4): EDIT held, a black key toggles its lane's mute (SET, latched); LEDs lit = sounding, dark = muted */
     ui_power_on();
-    track_select(3); go_home(); frame();
+    track_select(3);
+    undo_depth++; set_engine_of(TSEL, ENGI_DRUM); undo_depth--; /* fixture setup, not an undoable sound load */
+    go_home(); frame();
     ok = drum_track(TSEL) && !drum_mute[3];
     btn_down(B_EDIT); frames(500);
     a = leds_at(0); b2 = leds_at(250);
@@ -9747,7 +9749,9 @@ static int test_edit_quick_actions(void)
 
     /* the kit's own names: KIT 66 plays a conga on TOM */
     TSEL->p[P_E0] = 6;                                /* (DK_66) */
-    ok = str_eq(eqa_of(TSEL, 5)->name(TSEL, 5), "CG") && str_eq(eqa_of(TSEL, 0)->name(TSEL, 0), "BD");
+    const eqa_t *conga = eqa_of(TSEL, 5), *bassdrum = eqa_of(TSEL, 0);
+    ok = conga && bassdrum && conga->name && bassdrum->name &&
+         str_eq(conga->name(TSEL, 5), "CG") && str_eq(bassdrum->name(TSEL, 0), "BD");
     btn_down(B_EDIT); frames(500);
     key_down(black(5)); frame(); key_up(black(5)); frame();
     ok &= msg_is("CONGA MUTED") && drum_mute[3] == (9u | 32u);
@@ -9780,7 +9784,9 @@ static int test_edit_quick_actions(void)
 
     /* the sound: KICK muted = the beat without its kicks, bit for bit; unmuted: bit for bit as never muted */
     ui_power_on();
-    track_select(3); go_home(); frame();
+    track_select(3);
+    undo_depth++; set_engine_of(TSEL, ENGI_DRUM); undo_depth--; /* fixture setup, not an undoable sound load */
+    go_home(); frame();
     song.master_q12 = 4096;
     for (i = 0; i < 256u && (trk[3].xf_on || trk[3].eng_req != trk[3].engine); i++)
         mix_block(o, CTL);

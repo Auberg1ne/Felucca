@@ -16,17 +16,34 @@ static void zone_set(smp_zone_t *z, uint32_t off, uint32_t n)
     z->off = off; z->n = n; z->ls = 0; z->le = n - 1u; z->rate = 1u << 16; z->idx = 0; z->lo = 0; z->hi = 127;
 }
 
+/* Header-parser isolation: bind an already loaded physical image, not an upload.
+ * Journal ownership and publication are covered by samples() and sample_delete_test. */
+static void sample_image_scan(uint32_t k, uint32_t phys)
+{
+    smp_user_hdr_t *h = (smp_user_hdr_t *)(host_nor + phys);
+    host_bounds(phys, SMP_USER_SIZE);
+    h->crc = st_crc32(host_nor + phys + SMP_USER_DATA, h->data_len);
+    smp_journal_state = SMP_JOURNAL_READY;
+    smp_user_phys[k] = phys; smp_user_sectors[k] = SMP_USER_SECTORS_PER_LEGACY_SLOT;
+    smp_user_deleted[k] = smp_user_unresolved[k] = 0;
+    smp_user_header_crc[k] = st_crc32(h, sizeof *h); smp_user_header_bound[k] = 1;
+    smp_user_scan(k);
+}
+
 static int sample_slots(void)
 {
     int bad = 0;
     uint32_t i, dl = SMP_USER_SIZE - SMP_USER_DATA;
     smp_user_hdr_t *h;
-    reset(); memset(host_samples, 0, sizeof host_samples);
+    reset();
+    const uint32_t phys0 = SMP_USER_BASE + SMP_USER_SECTOR_SIZE, phys1 = phys0 + SMP_USER_SIZE;
+    host_bounds(phys0, 2u * SMP_USER_SIZE);
+    memset(host_nor + phys0, 0, 2u * SMP_USER_SIZE);
     /* 16 zones over overlapping data, each almost the whole slot (every zone inside the data) */
-    h = (smp_user_hdr_t *)host_samples[0];
+    h = (smp_user_hdr_t *)(host_nor + phys0);
     h->magic = SMP_USER_MAGIC; h->version = 1; h->nz = 16; h->data_len = dl;
     for (i = 0; i < 16u; i++) zone_set(&h->zone[i], 32u * i, 2u * (dl - 32u * i));
-    smp_user_scan(0);
+    sample_image_scan(0, phys0);
 #if FELUCCA_SLICE
     printf("robust: SLICE material of 16 overlapping zones: %u samples (the slot holds %u)\n", slc_usr[0].len,
            2u * dl);
@@ -34,15 +51,15 @@ static int sample_slots(void)
                  slc_usr[0].len && slc_usr[0].len <= 2u * dl);
 #endif
     /* zone 0 good, zone 1 malformed: nothing of the slot is left (usr_zone[1][0] was copied before the check) */
-    h = (smp_user_hdr_t *)host_samples[1];
+    h = (smp_user_hdr_t *)(host_nor + phys1);
     h->magic = SMP_USER_MAGIC; h->version = 1; h->nz = 2; h->data_len = 4096;
     zone_set(&h->zone[0], 0, 4096);
     zone_set(&h->zone[1], 0, 4096); h->zone[1].idx = 99;
-    smp_user_scan(1);
+    sample_image_scan(1, phys1);
     bad += check("a slot with a malformed zone: unusable, no zone of it left behind",
                  !usr_nz[1] && !usr_zone[1][0].n && !usr_zone[1][1].n);
     h->zone[1].idx = 0;
-    smp_user_scan(1);
+    sample_image_scan(1, phys1);
     bad += check("the same slot made valid scans again", usr_nz[1] == 2u && usr_zone[1][0].n == 4096u);
     return bad;
 }

@@ -425,6 +425,7 @@ static int nudge(void)
         uint32_t k4;
         song.sel = 3;
         t = &trk[3];
+        set_engine_of(t, ENGI_DRUM);
         track_defaults_steps(t);
         t->p[P_SLEN] = 16;
         t->p[P_SQNT] = 0;

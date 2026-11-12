@@ -3,9 +3,19 @@
 /* The firmware editor handler, USB framing and UART recovery against RAM flash.
  * Build with the generated tables and the same flags as hostsim.c. */
 #include "sample_storage.h"
-/* Isolated logical audio fixtures, not physical NOR partitions. */
-static unsigned char host_samples[SMP_USER_LOGICAL_SLOTS][SMP_USER_SIZE];
-#define SMP_USER_XIP(k) host_samples[k]
+/* Physical flash model: transaction and playback reads share one recovered map.
+ * Include the HAL declaration before overriding its helper, as sample_delete_test does. */
+#include <assert.h>
+#include "../firmware/hal/fm1_xip.h"
+static uint8_t host_nor[0x100000];
+static uint32_t host_xip_reads;
+static const uint8_t *host_sample_ptr(uint32_t off)
+{
+    assert(off < sizeof host_nor);
+    host_xip_reads++;
+    return host_nor + off;
+}
+#define fm1_xip_ptr host_sample_ptr
 #define FELUCCA_OTA 1
 #define FELUCCA_FLASH 0
 #define FELUCCA_VERSION "TEST"
@@ -52,15 +62,37 @@ static void panel_setup(void) {}
 
 static uint32_t flash_ok = 1;
 static void audio_silence(void) {}
-static void fl_inval(uint32_t off, uint32_t n) { (void)off; (void)n; }
-static uint8_t *host_flash_ptr(uint32_t off) { return &host_samples[0][0] + off - SMP_USER_BASE; }
+/* Every operation is checked against the existing 240 KiB pool. Event logs
+ * assert ordering, not just write totals; XIP counts establish readback steps. */
+typedef struct { uint32_t off, len, reads; uint8_t erase; } host_flash_event_t;
+static host_flash_event_t host_flash_events[64];
+static uint32_t host_flash_events_n, host_skip_write;
+static void host_bounds(uint32_t off, uint32_t n)
+{
+    assert(off >= SMP_USER_BASE && n <= SMP_USER_POOL_SIZE &&
+           off - SMP_USER_BASE <= SMP_USER_POOL_SIZE - n);
+}
+static void host_event(uint32_t off, uint32_t n, int erase)
+{
+    host_bounds(off, n);
+    assert(host_flash_events_n < NELEM(host_flash_events));
+    host_flash_events[host_flash_events_n++] = (host_flash_event_t){off, n, host_xip_reads, (uint8_t)erase};
+}
+static void fl_inval(uint32_t off, uint32_t n) { host_bounds(off, n); }
 static int fl_erase4k(uint32_t off, uint32_t *took)
 {
-    memset(host_flash_ptr(off), 0xFF, 4096); *took = 0; host_erases++; return 0;
+    host_event(off, SMP_USER_SECTOR_SIZE, 1); assert(!(off & (SMP_USER_SECTOR_SIZE - 1u)));
+    memset(host_nor + off, 0xFF, SMP_USER_SECTOR_SIZE); *took = 0; host_erases++; return 0;
 }
 static int fl_write(uint32_t off, const void *p, uint32_t n)
 {
-    memcpy(host_flash_ptr(off), p, n); host_writes++; return 0;
+    const uint8_t *src = p;
+    host_event(off, n, 0); host_writes++;
+    for (uint32_t i = 0; i < n; i++) {
+        assert((host_nor[off + i] & src[i]) == src[i]); /* NOR forbids zero-to-one programming */
+        if (host_writes != host_skip_write) host_nor[off + i] &= src[i];
+    }
+    return 0;
 }
 static int st_read(uint32_t off, void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
 static int st_prog(uint32_t off, const void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
@@ -73,6 +105,16 @@ static int check(const char *what, int ok)
     printf("editor: %-70s %s\n", what, ok ? "ok" : "FAIL");
     return !ok;
 }
+static void host_sample_reboot(void)
+{
+    memset(ed_smp_stage_phys, 0, sizeof ed_smp_stage_phys);
+    memset(ed_smp_stage_sectors, 0, sizeof ed_smp_stage_sectors);
+    memset(ed_smp_stage_capacity, 0, sizeof ed_smp_stage_capacity);
+    memset(ed_smp_stage_data_len, 0, sizeof ed_smp_stage_data_len);
+    flash_ok = 1;
+    smp_user_alloc_boot();
+    for (uint32_t k = 0; k < SMP_USER_SLOTS; k++) smp_user_scan(k);
+}
 static void reset(void)
 {
     uint32_t t, i;
@@ -82,7 +124,10 @@ static void reset(void)
     memset(&favorites, 0, sizeof favorites); memset(&settings, 0, sizeof settings); settings_init();
     memset(proj_slot, 0, sizeof proj_slot); memset(up_bank, 0, sizeof up_bank);
     memset(&um, 0, sizeof um); memset(usr_nz, 0, sizeof usr_nz);
+    memset(host_nor, 0xFF, sizeof host_nor);
+    host_flash_events_n = host_skip_write = host_xip_reads = 0;
     host_progress = 1; host_erases = host_writes = host_wire_n = 0;
+    host_sample_reboot();
     transport_req = panic_req = 0; sx_ready = sx_collect = sx_busy = 0;
     so_r = so_w = mi_r = mi_w = 0; midi_in_overflow = 0; usb.config = 1;
     for (i = 0; i < G_COUNT; i++) song.g[i] = GP[i].def;
@@ -399,40 +444,108 @@ static int samples(void)
     uint32_t n, i;
     int bad = 0;
     smp_user_hdr_t h;
-    reset(); memset(host_samples, 0, sizeof host_samples);
+    reset();
     for (i = 0; i < sizeof data; i++) data[i] = (uint8_t)(i * 37u);
+    a[2] = 2; /* slot 0, 256 audio bytes encoded as three 7-bit groups */
     song.playing = 1; host_progress = 0;
+    bad += check("obsolete one-byte sample BEGIN is rejected without writes",
+                 !request(ED_SMP_BEGIN, a, 1) && !host_erases && !host_writes);
     bad += check("sample erase waits for STOP and refuses a stalled audio ISR",
-                 request(ED_SMP_BEGIN, a, 1) == 8u && host_wire[6] != 0 && !host_erases && song.playing);
+                 request(ED_SMP_BEGIN, a, 4) == 8u && host_wire[6] != 0 && !host_erases && !host_writes && song.playing);
     host_progress = 1;
-    bad += check("sample erase stops transport before touching flash",
-                 request(ED_SMP_BEGIN, a, 1) == 8u && !host_wire[6] && host_erases == 1 && !song.playing);
+    bad += check("sample BEGIN stops transport, commits anchor/CLAIM before extent erase",
+                 request(ED_SMP_BEGIN, a, 4) == 8u && !host_wire[6] && host_erases == 1 && !song.playing &&
+                 host_writes == 4 && host_flash_events_n == 5 && host_flash_events[4].erase &&
+                 host_flash_events[0].off == SMP_USER_BASE && host_flash_events[0].len == 28 &&
+                 host_flash_events[1].off == SMP_USER_BASE + 28 && host_flash_events[1].len == 4 &&
+                 host_flash_events[2].off == SMP_USER_BASE + 32 && host_flash_events[2].len == 28 &&
+                 host_flash_events[3].off == SMP_USER_BASE + 60 && host_flash_events[3].len == 4 &&
+                 host_flash_events[1].reads > host_flash_events[0].reads &&
+                 host_flash_events[4].reads > host_flash_events[3].reads &&
+                 ((const smp_alloc_desc_t *)(host_nor + SMP_USER_BASE + 32))->magic == SMP_JOURNAL_CLAIM);
+    uint32_t phys = ed_smp_stage_phys[0], before = host_writes;
+    bad += check("staging uses an owned extent outside the journal; it is not published",
+                 phys >= SMP_USER_BASE + SMP_USER_SECTOR_SIZE && host_flash_events[4].off == phys &&
+                 !smp_user_phys[0] && !usr_nz[0]);
     a[0] = 0; a[1] = 0; a[2] = 4; a[3] = 0;
     n = pack7(data, 257, a + 4) + 4u;
     bad += check("257 decoded sample bytes are rejected without a truncated write",
-                 request(ED_SMP_WRITE, a, n) == 11u && host_wire[9] == 1 && !host_writes);
+                 request(ED_SMP_WRITE, a, n) == 11u && host_wire[9] == 1 && host_writes == before);
     bad += check("a dangling packed-data mask is rejected",
-                 request(ED_SMP_WRITE, short_group, sizeof short_group) == 11u && host_wire[9] == 1 && !host_writes);
+                 request(ED_SMP_WRITE, short_group, sizeof short_group) == 11u && host_wire[9] == 1 && host_writes == before);
     n = pack7(data, 256, a + 4) + 4u;
     transport_req = 1;
     bad += check("sample writes cancel a pending PLAY before flash access",
-                 request(ED_SMP_WRITE, a, n) == 11u && !host_wire[9] && transport_req != 1u && host_writes == 1);
+                 request(ED_SMP_WRITE, a, n) == 11u && !host_wire[9] && transport_req != 1u && host_writes == before + 1 &&
+                 !memcmp(host_nor + phys + SMP_USER_DATA, data, 256));
     memset(&h, 0, sizeof h); h.magic = SMP_USER_MAGIC; h.version = 1; h.nz = 1;
     h.data_len = 256; h.crc = st_crc32(data, 256); h.zone[0].n = 512; h.zone[0].le = 511;
     h.zone[0].rate = 65536; h.zone[0].hi = 127;
     a[0] = 0; n = pack7((const uint8_t *)&h, sizeof h, a + 1) + 1u;
-    a[n] = 0; a[n + 1u] = 0;
+    a[n] = 0; a[n + 1u] = 0; before = host_writes;
     bad += check("an oversized sample header is rejected without programming flash",
-                 request(ED_SMP_END, a, n + 2u) == 8u && host_wire[6] == 1 && host_writes == 1);
-    bad += check("complete sample header and CRC publish a valid slot",
-                 request(ED_SMP_END, a, n) == 8u && !host_wire[6] && usr_nz[0] == 1 && host_writes == 2);
-    bad += check("repeated END of the same published header does not rewrite live zones",
-                 request(ED_SMP_END, a, n) == 8u && !host_wire[6] && host_writes == 2);
+                 request(ED_SMP_END, a, n + 2u) == 8u && host_wire[6] == 1 && host_writes == before);
+    uint32_t events = host_flash_events_n;
+    bad += check("END verifies header/descriptor and commits PUBLISH last; activation waits for reboot",
+                 request(ED_SMP_END, a, n) == 8u && !host_wire[6] && !usr_nz[0] && !smp_user_phys[0] &&
+                 host_writes == before + 5 && host_flash_events_n == events + 5 &&
+                 host_flash_events[events].off == phys && host_flash_events[events].len == 480 &&
+                 host_flash_events[events + 1].off == phys + SMP_ALLOC_OFFSET && host_flash_events[events + 1].len == 28 &&
+                 host_flash_events[events + 2].off == phys + 508 && host_flash_events[events + 2].len == 4 &&
+                 host_flash_events[events + 2].reads > host_flash_events[events + 1].reads &&
+                 host_flash_events[events + 3].off == SMP_USER_BASE + 64 && host_flash_events[events + 3].len == 28 &&
+                 host_flash_events[events + 3].reads > host_flash_events[events + 2].reads &&
+                 host_flash_events[events + 4].off == SMP_USER_BASE + 92 && host_flash_events[events + 4].len == 4 &&
+                 host_flash_events[events + 4].reads > host_flash_events[events + 3].reads &&
+                 ((const smp_alloc_desc_t *)(host_nor + SMP_USER_BASE + 64))->magic == SMP_JOURNAL_PUBLISH);
+    before = host_writes;
+    bad += check("repeated END without an active stage fails without rewriting flash or live zones",
+                 request(ED_SMP_END, a, n) == 8u && host_wire[6] == 1 && host_writes == before && !usr_nz[0]);
+    host_sample_reboot();
+    bad += check("reboot activates the verified published extent and its exact header/audio",
+                 smp_user_phys[0] == phys && usr_nz[0] == 1 && usr_zone[0][0].rate == 65536 &&
+                 !memcmp(host_nor + phys, &h, sizeof h) && !memcmp(host_nor + phys + 512, data, 256));
     h.zone[0].rate = 131072;
     n = pack7((const uint8_t *)&h, sizeof h, a + 1) + 1u;
     bad += check("END cannot change published sample zones without BEGIN",
-                 request(ED_SMP_END, a, n) == 8u && host_wire[6] == 2 && host_writes == 2 &&
+                 request(ED_SMP_END, a, n) == 8u && host_wire[6] == 1 && host_writes == before &&
                  usr_zone[0][0].rate == 65536u);
+    /* A failed replacement must preserve both the live and recovered publication. */
+    a[0] = 0; a[1] = 0; a[2] = 2; a[3] = 0;
+    request(ED_SMP_BEGIN, a, 4);
+    uint32_t failed_phys = ed_smp_stage_phys[0];
+    a[2] = 4;
+    n = pack7(data, 256, a + 4) + 4u;
+    request(ED_SMP_WRITE, a, n);
+    h.crc ^= 1u;
+    n = pack7((const uint8_t *)&h, sizeof h, a + 1) + 1u;
+    before = host_writes;
+    bad += check("bad audio CRC aborts replacement before header writes; old zones stay live",
+                 request(ED_SMP_END, a, n) == 8u && host_wire[6] == 3 && host_writes == before &&
+                 !ed_smp_stage_sectors[0] && smp_user_phys[0] == phys && usr_zone[0][0].rate == 65536u);
+    host_sample_reboot();
+    bad += check("reboot after CRC rejection preserves the previous published sample",
+                 smp_user_phys[0] == phys && usr_nz[0] == 1 && usr_zone[0][0].rate == 65536u);
+    a[0] = 0; a[1] = 0; a[2] = 2; a[3] = 0;
+    request(ED_SMP_BEGIN, a, 4);
+    uint32_t verify_phys = ed_smp_stage_phys[0];
+    bad += check("an aborted CLAIM is never reused by the next replacement",
+                 verify_phys && verify_phys != phys && verify_phys != failed_phys);
+    a[2] = 4;
+    n = pack7(data, 256, a + 4) + 4u;
+    request(ED_SMP_WRITE, a, n);
+    h.crc ^= 1u;
+    n = pack7((const uint8_t *)&h, sizeof h, a + 1) + 1u;
+    before = host_writes;
+    host_skip_write = before + 1u; /* flash reports success, but the header was not programmed */
+    bad += check("header readback failure blocks I/O and never writes commit or PUBLISH",
+                 request(ED_SMP_END, a, n) == 8u && host_wire[6] == 4 && host_writes == before + 2u &&
+                 !flash_ok && smp_user_io_blocked && smp_user_phys[0] == phys &&
+                 usr_zone[0][0].rate == 65536u && host_nor[verify_phys + 508] == 0xFF);
+    host_sample_reboot();
+    bad += check("reboot after failed verification retains old header and exact audio",
+                 smp_user_phys[0] == phys && usr_nz[0] == 1 && usr_zone[0][0].rate == 65536u &&
+                 !memcmp(host_nor + phys + SMP_USER_DATA, data, 256));
     song.playing = 1; host_progress = 0; a[0] = 0; a[1] = 0;
     bad += check("user-preset STORE does not mutate RAM when audio cannot stop",
                  request(ED_UP_STORE, a, 2) == 8u && host_wire[6] == 2 && !up_used(0));

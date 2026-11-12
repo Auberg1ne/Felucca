@@ -18,8 +18,16 @@ int main(int argc, char **argv)
          * referenced by old voices. Real C2 replacements retain the old extent. */
         for (j = 0; j < NTRK; j++) memset(trk[j].v, 0, sizeof trk[j].v);
         k = rnd() % SMP_USER_SLOTS;
-        smp_user_hdr_t *h = (smp_user_hdr_t *)host_samples[k];
-        for (j = 0; j < sizeof host_samples[k]; j += 1u + rnd() % 7u) host_samples[k][j] = (uint8_t)rnd();
+        const uint32_t phys = SMP_USER_BASE + SMP_USER_SECTOR_SIZE;
+        uint8_t *image = host_nor + phys;
+        host_bounds(phys, SMP_USER_SIZE);
+        /* One isolated boot image per iteration: no other slot may alias it. */
+        for (j = 0; j < SMP_USER_SLOTS; j++) {
+            smp_user_phys[j] = 0; smp_user_sectors[j] = 0;
+            if (j != k) usr_nz[j] = 0;
+        }
+        smp_user_hdr_t *h = (smp_user_hdr_t *)image;
+        for (j = 0; j < SMP_USER_SIZE; j += 1u + rnd() % 7u) image[j] = (uint8_t)rnd();
         if (rnd() % 8u) { h->magic = SMP_USER_MAGIC; h->version = 1; }
         h->nz = (uint8_t)(rnd() % 4u == 0 ? rnd() : 1u + rnd() % 16u);
         h->data_len = rnd() % 4u == 0 ? rnd() : rnd() % (SMP_USER_SIZE - SMP_USER_DATA + 1u);
@@ -46,13 +54,13 @@ int main(int argc, char **argv)
             }
         }
         /* Explicit isolated metadata bindings, so H2 does not make every fuzz
-         * iteration reject before H1/engine coverage. This harness has separate
-         * logical buffers, not an allocator; physical journal/ownership fuzzing
+         * iteration reject before H1/engine coverage. This harness loads an isolated
+         * physical image, not an allocator; physical journal/ownership fuzzing
          * belongs to sample_delete_test.c and the real simulator tests. */
         if (h->data_len <= SMP_USER_SIZE - SMP_USER_DATA)
-            h->crc = st_crc32(host_samples[k] + SMP_USER_DATA, h->data_len);
+            h->crc = st_crc32(image + SMP_USER_DATA, h->data_len);
         smp_journal_state = SMP_JOURNAL_READY;
-        smp_user_phys[k] = SMP_USER_BASE; smp_user_sectors[k] = SMP_USER_SECTORS_PER_LEGACY_SLOT;
+        smp_user_phys[k] = phys; smp_user_sectors[k] = SMP_USER_SECTORS_PER_LEGACY_SLOT;
         smp_user_deleted[k] = smp_user_unresolved[k] = 0;
         smp_user_header_crc[k] = st_crc32(h, sizeof *h); smp_user_header_bound[k] = 1;
         /* Exercise both cleared and stale metadata caches on the isolated
