@@ -814,6 +814,37 @@ static void sound_name(const track_t *t, char *b)
         str_cpy(b, e->presets[t->preset % e->npresets].name, 16);
 }
 
+/* The scientist HOME's step strip only; other pages keep their existing bars. */
+static int home_step_icons_enabled(void);
+static uint16_t home_step_accent(uint32_t channel);
+static void home_step_bean(int32_t x,uint16_t color,int accent)
+{
+    /* 9x11 integer oval. Short connected segments form a curved diagonal cleft. */
+    for(int32_t y=0;y<11;y++)for(int32_t px=0;px<9;px++) {
+        int32_t dx=px-4,dy=y-5;
+        int32_t oval=dx*dx*25+dy*dy*16;
+        if(oval<=400)cv_pset(x+px,1+y,ux.light && oval>260?T_TEXT:color);
+    }
+    uint16_t groove=ux.light?T_TEXT:T_BG;
+    cv_line(x+2,10,x+3,8,groove);cv_line(x+3,8,x+5,6,groove);
+    cv_line(x+5,6,x+4,4,groove);cv_line(x+4,4,x+6,2,groove);
+    if(accent)cv_pset(x+2,4,0xffff);
+}
+static void draw_home_step_icons(const track_t *t)
+{
+    const step_t *steps=seq_steps(t);uint16_t color=home_step_accent(song.sel);
+    uint32_t len=(uint32_t)t->p[P_SLEN];if(len>NSTEP)len=NSTEP;
+    for(uint32_t i=0;i<16;i++) {
+        uint32_t si=ui.bank*16u+i;int32_t x=bar_x(i);
+        if(si>=NSTEP || si>=len)continue;
+        const step_t *st=&steps[si];
+        if(step_on(st))home_step_bean(x,color,(st->flags&SF_ACCENT)!=0);
+        else cv_rect(x+1,10,7,2,T_MID);
+        if(song.seq_mode && si==ui.cursor)cv_rect(x,14,9,2,color);
+        else if(song.playing && si==t->seq_idx)cv_rect(x,14,9,1,T_TEXT);
+    }
+}
+
 static void draw_foot(void)
 {
     char s[48], pn[16], ti[20], ln[24];
@@ -891,6 +922,8 @@ static void draw_foot(void)
             cv_text_r(232, 2, &AF_S, "ACCENT", T_ACCENT, T_BG);
         else
             cv_key_hint(232 - kh_w(KC_KEYS, "STEPS"), 2, KC_KEYS, "STEPS", 1, T_BG);   /* the keys are the steps */
+    } else if (ui.home && home_step_icons_enabled()) {
+        draw_home_step_icons(t);
     } else {
         uint32_t i;
         if ((ui.bank + 1u) * 16u <= (uint32_t)t->p[P_SLEN])
@@ -1591,6 +1624,15 @@ static uint32_t home_levels_poll(home_level_view_t *view, uint32_t now)
 }
 
 #include "home_scientists.c"
+static int home_step_icons_enabled(void) { return COFFEE_HOME_VISUALS; }
+static uint16_t home_step_accent(uint32_t channel)
+{
+#if COFFEE_HOME_VISUALS
+    return HOME_ACCENT[channel&3u];
+#else
+    (void)channel;return T_THEME;
+#endif
+}
 
 static void ui_draw_page(uint32_t counting);
 static void ui_draw(void)

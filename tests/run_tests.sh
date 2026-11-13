@@ -221,6 +221,8 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "HOME levels: identical audio with split part ownership" cmp "$OUT/home_levels_on.pcm" "$OUT/home_levels_dual.pcm"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_step_icons_test" tests/home_step_icons_test.c -lm
+    run "HOME sequencer: stored-note beans, rests, channels, SONG/banks and independent playhead" "$OUT/home_step_icons_test"
     run "HOME sprites: reference hashes, reproducibility and 12 bounded RGB565 poses" python3 tests/home_sprites_test.py
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_visuals_test" web/emu/home_visuals_test.c -lm
     run "HOME visuals: independent poses, hysteresis, selection, bounds and partial redraws" "$OUT/home_visuals_test"
