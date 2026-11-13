@@ -1590,11 +1590,17 @@ static uint32_t home_levels_poll(home_level_view_t *view, uint32_t now)
     return home_level_frame(view, now, visible);
 }
 
+#include "home_scientists.c"
+
 static void ui_draw_page(uint32_t counting);
 static void ui_draw(void)
 {
     static uint8_t counting;
     style_apply();
+#if COFFEE_HOME_VISUALS
+    if(!ui.home || ui.menu || ui.layer || ui.confirm || ui.uboot || name_on() || seq_counting() ||
+       scrn.st != SCR_ON || kb_boot_hold) scientists_hide();
+#endif
     ui.frame++;
     if (counting != (uint8_t)seq_counting()) {          /* a count-in began or ended: the page drawn again after it */
         counting = (uint8_t)seq_counting();
@@ -1657,6 +1663,10 @@ static void ui_draw_page(uint32_t counting)
         page_entered();
     }
     cursor_fix();
+#if COFFEE_HOME_VISUALS
+    if(ui.home) draw_scientists_home();
+    else {
+#endif
     if (ui.force)
         draw_frame();
     felucca_dbg.stage = 3;
@@ -1665,6 +1675,9 @@ static void ui_draw_page(uint32_t counting)
     draw_columns();
     felucca_dbg.stage = 5;
     draw_graph();
+#if COFFEE_HOME_VISUALS
+    }
+#endif
     if (ui.msg_t && !--ui.msg_t && ui.msg2[0]) {     /* the second message (ui_notices) */
         str_cpy(ui.msg, ui.msg2, sizeof ui.msg);
         ui.msg2[0] = 0;

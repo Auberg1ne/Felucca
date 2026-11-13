@@ -43,6 +43,8 @@ CFLAGS = ["-Os", "-ffunction-sections", "-fno-builtin", "-Wall", "-Wno-unused-fu
 # Artwork remains opt-in for hardware until this configuration links within APP_SLOT.
 if os.environ.get("FELUCCA_BOOT_ART") == "1":
     CFLAGS.append("-DCOFFEE_STARTUP_ART=1")
+if os.environ.get("FELUCCA_HOME_ART") == "1":
+    CFLAGS.append("-DCOFFEE_HOME_VISUALS=1")
 LINE = re.compile(r"^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2} )+)\s*\t(.*)$")
 
 # SDK files of AC79NN_SDK_V1.2.1_2023-12-13 (the tested version)

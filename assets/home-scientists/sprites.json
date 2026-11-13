@@ -1,0 +1,28 @@
+{
+  "source_sha256": "b70d5a5866a96c4e7b5539d1cefef9ded134eaaa65c7f9daea03d7cccc8e4ec3",
+  "pillow": "13.0.0",
+  "sprite_size": [
+    90,
+    56
+  ],
+  "order": "channel-major: idle,active,energetic",
+  "frames": 12,
+  "palette_bytes": 512,
+  "offset_bytes": 52,
+  "encoded_bytes": 29571,
+  "total_asset_bytes": 30135,
+  "frame_rgb565_sha256": [
+    "baf4f4a0cb2efe6678f7dcf366fa9d7a3f4c5e44a409800ffa49bcfcd189558c",
+    "d8d07b36c0dc329abc4189d083cdbafb24eacd1ca5b4367c6f2328275a96357b",
+    "5e22a5909f0bc84697d5e7baeca02bddf6294c7c0ab16ddd807eb1684644d4d3",
+    "549ee1675ef15b17e6b8a897d3f7835221cf785e901902ca5badd30890b07812",
+    "0a3e136f4c87de692f1420c3afa0fdf29a189fc5e8892c6d48a1c1e36f3ad309",
+    "21cf1da5cbb25bd785ed44cf8cc32255f8e470ef29be61f70eff9bc71a373d11",
+    "8002a795f83b46b06c325e43d607b2a270080d3deb8620e0e14a29a1f6af9915",
+    "109eb69fafbe64d72ef916d4260d02eb25084badd9fa20b57aeef8423c7da0a6",
+    "c89a1eec2d7f97e4dd1d55cc3885f23a21b4d3e75f9c6834627ceeac05a1c8c0",
+    "d12a5b61a67276afa13c995c11f798fac3b6fd0b7b4be47dc496e6207afb3d7e",
+    "9a04b710b14b9974cf374e3f0018f64bdd8cfe922235f63891f593ae34c678b7",
+    "16fc4a30a679c7e30ee043fde500d43df2b7c09e200c3a1e958cfa14f77e6831"
+  ]
+}

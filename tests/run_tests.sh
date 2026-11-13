@@ -221,6 +221,19 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "HOME levels: identical audio with split part ownership" cmp "$OUT/home_levels_on.pcm" "$OUT/home_levels_dual.pcm"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
+    run "HOME sprites: reference hashes, reproducibility and 12 bounded RGB565 poses" python3 tests/home_sprites_test.py
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_visuals_test" web/emu/home_visuals_test.c -lm
+    run "HOME visuals: independent poses, hysteresis, selection, bounds and partial redraws" "$OUT/home_visuals_test"
+    $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=1 -Ibuild/gen -Ifirmware/src -o "$OUT/home_nav_on" tests/home_visuals_navigation_test.c -lm
+    $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=0 -Ibuild/gen -Ifirmware/src -o "$OUT/home_nav_off" tests/home_visuals_navigation_test.c -lm
+    run "HOME visuals: existing controls with the new renderer" "$OUT/home_nav_on" "$OUT/home_nav_on.bin"
+    run "HOME visuals: existing controls with the legacy renderer" "$OUT/home_nav_off" "$OUT/home_nav_off.bin"
+    run "HOME visuals: identical parameters, navigation and non-HOME pixels" cmp "$OUT/home_nav_on.bin" "$OUT/home_nav_off.bin"
+    for ART in 0 1; do
+        $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=$ART -Ibuild/gen -Ifirmware/src -o "$OUT/home_audio_$ART" web/emu/native_check.c -lm
+        run "HOME visuals: browser backend audio (renderer $ART)" "$OUT/home_audio_$ART" "$OUT/home_audio_$ART.f32"
+    done
+    run "HOME visuals: bit-identical audio" cmp "$OUT/home_audio_0.f32" "$OUT/home_audio_1.f32"
     run "startup image: original checksum, reproducibility and bounded RGB565 rows" python3 tests/boot_splash_test.py
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/boot_splash_test" web/emu/boot_splash_test.c -lm
     run "startup: exact artwork, 3.5-second deadline, wrap and live MIDI audio" "$OUT/boot_splash_test"
