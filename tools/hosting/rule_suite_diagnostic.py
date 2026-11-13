@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """H12: bounded GET-only inspection, never a replacement H9 authorization verdict."""
 import json
+import hashlib
 from datetime import datetime
 import os
 from pathlib import Path
@@ -26,7 +27,7 @@ BASE = 'https://api.github.com/repos/' + REPOSITORY
 MAX_BYTES = 2 * 1024 * 1024
 MAX_PAGES = 10
 RESULTS = ('pass', 'fail', 'bypass')
-# GitHub repository rule types; unknown future types fail closed, without copying strings.
+# Known labels aid interpretation; the rule-suite schema permits other string labels.
 RULE_TYPES = ('creation', 'update', 'deletion', 'non_fast_forward', 'required_linear_history',
               'merge_queue', 'required_deployments', 'required_signatures', 'pull_request',
               'required_status_checks', 'commit_message_pattern', 'commit_author_email_pattern',
@@ -132,6 +133,18 @@ def rows(value):
     return value
 
 
+def rule_label(value):
+    """Preserve opaque labels without copying arbitrary remote text into artifacts."""
+    valid = (isinstance(value, str) and 0 < len(value) <= 256 and value.strip() == value
+             and value.isprintable())
+    known = valid and value in RULE_TYPES
+    return {'rule_type': value if known else None,
+            'rule_type_status': 'RECOGNIZED' if known else 'UNRECOGNIZED' if valid else 'MALFORMED',
+            'rule_type_sha256': hashlib.sha256(value.encode('utf-8')).hexdigest()
+                                if valid and not known else None,
+            'rule_type_length': len(value) if valid and not known else None}
+
+
 def suite(value):
     """Allowlist projection: no names, messages, URLs, headers or raw payloads."""
     value = object_data(value)
@@ -153,7 +166,7 @@ def suite(value):
         evaluations = rows(value['rule_evaluations'])
         require(len(evaluations) <= 1000, 'Too many rule evaluations')
         result['rule_evaluations'] = [{
-            'rule_type': choice(r.get('rule_type'), RULE_TYPES),
+            **rule_label(r.get('rule_type')),
             'enforcement': choice(r.get('enforcement'), ENFORCEMENTS),
             'result': choice(r.get('result'), ('pass', 'fail')),
             'rule_source_id': positive(r.get('rule_source', {}).get('id'))
@@ -190,17 +203,16 @@ def validate_suite(record, repository_id, detail=False):
         evaluations = rows(record.get('rule_evaluations'))
         require(0 < len(evaluations) <= 1000, 'Evaluation evidence empty or incomplete')
         for evaluation in evaluations:
-            require(choice(evaluation.get('rule_type'), RULE_TYPES) and
+            require(rule_label(evaluation.get('rule_type'))['rule_type_status'] != 'MALFORMED' and
                     choice(evaluation.get('enforcement'), ENFORCEMENTS) and
                     choice(evaluation.get('result'), ('pass', 'fail')),
                     'Unknown or malformed rule evaluation')
             source = object_data(evaluation.get('rule_source'))
             require(choice(source.get('type'), SOURCE_TYPES), 'Unknown rule source type')
-            # Protected-branch sources may omit IDs; deleted rulesets may have null IDs.
+            # Diagnostic schema permits null/missing source IDs. This is not source verification.
+            # Authorization predicates must independently require their exact expected source ID.
             if source.get('id') is not None:
                 require(positive(source['id']), 'Malformed rule source ID')
-            elif source['type'] == 'ruleset':
-                require(evaluation['enforcement'] == 'deleted ruleset', 'Missing live ruleset ID')
 
 
 def collect(api, report, save):
@@ -322,6 +334,8 @@ def collect(api, report, save):
                     isinstance(r.get('rule_source'), dict) and
                     r['rule_source'].get('id') in creation_sources for r in evaluations)
             entry['failed_evaluation_count'] = sum(r['result'] == 'fail' for r in evaluations)
+            entry['unrecognized_rule_type_count'] = sum(
+                rule_label(r['rule_type'])['rule_type_status'] == 'UNRECOGNIZED' for r in evaluations)
             target = (row['before_sha'] == ZERO and row['after_sha'] == COMMIT and
                       row['actor_name'] == WRITER_ACTOR)
             entry['classification'] = 'TARGET_CREATION' if target else 'UNRELATED'
@@ -336,6 +350,9 @@ def collect(api, report, save):
         raise Unavailable('Rule-suite page bound reached; history incomplete')
     report['target_suite_count'] = len(report['suites'])
     report['unrelated_suite_count'] = len(report['unrelated_suites'])
+    report['unrecognized_rule_type_count'] = sum(entry['unrecognized_rule_type_count']
+        for group in ('suites', 'unrelated_suites') for entry in report[group])
+    report['rule_types_fully_recognized'] = report['unrecognized_rule_type_count'] == 0
     save()
     require(len(report['suites']) == 1, 'Exactly one matching creation suite required; missing or ambiguous')
     # Detect concurrent drift without repairing it or asserting production absence.
@@ -359,7 +376,7 @@ def collect(api, report, save):
 
 
 def main():
-    report = {'schema': 2, 'status': 'INCONCLUSIVE', 'repository': REPOSITORY,
+    report = {'schema': 3, 'status': 'INCONCLUSIVE', 'repository': REPOSITORY,
               'original_run_id': RUN, 'expected_canary_sha': COMMIT,
               'h9_verdict': 'NOT_REEVALUATED', 'collection_complete': False}
     def save():
