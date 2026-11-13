@@ -92,3 +92,45 @@ WASM build attempt: `emu: no emcc (Emscripten)`. No full WASM/audio browser buil
 was produced in this environment. Native rendering/decoding passes; this is not
 a substitute for a WASM rebuild in the Emscripten-equipped Codespace. Target
 link and hardware size/performance verification remain outstanding.
+
+## SYNTH silence investigation
+
+At c17e99c, source 13 resolves correctly to factory index 5 and zone 3:
+byte offset 187658, 275098 frames, Q16 rate 65536, MIDI-60 audition anchor,
+no loop, 137550 aligned ADPCM bytes. Its data ends at byte 325208, within
+SMP_DATA (380334 bytes). Offsets, lengths and decoder positions are uint32_t.
+Native browser-backend SAMPLE rendering is audible (RMS 9311.52 over the
+first second), so the WAV, encoder, gain and native-rate tuning are not silent.
+
+The GRAIN seek index allowed 1024 entries at 256 frames per entry. SYNTH needs
+ceil(275098/256) = 1075. `gr_reset` explicitly sets a zone's entry count to zero
+if it exceeds capacity; `gr_spawn_one` then refuses to spawn any grains. A
+baseline render reproduced exact silence in GRAIN (zero peak/RMS), despite a
+valid source and descriptor. This differs from the sequential SAMPLE decoder.
+
+The fix increases only GR_NIDX to 1075, retaining the indexing cadence, seek
+interval, decoder and sound parameters. The existing ENG_MEM_FITS assertion
+checks it against the unchanged 12888-byte per-part engine allocation. No extra
+pool allocation, user storage, format, sample data or source IDs are introduced.
+The focused native browser-backend test measures actual SAMPLE/GRAIN audio,
+checks full index completion and near-end seeking against sequential decoding,
+and checks public web_render output driven by MIDI/envelope/mixer.
+
+A separate pre-existing GRAIN limitation remains: its shared moving source head
+is uint32 Q16, so head positioning above 65535 frames wraps for long recordings.
+This is not the complete-silence cause, and changing that traversal behavior is
+outside this fix. The complete original/ADPCM recordings and uint32 decoder
+seek positions remain intact; long-source traversal needs separate review.
+WASM execution still requires Emscripten; target flash fit and timing remain
+unverified. This fix does not establish hardware release readiness.
+
+Fix validation: the native browser-backend regression passes 10 checks under
+ASan/UBSan, including MIDI-driven `web_render` audio (float RMS 0.021806,
+peak 0.103439), meaningful direct SAMPLE/GRAIN output, all 1075 seek entries
+and far-end state equality. Host GRAIN state grows from 7128 to 7288 bytes
+inside the unchanged 12888-byte union per part. Factory 232, navigation 802
+and project-format 41146 checks also pass under the same scoped sanitizers.
+Chromium frontend 20, editor dropdown 90, editor ordering 52 and backup 64
+checks pass. Original checksums and encoded fingerprints are unchanged.
+Emscripten build attempt still stops with `emu: no emcc (Emscripten)`; no
+actual WASM execution or target link was possible here.

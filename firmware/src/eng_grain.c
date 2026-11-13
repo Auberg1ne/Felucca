@@ -8,8 +8,8 @@
  *
  * Decoding: no RAM copy of the source. Grains decode the ADPCM on demand from a seek index: the
  * decoder state (predictor, step index) every GR_SEG = 256 source samples of every zone of the
- * part's SRC, 3 bytes an entry (GR_NIDX entries a part: the retired PERC set needed 1001, the biggest
- * built-in set now ~330; a full user slot ~650; zones past the capacity stay silent). A zone always starts at the
+ * part's SRC, 3 bytes an entry (GR_NIDX entries a part: the retired PERC set needed 1001, the longest
+ * factory zone (SYNTH, 275098 samples) needs 1075; zones past the capacity stay silent). A zone always starts at the
  * state (0, 0), so zones index independently. The index is built in the block hook, one entry
  * (256 decodes) per part and block, the zones of the sounding voices first: a 1 s zone is ready
  * in ~60 ms, a set of 24 zones in ~0.7 s. A grain starts at its exact sample: the state of the
@@ -42,7 +42,7 @@
 #define GR_NG 12                 /* grains per part */
 #define GR_SEG_LOG2 8
 #define GR_SEG (1u << GR_SEG_LOG2)   /* seek index interval, source samples */
-#define GR_NIDX 1024             /* seek index entries per part (sized for the retired PERC: 1001; it keeps user slots room) */
+#define GR_NIDX 1075             /* ceil(275098 / 256): full-length SYNTH; fits existing ENG_MEM_PART */
 #define GR_MAXZ 32               /* zones per set (a user slot <= 16; the retired PERC had 24) */
 #define GR_RB 128                /* reverse window, source samples */
 #define GR_STEP_MAX (2u << 16)   /* grain rate cap: 2 source samples per output sample */
