@@ -1325,6 +1325,29 @@ static void draw_columns(void)
 }
 
 
+#include "startup_splash.h"
+#if COFFEE_STARTUP_ART
+#include "../../assets/startup-splash/boot_splash.h"
+static void draw_startup_art(void)
+{
+    for (uint32_t y = 0; y < 240u; y++) {
+        uint32_t p = BOOT_ART_ROWS[y], end = BOOT_ART_ROWS[y + 1u], x = 0;
+        lcd_sync(); /* the previous DMA must finish before reusing the RAM row */
+        while (p < end) {
+            uint32_t token = BOOT_ART_DATA[p++], n = (token & 127u) + 1u;
+            if (token & 128u) {
+                uint16_t color = BOOT_ART_PALETTE[BOOT_ART_DATA[p++]];
+                while (n--) cv_px[x++] = color;
+            } else {
+                while (n--) cv_px[x++] = BOOT_ART_PALETTE[BOOT_ART_DATA[p++]];
+            }
+        }
+        lcd_blit(0, y, 240, 1, cv_px); /* palette is already panel-byte-order RGB565 */
+    }
+    lcd_sync();
+}
+#endif
+
 /* The power-on splash (main.c fm1_main, web/emu felucca_web.c; 1.1.5): a RAISE square centred on the screen, square
  * corners (in every style; LINE too: RAISE from the palette's SURF), in it in AF_M, the ink SPL_PAD in from the left:
  * at the top the name and the version, the first line's capitals' top SPL_PAD down; at the bottom the maker and
@@ -1355,6 +1378,9 @@ static void splash_band(uint32_t y, uint32_t h, int32_t ly, const char *const *l
 }
 static void draw_splash(void)
 {
+#if COFFEE_STARTUP_ART
+    draw_startup_art();
+#else
     int32_t h = SPL_PAD - AF_M_CAP_Y + SPL_PITCH + AF_M.h;     /* a band: its two lines, the descenders in */
     int32_t lb = h - SPL_PAD - AF_M_CAP_H - AF_M_CAP_Y;         /* the bottom band's last line: its top */
     lcd_fill(0, 0, 240, 240, T_BG);
@@ -1364,6 +1390,7 @@ static void draw_splash(void)
     splash_band(SPL_X0 + SPL_SQ - (uint32_t)h, (uint32_t)h, lb - SPL_PITCH, SPLASH_LINES + 2, AL_B, 0, h - SPL_PAD,
                 "splash maker's baseline SPL_PAD from the bottom");
     lcd_sync();
+#endif
 }
 
 /* UPDATE MODE countdown (main.c: OCT- + OCT+ held): over everything, the menu and the dialogs too */

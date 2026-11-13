@@ -17,11 +17,11 @@ static unsigned checks;
 #define REQUIRE(x) do {checks++;if(!(x)){fprintf(stderr,"branding line %u: %s\n",__LINE__,#x);return 1;}}while(0)
 int main(void)
 {
-    REQUIRE(!strcmp(SPLASH_LINES[0],"COFFEE GRAINS"));
-    REQUIRE(text_w(&AF_M,SPLASH_LINES[0])<=SPL_SQ-2*SPL_PAD);
+    REQUIRE(COFFEE_STARTUP_ART==1);
+    REQUIRE(STARTUP_SPLASH_MS==3500u);
     REQUIRE(text_w(&AF_L,"COFFEE GRAINS")<=226);
     web_nor_erase();web_boot();
-    REQUIRE(branded>0 && old_brand==0);
+    REQUIRE(web_draws>=240 && old_brand==0);
     branded=old_brand=0;ui.menu=2;ui.menu_scroll=0;ui.force=1;ui_draw();
     REQUIRE(branded>0 && old_brand==0);
     REQUIRE(P_COUNT==118 && PROJ_STORE_SIZE==3840 && SMP_NALL==15 && SMP_USER_SLOTS==8);

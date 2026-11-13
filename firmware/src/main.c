@@ -128,8 +128,8 @@ static void felucca_init(void)
 }
 
 /* The power-on LED sweep (1.1, hal/fm1_led_anim.h: a soft light over the keys left to right, then the buttons swell
- * and settle on the glow; ~0.70 s), started before the scan and run by it: nothing waits for it, the splash's 430 ms
- * and the first ~0.27 s of the UI go by under it (the UI's LEDs from its end, or at once on a key or a button down).
+ * and settle on the glow; ~0.70 s), started before the scan and run by it: nothing waits for it, the 3.5 s splash
+ * remains on screen while it finishes (the UI's LEDs from its end, or at once on a key or a button down).
  * Every LEDS setting: it is no idle glow; with DIM HI / DIM LO it ends on that glow (and is drawn over that glow
  * level), with OFF / INV dark. Not with MENU > ANIM OFF (no motion: the LEDs as the UI has them at once), not after a crash (a crash record newer than the last boot saw: the crash screen's
  * reset), a hang (a WDT reset) or a failed boot (bootguard: the last one died within its first 30 s): straight to the
@@ -153,7 +153,8 @@ static void boot_leds(void)
 
 static void fm1_main(void)
 {
-    uint32_t ms;
+    uint32_t splash_started;
+    uint8_t splash_pending = 1;
 #if FELUCCA_CPU2
     uint8_t c1_told = 0;                                /* 2ND CORE MISREAD shown (and ON cleared) */
 #endif
@@ -165,7 +166,8 @@ static void fm1_main(void)
     settings_init();
     usb_serial_apply();                                 /* (#67: the saved USB SERIAL before usb_start) */
     lcd_init();
-    draw_splash();                                      /* ui_draw.c (1.1.5) */
+    draw_splash();                                      /* ui_draw.c */
+    splash_started = fm1_ms;
     if (felucca_dbg.magic != DBG_MAGIC) {
         memset(&felucca_dbg, 0, sizeof felucca_dbg);
         felucca_dbg.magic = DBG_MAGIC;
@@ -211,16 +213,16 @@ static void fm1_main(void)
         settings_save();
     }
     autosave_boot(boot_clean);                /* (1.2) the last session's music, under the splash */
-    for (ms = 0; ms < 400u; ms += 10u) {      /* the splash; the pot followed (MIDI IN plays under it) */
-        fm1_delay_ms(10);
-        master_poll();
-    }
-    kb_boot_hold = 0;
-    lcd_fill(0, 0, 240, 240, T_BG);
-    scrn.idle = fm1_ms;                        /* (MENU > SCREEN OFF: from here) */
 
     for (;;) {
         uint32_t m = fm1_ms;
+        if (splash_pending && !startup_splash_active(m, splash_started)) {
+            splash_pending = 0;
+            kb_boot_hold = 0;
+            lcd_fill(0, 0, 240, 240, T_BG);
+            scrn.idle = m;
+            ui.force = 1;
+        }
         fm1_wdt_feed();
         usb_retry(fm1_ms);
         if (fm1_ms > 30000u && bootguard.pending) {     /* a crash or hang in the first 30 s counts */
@@ -304,15 +306,14 @@ static void fm1_main(void)
         felucca_dbg.page = ui.page;
         felucca_dbg.home = ui.home;
         felucca_dbg.stage = 1;
-        ui_input();
+        if (!splash_pending) ui_input();
         settings_poll();                              /* queued settings save: only while stopped */
         autosave_poll();                              /* (1.2) the music, stopped and idle: project.c */
         felucca_dbg.stage = 2;
-        ui_leds();
-        ui_draw();
+        if (!splash_pending) { ui_leds(); ui_draw(); }
         felucca_dbg.stage = 9;
         while (fm1_ms - m < 15u) {                               /* ~60 UI frames/s at most */
-            ui_input();
+            if (!splash_pending) ui_input();
 #if FELUCCA_OTA
             ed_service();                       /* editor replies without waiting for the next frame */
 #endif

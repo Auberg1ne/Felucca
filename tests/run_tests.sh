@@ -210,6 +210,9 @@ run "storage backend: unresolved flash I/O blocks active transfers" "$OUT/storag
 if [ -f build/gen/felucca_tables.h ]; then
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
+    run "startup image: original checksum, reproducibility and bounded RGB565 rows" python3 tests/boot_splash_test.py
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/boot_splash_test" web/emu/boot_splash_test.c -lm
+    run "startup: exact artwork, 3.5-second deadline, wrap and live MIDI audio" "$OUT/boot_splash_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/synth_audio_test" web/emu/synth_audio_test.c -lm
     run "browser SYNTH: audible SAMPLE/GRAIN, complete seek index and far-end decode" "$OUT/synth_audio_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/branding_test" web/emu/branding_test.c -lm

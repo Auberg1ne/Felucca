@@ -277,6 +277,7 @@ static void cdc_task(void) {}
 
 /* --------------------------------------------------------- the device --- */
 static uint32_t web_booted, web_boot_ms, web_last_frame;
+static uint8_t web_splash_pending;
 
 /* main.c fm1_main's boot, up to the main loop (no USB, no UART, no panel setup) */
 static void web_power_on(void)
@@ -286,6 +287,8 @@ static void web_power_on(void)
     usb_serial_apply();
     lcd_init();
     draw_splash();                        /* main.c: the splash (ui_draw.c) */
+    web_boot_ms = fm1_ms;
+    web_splash_pending = 1;
     memset(&felucca_dbg, 0, sizeof felucca_dbg);
     felucca_dbg.magic = DBG_MAGIC;
     fm1_input_init();
@@ -297,7 +300,6 @@ static void web_power_on(void)
     audio_init();
     boot_leds();                          /* main.c: the power-on LED sweep, from the scan's start */
     autosave_boot(boot_clean);            /* main.c: the last session's music (1.2, project.c) */
-    web_boot_ms = fm1_ms + 430u;         /* main.c: 30 + 400 ms before the first frame */
     web_booted = 1;
 }
 
@@ -339,10 +341,11 @@ static void web_ms(void)
         }
         web_half ^= 1u;
     }
-    if (!web_booted || (int32_t)(fm1_ms - web_boot_ms) < 0)
-        return;
-    if (web_boot_ms) {                                    /* main.c: the splash goes, the loop starts */
-        web_boot_ms = 0;
+    if (!web_booted) return;
+    if (web_splash_pending) {
+        master_poll();
+        if (startup_splash_active(fm1_ms, web_boot_ms)) return;
+        web_splash_pending = 0;                                    /* main.c: the splash goes, the loop starts */
         kb_boot_hold = 0;
         lcd_fill(0, 0, 240, 240, T_BG);
         web_last_frame = fm1_ms - 15u;

@@ -8,7 +8,7 @@ int main(void)
 {
     web_nor_erase();web_boot();
     /* Public browser render entrypoint: real MIDI, envelope, mixer and float output. */
-    for(unsigned i=0;i<200;i++)web_render(128); /* finish splash */
+    for(unsigned i=0;i<1400;i++)web_render(128); /* finish splash */
     host_preset(&trk[0],ENGI_GRAIN,0);trk[0].p[P_E0]=13;trk[0].p[P_GCUT]=100;
     web_midi(0x90,60,127);
     double web_energy=0;unsigned web_nonzero=0;double web_peak=0;

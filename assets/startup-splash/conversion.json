@@ -1,0 +1,25 @@
+{
+  "source_sha256": "68e4a4c9190aeb789f88c408c6d67dfc71b68bf92f742bc4ea205ac8cfebed30",
+  "source_size": [
+    1402,
+    1122
+  ],
+  "display": [
+    240,
+    240
+  ],
+  "art_rect": [
+    0,
+    12,
+    240,
+    192
+  ],
+  "credit": "CREATED BY Auberg1ne",
+  "pillow": "13.0.0",
+  "rgb565_sha256": "715957ea3ad1361c7d719f092ac9fd96128f98b1defa92463c37df228e50fd83",
+  "encoded_bytes": 37761,
+  "palette_bytes": 512,
+  "row_table_bytes": 482,
+  "total_asset_bytes": 38755,
+  "raw_rgb565_bytes": 115200
+}

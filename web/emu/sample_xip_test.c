@@ -102,7 +102,7 @@ static int valid_boot(uint32_t unused)
 static int render_slot(uint32_t which)
 {
     fixture(0); web_boot();
-    for (uint32_t n = 0; n < 180; n++) web_render(128); /* past splash/keyboard hold */
+    for (uint32_t n = 0; n < 1400; n++) web_render(128); /* past splash/keyboard hold */
     uint32_t k = which % 8, engine = which / 8 == 0 ? ENGI_SAMPLE : which / 8 == 1 ? ENGI_GRAIN : 13;
     track_t *t = &trk[0]; host_preset(t, engine, 0);
     t->p[P_E0] = engine == 13 ? (k < 3 ? k + 1 : k + 2) : SMP_NSETS + k;
