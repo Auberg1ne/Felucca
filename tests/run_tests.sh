@@ -221,6 +221,16 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "HOME levels: identical audio with split part ownership" cmp "$OUT/home_levels_on.pcm" "$OUT/home_levels_dual.pcm"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_visuals_test" web/emu/mixer_visuals_test.c -lm
+    run "MIXER: real values, controls, selection, indicators and 240x240 bounds" "$OUT/mixer_visuals_test"
+    for MIXER in 0 1; do
+        $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=1 -DCOFFEE_MIXER_VISUALS=$MIXER -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_nav_$MIXER" tests/mixer_navigation_test.c -lm
+        run "MIXER navigation (renderer $MIXER)" "$OUT/mixer_nav_$MIXER" "$OUT/mixer_nav_$MIXER.bin"
+        $CC -w -ffp-contract=off -DCOFFEE_MIXER_VISUALS=$MIXER -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_audio_$MIXER" web/emu/mixer_audio_test.c -lm
+        run "MIXER playing/editing audio (renderer $MIXER)" "$OUT/mixer_audio_$MIXER" "$OUT/mixer_audio_$MIXER.f32"
+    done
+    run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
+    run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_step_icons_test" tests/home_step_icons_test.c -lm
     run "HOME sequencer: stored-note beans, rests, channels, SONG/banks and independent playhead" "$OUT/home_step_icons_test"
     run "HOME sprites: reference hashes, reproducibility and 12 bounded RGB565 poses" python3 tests/home_sprites_test.py

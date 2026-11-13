@@ -381,9 +381,11 @@ static const page_t *cur_page(void) { return page_over ? page_over : &PAGES[ui.p
  *            is, the card labels in M;
  *   LK_OFF   LARGE off; the menu (its own LARGE: ui_menu.c), the dialogs and NAME keep their own layout in every case. */
 enum { LK_OFF, LK_LABEL, LK_TALL };
+static int mixer_visuals_page(void);
 static uint32_t large_kind(void)
 {
     uint32_t g;
+    if(mixer_visuals_page())return (ui_prefs&PREF_LARGE)?LK_LABEL:LK_OFF;
     if (!(ui_prefs & PREF_LARGE))
         return LK_OFF;
     if (ui.layer)
