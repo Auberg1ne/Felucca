@@ -1646,7 +1646,12 @@ static void ui_draw(void)
        scrn.st != SCR_ON || kb_boot_hold) scientists_hide();
 #endif
 #if COFFEE_MIXER_VISUALS
-    if(!mixer_visuals_page() || scrn.st!=SCR_ON || kb_boot_hold)mixer_visuals.valid=0;
+    if(!mixer_visuals_page() || scrn.st!=SCR_ON || kb_boot_hold) {
+        mixer_visuals.valid=0;
+#if COFFEE_MIXER_TOP_KNOBS
+        mixer_top.valid=0;
+#endif
+    }
 #endif
     ui.frame++;
     if (counting != (uint8_t)seq_counting()) {          /* a count-in began or ended: the page drawn again after it */
@@ -1716,7 +1721,12 @@ static void ui_draw_page(uint32_t counting)
     else if(mixer_visuals_page()) {
         if(ui.force)draw_frame();
         scientist_header(ui.force || !mixer_visuals.valid);
-        draw_columns();draw_mixer_visuals();
+#if COFFEE_MIXER_TOP_KNOBS
+        draw_mixer_top_knobs();
+#else
+        draw_columns();
+#endif
+        draw_mixer_visuals();
     }
 #endif
     else {

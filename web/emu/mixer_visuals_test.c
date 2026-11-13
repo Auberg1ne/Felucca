@@ -23,6 +23,7 @@ static void picture(const char *path)
  if(!path)return;FILE*f=fopen(path,"wb");if(!f)return;fprintf(f,"P6\n240 240\n255\n");
  for(unsigned i=0;i<240*240;i++){unsigned v=swap16(web_fb[i]);unsigned char rgb[]={((v>>11)&31)*255/31,((v>>5)&63)*255/63,(v&31)*255/31};fwrite(rgb,3,1,f);}fclose(f);
 }
+#ifndef MIXER_VISUALS_NO_MAIN
 int main(int argc,char **argv)
 {
  web_nor_erase();web_boot();while(fm1_ms<3500)web_ms();
@@ -33,7 +34,13 @@ int main(int argc,char **argv)
  for(unsigned c=0;c<4;c++)for(unsigned k=0;k<4;k++)trk[c].p[ids[k]]=values[c][k];
  for(unsigned c=0;c<4;c++) {
   song.sel=c;ui.force=1;captured_n=0;ui_draw();
-  for(unsigned k=0;k<4;k++){char expected[16];const char *unit;param_format(&TP[ids[k]],trk[c].p[ids[k]],expected,&unit);REQUIRE(seen(expected));}
+  for(unsigned k=0;k<4;k++){char expected[16];const char *unit;param_format(&TP[ids[k]],trk[c].p[ids[k]],expected,&unit);
+#if COFFEE_MIXER_TOP_KNOBS
+   char formatted[24];snprintf(formatted,sizeof formatted,"%s%s%s",expected,*unit?" ":"",unit);REQUIRE(seen(formatted));
+#else
+   REQUIRE(seen(expected));
+#endif
+  }
   REQUIRE(web_fb[Y_GRAPH*240+(unsigned)CARD_X(c)]==swap16(HOME_ACCENT[c]));
   for(unsigned k=0;k<4;k++) {
    int16_t before=trk[c].p[ids[k]];int direction=before==TP[ids[k]].max?-1:1;
@@ -61,3 +68,5 @@ int main(int argc,char **argv)
  REQUIRE(!bad_rects && !strip_clips && !value_clips);printf("MIXER visuals: %u checks passed; state %zu B, new bitmap bytes 0, text clips %u\n",checks,sizeof mixer_visuals,clipped_text);
  return 0;
 }
+
+#endif

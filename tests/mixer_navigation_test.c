@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Build with COFFEE_HOME_VISUALS=0/1; compare parameter/navigation traces and
- * every non-HOME framebuffer. This never asserts obsolete HOME pixel goldens. */
+/* Compare MIXER enabled/disabled navigation and non-MIXER pixels.
+ * MIXER_TOP_COMPARISON additionally records all MIXER pixels outside y28..71,
+ * proving the circular controls leave the header, strips and footer unchanged. */
 #define UI_TEST_NO_MAIN 1
 #include "ui_test.c"
 static unsigned snapshots;
@@ -11,6 +12,10 @@ static void snapshot(FILE *f)
     for(unsigned p=0;p<4;p++)fwrite(trk[p].p,sizeof trk[p].p,1,f);
     int mixer=!ui.home && !ui.menu && !ui.layer && !ui.confirm && cur_page()->scope==SC_TRK && cur_page()->graph==GR_TRK;
     if(!mixer)fwrite(host_screen,sizeof host_screen,1,f);
+#ifdef MIXER_TOP_COMPARISON
+    else { fwrite(host_screen,240*28*sizeof host_screen[0],1,f);
+           fwrite(host_screen+240*72,240*(240-72)*sizeof host_screen[0],1,f); }
+#endif
     fwrite(&ui_prefs,sizeof ui_prefs,1,f);fwrite(&ui_prefs2,sizeof ui_prefs2,1,f);
     fwrite(song.g,sizeof song.g,1,f);
     snapshots++;

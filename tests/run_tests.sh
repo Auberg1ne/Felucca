@@ -231,6 +231,16 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_top_knobs_test" web/emu/mixer_top_knobs_test.c -lm
+    run "MIXER knobs: full ranges, formatted units, channel accents and binary mute" "$OUT/mixer_top_knobs_test"
+    for TOP in 0 1; do
+        $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=1 -DMIXER_TOP_COMPARISON=1 -DCOFFEE_MIXER_TOP_KNOBS=$TOP -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_top_nav_$TOP" tests/mixer_navigation_test.c -lm
+        run "MIXER top navigation ($TOP)" "$OUT/mixer_top_nav_$TOP" "$OUT/mixer_top_nav_$TOP.bin"
+        $CC -w -ffp-contract=off -DCOFFEE_MIXER_TOP_KNOBS=$TOP -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_top_audio_$TOP" web/emu/mixer_audio_test.c -lm
+        run "MIXER top audio ($TOP)" "$OUT/mixer_top_audio_$TOP" "$OUT/mixer_top_audio_$TOP.f32"
+    done
+    run "MIXER top: identical navigation and pixels outside upper controls" cmp "$OUT/mixer_top_nav_0.bin" "$OUT/mixer_top_nav_1.bin"
+    run "MIXER top: bit-identical audio" cmp "$OUT/mixer_top_audio_0.f32" "$OUT/mixer_top_audio_1.f32"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_step_icons_test" tests/home_step_icons_test.c -lm
     run "HOME sequencer: stored-note beans, rests, channels, SONG/banks and independent playhead" "$OUT/home_step_icons_test"
     run "HOME sprites: reference hashes, reproducibility and 12 bounded RGB565 poses" python3 tests/home_sprites_test.py

@@ -3,6 +3,9 @@
 #ifndef COFFEE_MIXER_VISUALS
 #define COFFEE_MIXER_VISUALS COFFEE_HOME_VISUALS
 #endif
+#ifndef COFFEE_MIXER_TOP_KNOBS
+#define COFFEE_MIXER_TOP_KNOBS COFFEE_MIXER_VISUALS
+#endif
 static int mixer_visuals_page(void)
 {
     return COFFEE_MIXER_VISUALS && !ui.home && !ui.menu && !ui.layer && !ui.confirm &&
@@ -33,6 +36,44 @@ static void mixer_ring(int32_t cx,int32_t cy,int32_t value,int32_t lo,int32_t hi
     uint32_t i=(uint32_t)(clamp(value,lo,hi)-lo)*8u/(uint32_t)(hi-lo);
     cv_line(cx,cy,cx+dir[i][0],cy+dir[i][1],color);
 }
+#if COFFEE_MIXER_TOP_KNOBS
+/* Upper cells only: reuse the existing canvas, parameter formats and ranges. */
+static struct {uint32_t sig[4];uint8_t valid;} mixer_top;
+static const uint8_t MIXER_TOP_ID[4]={P_LEVEL,P_PAN,P_REV,P_MUTE};
+static const char *const MIXER_TOP_LABEL[4]={"LEVEL","PAN","REV","MUTE"};
+static void mixer_binary_indicator(int32_t x,int32_t y,int on,uint16_t color)
+{
+    /* Closed rim plus binary center: mute has no continuous position. */
+    for(int32_t dy=-7;dy<=7;dy++)for(int32_t dx=-7;dx<=7;dx++) {
+        int32_t r=dx*dx+dy*dy;
+        if((r>=36 && r<=55) || (on && r<=16))cv_pset(x+dx,y+dy,color);
+    }
+}
+static void draw_mixer_top_knobs(void)
+{
+    const track_t *t=TSEL;uint16_t color=HOME_ACCENT[song.sel&3u];
+    cv_oy=0;cv_scroll=0;cv_flip=0;
+    for(unsigned k=0;k<4;k++) {
+        unsigned id=MIXER_TOP_ID[k];const param_desc_t *d=&TP[id];int32_t value=t->p[id];
+        int hot=ui.hot_t && ui.hot_col==k;
+        uint32_t sig=(uint32_t)(value-d->min)|((song.sel&3u)<<16)|((uint32_t)hot<<18);
+        if(!ui.force && mixer_top.valid && sig==mixer_top.sig[k])continue;
+        mixer_top.sig[k]=sig;
+        char val[16],text[24];const char *unit;param_format(d,value,val,&unit);
+        str_cpy(text,val,sizeof text);
+        if(unit[0]){str_cpy(text+str_len(text)," ",2);str_cpy(text+str_len(text),unit,sizeof text-str_len(text));}
+        cv_begin(CARD_W,CARD_H,0);
+        cv_text_in(2,0,CARD_W-4,&AF_S,MIXER_TOP_LABEL[k],0xffff,0);
+        if(hot)cv_rect(24,12,9,1,color);
+        if(id==P_MUTE)mixer_binary_indicator(28,21,value!=0,color);
+        else mixer_ring(28,21,value,d->min,d->max,color);
+        cv_text_in(2,31,CARD_W-4,&AF_S,text,0xffff,0);
+        cv_blit((uint32_t)CARD_X(k),Y_LABEL);
+        fmt_named=0;
+    }
+    mixer_top.valid=1;
+}
+#endif
 static void mixer_visuals_strip(uint32_t c)
 {
     const track_t *t=&trk[c];uint16_t color=HOME_ACCENT[c];char text[16];
