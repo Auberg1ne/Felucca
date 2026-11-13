@@ -207,7 +207,18 @@ run "SLICE metadata: dynamic samples and staging sectors are never accessed" "$O
 $CC -o "$OUT/storage_fault_gate_test" tests/storage_fault_gate_test.c
 run "storage backend: unresolved flash I/O blocks active transfers" "$OUT/storage_fault_gate_test"
 
+$CC -o "$OUT/home_levels_unit_test" tests/home_levels_unit_test.c
+run "HOME levels: smoothing, independent mailboxes, intensity, rest, timing and bounds" "$OUT/home_levels_unit_test"
+
 if [ -f build/gen/felucca_tables.h ]; then
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_levels_test" tests/home_levels_test.c -lm
+    run "HOME levels: actual four-part audio, stereo spread and hidden-page gating" "$OUT/home_levels_test" "$OUT/home_levels_on.pcm"
+    $CC -w -ffp-contract=off -DFELUCCA_HOME_LEVELS=0 -Ibuild/gen -Ifirmware/src -o "$OUT/home_levels_reference" tests/home_levels_test.c -lm
+    run "HOME levels: identical gestures with the instrumentation disabled" "$OUT/home_levels_reference" "$OUT/home_levels_off.pcm"
+    run "HOME levels: instrumentation does not change audio samples" cmp "$OUT/home_levels_on.pcm" "$OUT/home_levels_off.pcm"
+    $CC -w -ffp-contract=off -DC1_HOST -pthread -Ibuild/gen -Ifirmware/src -o "$OUT/home_levels_dual" tests/home_levels_test.c -lm
+    run "HOME levels: two-core part isolation through the existing join" "$OUT/home_levels_dual" "$OUT/home_levels_dual.pcm"
+    run "HOME levels: identical audio with split part ownership" cmp "$OUT/home_levels_on.pcm" "$OUT/home_levels_dual.pcm"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/sample_delete_test" tests/sample_delete_test.c -lm
     run "sample deletion: tombstones, physical NOR and every-byte power cuts" "$OUT/sample_delete_test"
     run "startup image: original checksum, reproducibility and bounded RGB565 rows" python3 tests/boot_splash_test.py

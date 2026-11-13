@@ -2,6 +2,8 @@
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
 /* Effects: per-track DIST and INSERT (1.5), then sends into three
  * shared buses (chorus, tempo delay, reverb). Mono buses, stereo dry mix. */
+#include "home_levels.h"
+_Static_assert(NPART == HOME_LEVEL_CHANNELS, "HOME channel mapping");
 #define DLY_LEN 65536u           /* 1.49 s: 1/4 fits from 41 BPM, 1/4D from 61, 1/2 from 81 */
 #define CHO_LEN 2048u
 static int16_t dly_buf[DLY_LEN] __attribute__((section(".pool")));
@@ -825,6 +827,7 @@ static int32_t send_c[CTL], send_d[CTL], send_r[CTL], wet[CTL], mix_l[CTL], mix_
 static __attribute__((noinline)) void mix_spread(track_t *t, int32_t *b, uint32_t n SM_DECL)
 {
     int32_t *d = SPREAD_BUF(t);
+    uint32_t home_pk = 0;
     uint32_t i;
     int32_t lvl = LEVEL_Q12[t->p[P_LEVEL] & 127], pan = t->p[P_PAN], s = (t->p[P_SPRD] + 1) >> 1;
     int32_t pa = clamp(pan - s, -64, 63), pb = clamp(pan + s, -64, 63);
@@ -853,10 +856,14 @@ static __attribute__((noinline)) void mix_spread(track_t *t, int32_t *b, uint32_
             SM(d)[i] += mulq15(xs, dl);
         if (r)
             SM(v)[i] += mulq15(xs, r);
-        SM(l)[i] += ((x * glm) >> 12) + ((y * gld) >> 12);
-        SM(r)[i] += ((x * grm) >> 12) + ((y * grd) >> 12);
+        int32_t left = ((x * glm) >> 12) + ((y * gld) >> 12);
+        int32_t right = ((x * grm) >> 12) + ((y * grd) >> 12);
+        home_pk = home_level_peak(home_pk, left, right);
+        SM(l)[i] += left;
+        SM(r)[i] += right;
     }
     t->peak = pk;
+    home_level_end((uint32_t)(t - trk), home_pk);
 }
 
 /* a part's cost for the second core's split (mix_split, after Jangada's): its voices x its engine's cost per
@@ -879,6 +886,7 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
 {
     int32_t *b = SM(b);
     uint32_t i;
+    home_level_begin((uint32_t)(t - trk));
 #if FELUCCA_CPU2
     uint32_t nr;
 #endif
@@ -913,6 +921,7 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
     }
     if (!T_SPREAD(t)) {                                /* (the mix's values read after the calls: none is held over
                                                          * them, no spill in the loop: the ISR's cost as before 1.5) */
+        uint32_t home_pk = 0;
         int32_t lvl = LEVEL_Q12[t->p[P_LEVEL] & 127], pan = t->p[P_PAN];
         int32_t gl = 4096 - (pan > 0 ? pan * 64 : 0), gr = 4096 + (pan < 0 ? pan * 64 : 0);
         int32_t c = t->p[P_CHOR] * 258, d = t->p[P_DLY] * 258, r = t->p[P_REV] * 258, pk = t->peak;
@@ -929,10 +938,13 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
                 SM(d)[i] += mulq15(xs, d);
             if (r)
                 SM(v)[i] += mulq15(xs, r);
-            SM(l)[i] += (x * gl) >> 12;
-            SM(r)[i] += (x * gr) >> 12;
+            int32_t left = (x * gl) >> 12, right = (x * gr) >> 12;
+            home_pk = home_level_peak(home_pk, left, right);
+            SM(l)[i] += left;
+            SM(r)[i] += right;
         }
         t->peak = pk;
+        home_level_end((uint32_t)(t - trk), home_pk);
     }
     if (pf.thr)
         perf_throw(t, b, SM(d), SM(v), n);              /* perform.c: REV / ECHO THROW (1.5.1), the sends towards full */
@@ -1064,6 +1076,7 @@ static void mix_block(int32_t *out, uint32_t n)
     for (i = 0; i < NPART; i++)                         /* (one core: as 1.6) */
         mix_part(&trk[i], n);
 #endif
+    home_level_publish(n); /* core 0 only, after C1_WAIT and all part writes */
     if (perf)
         perf_pre(mix_l, mix_r, send_d, send_r, n);
     fx_buses(send_c, send_d, send_r, wet, n);

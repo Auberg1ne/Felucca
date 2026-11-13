@@ -1582,6 +1582,14 @@ static void style_apply(void)
     }
 }
 
+/* Prepared consumer for approved future sprites; intentionally not drawn yet. */
+static uint32_t home_levels_poll(home_level_view_t *view, uint32_t now)
+{
+    int visible = ui.home && !ui.menu && !ui.layer && !ui.confirm && !ui.uboot &&
+        !name_on() && !seq_counting() && scrn.st == SCR_ON && !kb_boot_hold;
+    return home_level_frame(view, now, visible);
+}
+
 static void ui_draw_page(uint32_t counting);
 static void ui_draw(void)
 {
