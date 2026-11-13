@@ -1,23 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
-"""Build IMA ADPCM factory samples without changing persisted source IDs.
-
-Current audio: GUITAR, VOICE, HIT, FLUTE and SAX. Sources 0..4 retain
-GUITAR / alias / VOICE / HIT / alias; sources 5..12 remain USR1..8.
-FLUTE and SAX append at source 13/14, factory/preset index 5/6.
-Preset indices 0..4 remain unchanged; retired PERC preset 4 still migrates
-SAMPLE to DRUM. Alias presets 1/4 are hidden from factory browsing.
-
-FLUTE/SAX use documented Versilian CC0 assets. GUITAR/VOICE/HIT retain
-exact existing audio; their unverified provenance is documented separately
-in docs/factory-samples.md. A directory name is not a licensing assertion.
-
-SLICE source 4 retains the shared GUITAR middle-C zone. Internal SLC_PIANO_*
-names are retained for compatibility; the displayed source name is GUITAR.
-BREAK follows all factory audio and remains generated from CC0 gen_waves.py.
-The FSMP user-slot export helper and 480-byte header format are unchanged.
+"""Generate browser-preview factory IMA ADPCM; see docs/factory-samples.md.
+Original PCM frames, rate and gain are preserved; IDs and aliases remain stable.
 """
+import json
+import wave
 import hashlib
 import math
 import os
@@ -39,7 +27,8 @@ TR = 22050                                   # stored sample rate
 
 # Factory table order is stable and distinct from persisted source IDs.
 # The legacy aliases occupy indices 1 and 4; new factories append at 5 and 6.
-CC0_SETS = [("GUITAR", "oneshot"), ("GUITAR", "alias"), ("VOICE", "sus"), ("HIT", "oneshot"), ("GUITAR", "alias"), ("FLUTE", "sus"), ("SAX", "sus")]
+CC0_SETS = [("CELLO", "sus"), ("CELLO", "alias"), ("FLUTE", "oneshot"), ("GUITAR", "oneshot"), ("CELLO", "alias"), ("SYNTH", "oneshot"), ("VOX", "oneshot")]
+PREVIEW = SRC / "assets" / "factory-preview"
 PERC_SLOT = 4                                # core.h SMP_SET_PERC: hidden historical preset, never repurposed
 MEASURED_TUNING = ()                         # sets whose recordings are not at A440 (was TRANH, ~+35 ct)
 
@@ -62,7 +51,7 @@ BREAK_HITS = [(0, "kick", 1.0), (0, "chh", 0.55), (2, "kick", 0.7), (2, "chh", 0
               (4, "chh", 0.45), (6, "chh", 0.4), (7, "kick", 0.8), (8, "chh", 0.55), (9, "snare", 0.3),
               (10, "kick", 0.9), (10, "ohh", 0.4), (12, "snare", 1.0), (12, "chh", 0.45), (14, "chh", 0.4),
               (14, "snare", 0.35)]
-SLC_PIANO_NOTE = 60                          # SLICE's SRC PIANO: the PIANO zone of this root (middle C)
+SLC_PIANO_NOTE = 60                          # compatibility macro; GUITAR audition anchor (pitch unresolved)
 SLC_GRID, SLC_AUTO = 128, 32                # eng_slice.c slc_src_t
 
 ENV = {"wave":(5, 80, 100, 50), "kit": (0, 127, 127, 60), "multi": (0, 85, 0, 75),
@@ -244,16 +233,15 @@ class Builder:
         self.brk = dict(off=off, n=n, grid=grid, apos=hits, ast=ima_states(data, hits))
 
     def slice_piano(self):
-        """SLICE's PIANO: the PIANO set's SLC_PIANO_NOTE zone (its data, no copy); its slice table: decoder states
-        at k * len / SLC_GRID, one AUTO slice at 0 (a single note has one attack)"""
+        """SLICE source 4: share the new GUITAR zone, independent of factory index/root."""
         z = next((z for name, z0, nz in self.sets if name == "GUITAR"
-                  for z in self.zones[z0:z0 + nz] if z["root16"] == SLC_PIANO_NOTE * 16), None)
+                  for z in self.zones[z0:z0 + nz]), None)
         if not z:
             return
         off, n = z["off"], z["n"]
         data = self.blob[off:off + (n + 1) // 2]
         grid = ima_states(data, [k * n // SLC_GRID for k in range(SLC_GRID)])
-        self.pno = dict(off=off, n=n, grid=grid, apos=[0], ast=ima_states(data, [0]))
+        self.pno = dict(off=off, n=n, sr=z["sr"], grid=grid, apos=[0], ast=ima_states(data, [0]))
 
     def add(self, s, loop_start):
         """ADPCM-encode s into the blob (each sample starts on an even offset) -> (offset, state at loop_start)"""
@@ -294,6 +282,34 @@ class Builder:
                                 root16=int(round(root * 16)), pred=st[0], idx=st[1],
                                 key=KIT_BASE + k if kind == "kit" else None))
         self.add_set(name, kind, entries)
+
+    def preview_set(self, name, kind):
+        records = json.loads((PREVIEW / "manifest.json").read_text())
+        record = next(r for r in records if r["display_name"] == name)
+        path = PREVIEW / record["file"]
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != record["sha256"]:
+            raise ValueError(f"factory source checksum mismatch: {path}")
+        with wave.open(str(path)) as w:
+            if (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) != (1, 2, 44100, record["frames"]):
+                raise ValueError(f"unexpected factory PCM format: {path}")
+            n = w.getnframes()
+            samples = struct.unpack(f"<{n}h", w.readframes(n))
+        # Unknown pitch uses a documented MIDI-60 audition anchor, not a measured root.
+        root, ls, le, looped = 60, n, n, False
+        if name == "CELLO":
+            chunks = sio.wav_chunks(raw)
+            o, size = chunks[b"smpl"]
+            if size != 60:
+                raise ValueError("CELLO sampler metadata changed")
+            header = struct.unpack_from("<9I", raw, o)
+            cue, typ, ls, le, fraction, count = struct.unpack_from("<6I", raw, o + 36)
+            if header[3:5] != (60, 0) or header[7] != 1 or typ != 0 or fraction or count or not 0 <= ls <= le < n:
+                raise ValueError("unsupported CELLO sampler metadata")
+            root, looped = header[3], True
+        off, state = self.add(samples, ls)
+        self.add_set(name, kind, [dict(off=off, n=n, ls=ls, le=le, looped=looped,
+            sr=44100, root16=root*16, pred=state[0], idx=state[1], key=None)])
 
     def header(self):
         zones, sets, blob = self.zones, self.sets, self.blob
@@ -355,7 +371,7 @@ class Builder:
     @staticmethod
     def slc_init(name, b):
         """an eng_slice.c slc_src_t initializer (len, rate, nseg, nauto, seg[], grid[], apos[], ast[])"""
-        rate = int(round(TR / 44100 * 65536))
+        rate = int(round(b.get("sr", TR) / 44100 * 65536))
 
         def lst(v, k):
             v = list(v) + [0] * (k - len(v))
@@ -378,7 +394,7 @@ class Builder:
         b = self.pno
         if not b:
             return ["#define SLC_PIANO_INIT {0}"]
-        return ["", f"/* SLICE source 4 (GUITAR): the shared zone of MIDI {SLC_PIANO_NOTE} ({b['n']} samples at SMP_DATA[{b['off']}]) */",
+        return ["", f"/* SLICE source 4 (GUITAR): the shared audition zone at MIDI {SLC_PIANO_NOTE} (root unresolved) ({b['n']} samples at SMP_DATA[{b['off']}]) */",
                 f"#define SLC_PIANO_NOTE {SLC_PIANO_NOTE}"] + self.slc_init("SLC_PIANO_INIT", b)
 
     def summary(self):
@@ -400,7 +416,7 @@ def input_key(have_cc0):
     for p in (here / "gen_samples.py", here / "sampleio.py"):
         h.update(p.read_bytes())
     h.update(repr((sys.version_info[:2], have_cc0, slice_on())).encode())   # sum() differs across versions
-    files = sorted(GENDIR.glob("*.wav"))
+    files = sorted(GENDIR.glob("*.wav")) + sorted(PREVIEW.glob("*"))
     if have_cc0:
         files += sorted(CC0.glob("*/*.wav"))
     for p in files:
@@ -411,9 +427,9 @@ def input_key(have_cc0):
 
 def main(out):
     subprocess.run([sys.executable, str(Path(__file__).with_name("gen_waves.py")), str(GENDIR)], check=True)
-    have_cc0 = CC0.exists() and any(CC0.glob("*/*.wav"))
+    have_cc0 = PREVIEW.exists()
     if not have_cc0:
-        print("samples: CC0 library not fetched (tools/fetch_cc0.py) - no SAMPLE sets")
+        raise ValueError("verified factory-preview originals are required")
     key = input_key(have_cc0)
     try:
         ck, summary, text = CACHE.read_text().split("\n", 2)
@@ -429,7 +445,7 @@ def main(out):
             if kind == "alias":
                 b.alias_set(name)
             else:
-                b.cc0_set(name, kind)
+                b.preview_set(name, kind)
     if slice_on():                                  # SLICE's BREAK: only when that engine is built
         b.slice_break()                             # last: the sets' offsets stay as they were
         b.slice_piano()                             # (no data of its own: the PIANO set's)

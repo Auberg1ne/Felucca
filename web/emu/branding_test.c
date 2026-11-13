@@ -26,7 +26,7 @@ int main(void)
     REQUIRE(branded>0 && old_brand==0);
     REQUIRE(P_COUNT==118 && PROJ_STORE_SIZE==3840 && SMP_NALL==15 && SMP_USER_SLOTS==8);
     REQUIRE(smp_user_from_source(5)==0 && smp_user_from_source(12)==7);
-    REQUIRE(!strcmp(SMP_ALL_NAMES[13],"FLUTE") && !strcmp(SMP_ALL_NAMES[14],"SAX"));
+    REQUIRE(!strcmp(SMP_ALL_NAMES[13],"SYNTH") && !strcmp(SMP_ALL_NAMES[14],"VOX"));
     printf("browser branding: %u checks passed; splash/About names fit existing fonts\n",checks);
     return 0;
 }

@@ -22,7 +22,7 @@ int main(void)
 {
     ui_power_on();
     const unsigned sources[]={0,2,3,13,14},presets[]={0,2,3,5,6};
-    const char *names[]={"GUITAR","VOICE","HIT","FLUTE","SAX"};
+    const char *names[]={"CELLO","FLUTE","GUITAR","SYNTH","VOX"};
     REQUIRE(SMP_NSETS==5 && SMP_NFACTORY==7 && SMP_NALL==15);
     REQUIRE(ENG_SAMPLE.npresets==7 && preset_shown(ENGI_SAMPLE)==5);
     REQUIRE(ENG_SAMPLE.edit[0].max==14 && ENG_GRAIN.edit[0].max==14);
@@ -38,7 +38,7 @@ int main(void)
     REQUIRE(smp_source_orig(1)==0 && smp_source_orig(4)==0);
     REQUIRE(preset_orig(&ENG_SAMPLE,1)==0 && preset_orig(&ENG_SAMPLE,4)==0);
     REQUIRE(!strcmp(N_SLC_SRC[4],"GUITAR") && SLC_SRC_PIANO==4);
-    REQUIRE(SLC_PIANO.seg[0].off==SMP_ZONES[SMP_SETS[0].z0].off);
+    REQUIRE(SLC_PIANO.seg[0].off==SMP_ZONES[SMP_SETS[3].z0].off);
     uint32_t hashes[5];
     for(unsigned i=0;i<5;i++) {
         unsigned f=smp_factory_from_source(sources[i]);
@@ -68,7 +68,19 @@ int main(void)
         { int rc=up_store(i+5,names[i]);REQUIRE(rc==0 || rc==3); }
         TSEL->p[P_E0]=0;REQUIRE(up_load(i+5)==0 && TSEL->p[P_E0]==sources[i]);
     }
-    REQUIRE(hashes[0]==0x2cda0c61u && hashes[1]==0x276769ebu && hashes[2]==0x4780ccc7u);
+    /* New recordings deliberately replace historical render hashes. Check complete
+     * decode lengths and the verified CELLO loop independently of the UI. */
+    const unsigned lengths[]={176924,125317,73071,275098,66150};
+    for(unsigned i=0;i<5;i++) {
+        const smp_zone_t *z=&SMP_ZONES[SMP_SETS[presets[i]].z0];
+        REQUIRE(z->n==lengths[i] && z->rate==65536u);
+        voice_t v={0};for(unsigned j=0;j<z->n;j++) sample_next(z,&v,0);
+        REQUIRE(v.ph[0]==z->n);
+        if(i==0) { memset(&v,0,sizeof v);for(unsigned j=0;j<z->n;j++)sample_next(z,&v,1);
+            REQUIRE(v.ph[0]==0 && v.s[0]==z->pred && v.s[1]==z->idx); }
+        else REQUIRE(!z->looped);
+    }
+    REQUIRE(SLC_PIANO.len==73071 && SLC_PIANO.rate==65536u);
     REQUIRE(audio(1)==hashes[0] && audio(4)==hashes[0]);
     memset(up_bank,0,sizeof up_bank);memset(&favorites,0,sizeof favorites);
     set_engine_of(TSEL,ENGI_SAMPLE);

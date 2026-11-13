@@ -8,14 +8,14 @@ const proto=html.slice(html.indexOf('/*PROTO-BEGIN*/'),html.indexOf('/*PROTO-END
 const E=vm.runInNewContext(proto+';({enumShown,aliasOf,F})',{setTimeout,clearTimeout,setInterval,clearInterval,console});
 let checks=0;
 const same=(a,b)=>{checks++;assert.deepEqual(Array.from(a),b);};
-const names=['GUITAR','GUITAR','VOICE','HIT','GUITAR',...Array.from({length:8},(_,i)=>`USR${i+1}`),'FLUTE','SAX'];
+const names=['CELLO','CELLO','FLUTE','GUITAR','CELLO',...Array.from({length:8},(_,i)=>`USR${i+1}`),'SYNTH','VOX'];
 const want=[0,2,3,13,14,5,6,7,8,9,10,11,12];
 const visible=(d)=>Array.from(E.enumShown(d)).filter(v=>E.aliasOf(d.names,v-d.min)===v-d.min);
 for(const label of ['SET','SRC']) {
  const d={label,fmt:E.F.ENUM,min:0,max:14,names:[...names]};
  same(visible(d),want);
  same(E.enumShown(d),[0,1,4,2,3,13,14,5,6,7,8,9,10,11,12]);
- same(visible(d).map(v=>d.names[v]),['GUITAR','VOICE','HIT','FLUTE','SAX',...names.slice(5,13)]);
+ same(visible(d).map(v=>d.names[v]),['CELLO','FLUTE','GUITAR','SYNTH','VOX',...names.slice(5,13)]);
  same(visible(d).reverse(),[...want].reverse());
  same(Array.from(E.enumShown(d)).sort((a,b)=>a-b),Array.from({length:15},(_,i)=>i));
  same(d.names,names); // sorting never mutates descriptor indices or labels

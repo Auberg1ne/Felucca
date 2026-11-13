@@ -7,7 +7,7 @@ static unsigned checks;
 int main(void)
 {
     static const uint8_t order[] = {0,2,3,13,14,5,6,7,8,9,10,11,12};
-    static const char *const names[] = {"GUITAR","VOICE","HIT","FLUTE","SAX","USR1","USR2","USR3","USR4","USR5","USR6","USR7","USR8"};
+    static const char *const names[] = {"CELLO","FLUTE","GUITAR","SYNTH","VOX","USR1","USR2","USR3","USR4","USR5","USR6","USR7","USR8"};
     static const uint8_t engines[] = {ENGI_SAMPLE, ENGI_GRAIN};
     for (unsigned e=0;e<NELEM(engines);e++) {
         ui_power_on(); set_engine_of(TSEL,engines[e]);

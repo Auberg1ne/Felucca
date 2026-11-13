@@ -1,0 +1,52 @@
+[
+  {
+    "order": 1,
+    "file": "CELLO.wav",
+    "display_name": "CELLO",
+    "channels": 1,
+    "sample_rate": 44100,
+    "bit_depth": 16,
+    "frames": 176924,
+    "sha256": "37136a7302daa810a29f1b38c92d8b0ea582189feab3ab2a1b24411fedc468d3"
+  },
+  {
+    "order": 2,
+    "file": "FLUTE.wav",
+    "display_name": "FLUTE",
+    "channels": 1,
+    "sample_rate": 44100,
+    "bit_depth": 16,
+    "frames": 125317,
+    "sha256": "09f0ae25348d05bcc17c49579b847c05d603853af4796e4a450efbb2d2a2f103"
+  },
+  {
+    "order": 3,
+    "file": "GUITAR.wav",
+    "display_name": "GUITAR",
+    "channels": 1,
+    "sample_rate": 44100,
+    "bit_depth": 16,
+    "frames": 73071,
+    "sha256": "9907ef1bfc03b4fe9b2acb941c1c06c5a68b70255f1aa83917cfded97089cb62"
+  },
+  {
+    "order": 4,
+    "file": "SYNTH wav.wav",
+    "display_name": "SYNTH",
+    "channels": 1,
+    "sample_rate": 44100,
+    "bit_depth": 16,
+    "frames": 275098,
+    "sha256": "fc712b2eaee16e30784cb7a60d5db17b2f01f08baebbb14df75b3aeef193fdb7"
+  },
+  {
+    "order": 5,
+    "file": "VOX.wav",
+    "display_name": "VOX",
+    "channels": 1,
+    "sample_rate": 44100,
+    "bit_depth": 16,
+    "frames": 66150,
+    "sha256": "cd1ed62fe322c5723c4611308aa49693d539047a14c3901b362fb9f806d1ff59"
+  }
+]
