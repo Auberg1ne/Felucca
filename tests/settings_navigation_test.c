@@ -41,5 +41,14 @@ int main(int argc,char **argv)
         press(buttons[i]);snapshot(f);
         for(unsigned role=0;role<NE;role++){turn(role,1);snapshot(f);turn(role,-1);snapshot(f);}
     }
+    /* Render every settings tab, then verify normal pages after closing it.
+     * Menu pixels may differ; leaked palette/canvas state must not. */
+    for(unsigned tab=0;tab<MTAB_COUNT;tab++) {
+        go_home();frame();hold(B_HOME);
+        ui.menu_sel=menu_visible_row(tab,0);ui.force=1;frame();snapshot(f);
+        press(B_HOME);snapshot(f);
+        press(B_EDIT);snapshot(f);
+        press(B_HOME);snapshot(f);
+    }
     fclose(f);printf("Settings navigation: %u snapshots; all non-menu pixels recorded\n",snapshots);return 0;
 }

@@ -447,6 +447,7 @@ static uint32_t menu_split(uint32_t n)
         s = mr_y(--k) - 1;
     return (uint32_t)(s < 240 - 124 ? 240 - 124 : s);
 }
+#include "settings_visuals.c"
 static void draw_menu(void)
 {
     static const khint_t KEYS[3][3] = {{{KC_ALGO, "TAB"}, {KC_PRESETS, "ROW"}, {KC_OCTPM, "VALUE"}},
@@ -466,6 +467,12 @@ static void draw_menu(void)
           (song.mch[0] | (uint32_t)song.mch[1] << 8 | (uint32_t)song.mch[2] << 16 | (uint32_t)song.mch[3] << 24) *
           2246822519u +                                   /* (1.5.5: T1..T4 CHANNEL) */
           (ui.menu == 2 ? ui.menu_scroll * 48611u : 0u) + (ui.menu == 3 ? info_sig() * 2654435761u : 0u);
+#if COFFEE_SETTINGS_VISUALS
+    if(ui.menu==1) {
+        if(ui.force || sig!=ui.menu_sig){ui.menu_sig=sig;draw_settings_visuals();}
+        return;
+    }
+#endif
     if (!ui.force && sig == ui.menu_sig) {
         if (ui.menu == 1 && mt.pos != pos0) {          /* only the tabs slid: their strip */
             cv_begin(240, MP_Y - H_HEAD, T_BG);

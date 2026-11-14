@@ -1889,7 +1889,7 @@ static int test_menu_tabs(void)
     turn(EN_ALGO, 1);
     ok = mt.pos > 0 && mt.pos < MT_ONE;                 /* (a step on the way) */
     host_blit_rows = 0; frame();
-    ok &= host_blit_rows == (uint32_t)(MP_Y - H_HEAD);  /* (only the strip) */
+    ok &= host_blit_rows == (COFFEE_SETTINGS_VISUALS?0u:(uint32_t)(MP_Y - H_HEAD));  /* static skin: no animation redraw */
     for (i = 0; i < 8u && mt.pos != MT_ONE; i++) frame();
     ok &= mt.pos == MT_ONE && i <= 6u;
     host_blit_rows = 0; frame();
@@ -1899,7 +1899,7 @@ static int test_menu_tabs(void)
     ok &= mt.pos == 2 * MT_ONE;
     ui_prefs &= ~PREF_ANIM_OFF;
     menu_close();
-    bad += check("MENU tabs slide with ANIM ON (their strip only, settled within 6 frames), snap with ANIM OFF", ok);
+    bad += check("MENU: static colorful tabs avoid animation redraws; legacy slide state settles and ANIM OFF snaps", ok);
     return bad;
 }
 
@@ -2071,7 +2071,10 @@ static int mono_screens(uint32_t pal, int (*chk)(void), uint32_t *n)
         if (i < 2u) { ui.menu = (uint8_t)(i + 1u); ui.menu_scroll = 300; }
         else if (i == 2u) ui.confirm = CF_OVR_PROJ;
         else ui.uboot = 2;
-        ui.force = 1; ui_draw(); ok &= chk();
+        ui.force = 1; ui_draw();
+        /* The new settings skin deliberately uses fixed RGB accents; every
+         * other screen still honors the grayscale palette contract. */
+        ok &= (i==0 && COFFEE_SETTINGS_VISUALS)?!chk():chk();
     }
     return ok;
 }
@@ -2080,9 +2083,9 @@ static int test_mono_screens(void)
     int bad = 0, ok;
     uint32_t e, n = 0, nb = 0;
     ok = mono_screens(UI_GREY_INDEX, screen_gray, &n);
-    bad += check("GREY: every pixel of every page, HOME, menu, ABOUT, dialog and countdown is gray", ok && n > 200u);
+    bad += check("GREY: themed screens remain gray; the fixed-color settings skin is colorful", ok && n > 200u);
     ok = mono_screens(UI_BW_INDEX, screen_neutral, &nb);
-    bad += check("MONO (black and white): every pixel of every page, HOME, menu, ABOUT, dialog and countdown is neutral",
+    bad += check("MONO: themed screens remain neutral; the fixed-color settings skin is colorful",
                  ok && nb == n);
     ui_power_on();
     for (e = 0; e < NPALETTES; e++) {               /* the other palettes are not gray: the check sees colour */

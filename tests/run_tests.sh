@@ -231,15 +231,22 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/settings_visuals_test" web/emu/settings_visuals_test.c -lm
+    run "settings visuals: tab/row accents, live values, toggles and full-range ink bounds" "$OUT/settings_visuals_test"
+    for VISUAL in 0 1; do
+        $CC -w -ffp-contract=off -DCOFFEE_SETTINGS_VISUALS=$VISUAL -Ibuild/gen -Ifirmware/src -o "$OUT/settings_visual_audio_$VISUAL" web/emu/settings_visuals_audio_test.c -lm
+        run "settings visuals: audio during all five tabs and live edits ($VISUAL)" "$OUT/settings_visual_audio_$VISUAL" "$OUT/settings_visual_audio_$VISUAL.f32"
+    done
+    run "settings visuals: byte-identical audio with old/new renderers" cmp "$OUT/settings_visual_audio_0.f32" "$OUT/settings_visual_audio_1.f32"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/settings_menu_test" tests/settings_menu_test.c -lm
     run "settings: visible order, wrapping, stale selection and hidden value preservation" "$OUT/settings_menu_test"
     run "settings: actual conditional row mapping, CPU2 off/on" python3 tests/settings_visibility_build_test.py
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/settings_menu_bounds_test" web/emu/settings_menu_bounds_test.c -lm
     run "settings: 240x240 bounds across every palette, style and LARGE" "$OUT/settings_menu_bounds_test"
-    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/settings_navigation_test" tests/settings_navigation_test.c -lm
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -DCOFFEE_HOME_VISUALS=1 -o "$OUT/settings_navigation_test" tests/settings_navigation_test.c -lm
     run "settings: full non-menu navigation trace" "$OUT/settings_navigation_test" "$OUT/settings_navigation.bin"
     if [ -n "${SETTINGS_BASE_TREE:-}" ]; then
-        $CC -w -ffp-contract=off -DSETTINGS_UI_SOURCE="\"$SETTINGS_BASE_TREE/tests/ui_test.c\"" -Ibuild/gen -Ifirmware/src -o "$OUT/settings_navigation_base" tests/settings_navigation_test.c -lm
+        $CC -w -ffp-contract=off -DSETTINGS_UI_SOURCE="\"$SETTINGS_BASE_TREE/tests/ui_test.c\"" -Ibuild/gen -Ifirmware/src -DCOFFEE_HOME_VISUALS=1 -o "$OUT/settings_navigation_base" tests/settings_navigation_test.c -lm
         run "settings: untouched base navigation trace" "$OUT/settings_navigation_base" "$OUT/settings_navigation_base.bin"
         run "settings: unchanged non-menu pixels and musical state" cmp "$OUT/settings_navigation.bin" "$OUT/settings_navigation_base.bin"
         $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/settings_audio_new" web/emu/mixer_audio_test.c -lm
