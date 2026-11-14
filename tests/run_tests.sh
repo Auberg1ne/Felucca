@@ -231,6 +231,16 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_smooth_knobs_test" web/emu/mixer_smooth_knobs_test.c -lm
+    run "MIXER smoothing: elapsed time, reversals, settling, channel isolation and immediate text" "$OUT/mixer_smooth_knobs_test"
+    for SMOOTH in 0 1; do
+        $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=1 -DMIXER_TOP_COMPARISON=1 -DCOFFEE_MIXER_SMOOTH_KNOBS=$SMOOTH -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_smooth_nav_$SMOOTH" tests/mixer_navigation_test.c -lm
+        run "MIXER smoothing navigation ($SMOOTH)" "$OUT/mixer_smooth_nav_$SMOOTH" "$OUT/mixer_smooth_nav_$SMOOTH.bin"
+        $CC -w -ffp-contract=off -DCOFFEE_MIXER_SMOOTH_KNOBS=$SMOOTH -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_smooth_audio_$SMOOTH" web/emu/mixer_audio_test.c -lm
+        run "MIXER smoothing audio ($SMOOTH)" "$OUT/mixer_smooth_audio_$SMOOTH" "$OUT/mixer_smooth_audio_$SMOOTH.f32"
+    done
+    run "MIXER smoothing: unchanged navigation and other pixels" cmp "$OUT/mixer_smooth_nav_0.bin" "$OUT/mixer_smooth_nav_1.bin"
+    run "MIXER smoothing: bit-identical audio" cmp "$OUT/mixer_smooth_audio_0.f32" "$OUT/mixer_smooth_audio_1.f32"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_top_knobs_test" web/emu/mixer_top_knobs_test.c -lm
     run "MIXER knobs: full ranges, formatted units, channel accents and binary mute" "$OUT/mixer_top_knobs_test"
     for TOP in 0 1; do

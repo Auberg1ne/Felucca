@@ -36,9 +36,37 @@ static void mixer_ring(int32_t cx,int32_t cy,int32_t value,int32_t lo,int32_t hi
     uint32_t i=(uint32_t)(clamp(value,lo,hi)-lo)*8u/(uint32_t)(hi-lo);
     cv_line(cx,cy,cx+dir[i][0],cy+dir[i][1],color);
 }
+#ifndef COFFEE_MIXER_SMOOTH_KNOBS
+#define COFFEE_MIXER_SMOOTH_KNOBS 1
+#endif
 #if COFFEE_MIXER_TOP_KNOBS
 /* Upper cells only: reuse the existing canvas, parameter formats and ranges. */
-static struct {uint32_t sig[4];uint8_t valid;} mixer_top;
+static struct {
+    uint32_t sig[4],position[3],ms;
+    uint8_t valid,channel;
+} mixer_top;
+/* Q15 exponential decay, tau=80 ms. Bound stalls to 50 ms; the existing
+ * monotonic display clock wraps naturally. No timers or audio-side work. */
+static uint32_t mixer_top_advance(uint32_t position,uint32_t target,uint32_t decay)
+{
+    int32_t error=(int32_t)position-(int32_t)target;
+    if(error<32 && error>-32)return target;
+    int32_t next=(int32_t)target+error*(int32_t)decay/32768;
+    if(next-(int32_t)target<32 && next-(int32_t)target>-32)return target;
+    return (uint32_t)next;
+}
+static void mixer_top_ring(int32_t cx,int32_t cy,uint32_t position,uint16_t color)
+{
+    static const int8_t dir[9][2]={{-5,5},{-7,1},{-6,-4},{-3,-6},{0,-7},{3,-6},{6,-4},{7,1},{5,5}};
+    for(int y=-7;y<=7;y++)for(int x=-7;x<=7;x++) {
+        int r=x*x+y*y;if(r>=36 && r<=55 && !(y>0 && x>-3 && x<3))cv_pset(cx+x,cy+y,0x4208);
+    }
+    unsigned scaled=position*8u,i=scaled>>15,f=scaled&32767u;
+    if(i>=8){i=7;f=32768;}
+    int x=(dir[i][0]*(int32_t)(32768-f)+dir[i+1][0]*(int32_t)f)/32768;
+    int y=(dir[i][1]*(int32_t)(32768-f)+dir[i+1][1]*(int32_t)f)/32768;
+    cv_line(cx,cy,cx+x,cy+y,color);
+}
 static const uint8_t MIXER_TOP_ID[4]={P_LEVEL,P_PAN,P_REV,P_MUTE};
 static const char *const MIXER_TOP_LABEL[4]={"LEVEL","PAN","REV","MUTE"};
 static void mixer_binary_indicator(int32_t x,int32_t y,int on,uint16_t color)
@@ -53,11 +81,25 @@ static void draw_mixer_top_knobs(void)
 {
     const track_t *t=TSEL;uint16_t color=HOME_ACCENT[song.sel&3u];
     cv_oy=0;cv_scroll=0;cv_flip=0;
+    uint32_t now=fm1_ms,dt=now-mixer_top.ms,decay=32768;
+    int reset=!mixer_top.valid || mixer_top.channel!=(song.sel&3u);
+    if(dt>50)dt=50;
+    /* 32361/32768 ~= exp(-1/80); composing elapsed milliseconds avoids a
+     * refresh-rate-dependent coefficient and needs no floating-point library. */
+    for(unsigned n=0;n<dt;n++)decay=(decay*32361u+16384u)>>15;
+    mixer_top.ms=now;mixer_top.channel=song.sel&3u;
     for(unsigned k=0;k<4;k++) {
         unsigned id=MIXER_TOP_ID[k];const param_desc_t *d=&TP[id];int32_t value=t->p[id];
         int hot=ui.hot_t && ui.hot_col==k;
         uint32_t sig=(uint32_t)(value-d->min)|((song.sel&3u)<<16)|((uint32_t)hot<<18);
-        if(!ui.force && mixer_top.valid && sig==mixer_top.sig[k])continue;
+        int moved=0;
+        if(k<3) {
+            uint32_t target=(uint32_t)(clamp(value,d->min,d->max)-d->min)*32768u/(uint32_t)(d->max-d->min);
+            uint32_t old=mixer_top.position[k];
+            mixer_top.position[k]=(reset || !COFFEE_MIXER_SMOOTH_KNOBS)?target:mixer_top_advance(old,target,decay);
+            moved=old!=mixer_top.position[k];
+        }
+        if(!ui.force && !reset && !moved && sig==mixer_top.sig[k])continue;
         mixer_top.sig[k]=sig;
         char val[16],text[24];const char *unit;param_format(d,value,val,&unit);
         str_cpy(text,val,sizeof text);
@@ -66,6 +108,7 @@ static void draw_mixer_top_knobs(void)
         cv_text_in(2,0,CARD_W-4,&AF_S,MIXER_TOP_LABEL[k],0xffff,0);
         if(hot)cv_rect(24,12,9,1,color);
         if(id==P_MUTE)mixer_binary_indicator(28,21,value!=0,color);
+        else if(COFFEE_MIXER_SMOOTH_KNOBS)mixer_top_ring(28,21,mixer_top.position[k],color);
         else mixer_ring(28,21,value,d->min,d->max,color);
         cv_text_in(2,31,CARD_W-4,&AF_S,text,0xffff,0);
         cv_blit((uint32_t)CARD_X(k),Y_LABEL);
