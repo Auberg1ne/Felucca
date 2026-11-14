@@ -1059,24 +1059,27 @@ function buildSlot(name, zonesIn) {
    matched by name. The old single-sound file ("felucca-patch" version 1, "Save to file") is read too. */
 const LIB = { FORMAT: "felucca-library", VERSION: 1 };
 
+/* ID 108 keeps its old library key even when GRAIN exposes its real label.
+ * This prevents an engine switch/reconnect from remapping or rewriting sounds. */
+const stableParamKey = (label, id) => id === 108 && label === "STRETCH" ? "G-F RSV1" : label;
 /* parameter keys by id from the instrument DESCs */
 function paramKeys(pdesc, pe0, pcount) {
   const seen = {}, out = [];
   for (let i = 0; i < pcount; i++) {
     if (i >= pe0) { out.push("E" + (i - pe0)); continue; }
-    const l = (pdesc[i] && pdesc[i].label) || "P" + i;
+    const l = stableParamKey((pdesc[i] && pdesc[i].label) || "P" + i, i);
     seen[l] = (seen[l] || 0) + 1;
     out.push(seen[l] > 1 ? `${l}#${seen[l]}` : l);
   }
   return out;
 }
-const sameKeys = (a, b) => !!a && !!b && a.length === b.length && a.every((k, i) => k === b[i]);
+const sameKeys = (a, b) => !!a && !!b && a.length === b.length && a.every((k, i) => stableParamKey(k, i) === stableParamKey(b[i], i));
 /* values by fromKeys -> values by toKeys (null where the source has no such key) */
 function remapParams(p, fromKeys, toKeys, pe0) {
   if (!fromKeys && toKeys && pe0 && p.length !== toKeys.length) return tailParams(p, toKeys.length, pe0);
   if (!fromKeys || !toKeys || sameKeys(fromKeys, toKeys)) return p.slice();
-  const at = new Map(fromKeys.map((k, i) => [k, i]));
-  return toKeys.map((k) => (at.has(k) ? p[at.get(k)] ?? null : null));
+  const at = new Map(fromKeys.map((k, i) => [stableParamKey(k, i), i]));
+  return toKeys.map((k, i) => (at.has(stableParamKey(k, i)) ? p[at.get(stableParamKey(k, i))] ?? null : null));
 }
 
 /* values without keys from another firmware: ids below its P_E0 kept their places, its last 8 are E0..E7
@@ -3062,9 +3065,15 @@ async function getDescOrNull(s, i, d = dev) { try { return await getDesc(s, i, d
 async function rereadEngineDesc(d = dev) {
   assertSession(d);
   const pe0 = d.info.pe0;
-  const before = JSON.stringify(d.pdesc.slice(pe0));
-  for (let i = 0; i < 8 && pe0 + i < d.info.pcount; i++) d.pdesc[pe0 + i] = await getDescOrNull(0, pe0 + i, d);
-  if (d.built !== d.dump.engine || JSON.stringify(d.pdesc.slice(pe0)) !== before) buildGroups();
+  const ids = [];
+  // STRETCH is an engine-aware common slot; older firmware reports it reserved.
+  // Discover it by the existing wire labels, without shifting any parameter IDs.
+  const stretch = d.pdesc.findIndex((desc, id) => id < pe0 && desc && (desc.label === "STRETCH" || desc.label === "G-F RSV1"));
+  if (stretch >= 0) ids.push(stretch);
+  for (let i = 0; i < 8 && pe0 + i < d.info.pcount; i++) ids.push(pe0 + i);
+  const before = JSON.stringify(ids.map((id) => d.pdesc[id]));
+  for (const id of ids) d.pdesc[id] = await getDescOrNull(0, id, d);
+  if (d.built !== d.dump.engine || JSON.stringify(ids.map((id) => d.pdesc[id])) !== before) buildGroups();
 }
 
 async function loadSteps(d = dev) {

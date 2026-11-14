@@ -267,6 +267,20 @@ int main(int argc, char **argv)
     {persist_t roundtrip=ps;settings_export(&roundtrip);
      bad += check("hidden-setting backup re-export preserves complete canonical PER4 bytes",!memcmp(&ps,&roundtrip,sizeof ps));}
 
+    /* Runtime-project backup applies the engine-aware STRETCH range. */
+    for(unsigned n=0;n<4;n++) {
+        static const int value[]={0,1,64,127};
+        reset();set_engine_of(TSEL,ENGI_GRAIN);apply_preset_to(TSEL,0);TSEL->p[P_GFILTER_RSVD1]=value[n];
+        int ok=list(0,&len,&crc)==0 && len==sizeof st;
+        memcpy(&st,ED_BK_RAW,sizeof st);TSEL->p[P_GFILTER_RSVD1]=0;
+        bad+=check("GRAIN nonzero STRETCH survives runtime backup and restore",ok && put_all(0,&st,sizeof st,crc)==0 && TSEL->p[P_GFILTER_RSVD1]==value[n]);
+        /* User-preset banks are archived raw, then applied through up_values. */
+        bad+=check("GRAIN STRETCH user preset stores",up_store(0,"STRETCH")==0);
+        static up_bank_t bank;ok=list(6,&len,&crc)==0 && len==sizeof bank;
+        memcpy(&bank,ed_bk_object(6,&len),sizeof bank);memset(&up_bank[0],0,sizeof bank);
+        bad+=check("GRAIN STRETCH preset-bank backup restores and loads",ok && put_all(6,&bank,sizeof bank,crc)==0 && !up_load(0) && TSEL->p[P_GFILTER_RSVD1]==value[n]);
+    }
+
     /* settings */
     reset();
     memset(&ps, 0, sizeof ps);

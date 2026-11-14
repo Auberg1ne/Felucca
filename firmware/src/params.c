@@ -237,6 +237,17 @@ static const param_desc_t GP[G_COUNT] = {
     [G_DRREV] = PD("-", F_INT, 0, 0, 0),
 };
 
+/* Canonical wire/storage descriptor. Engine-specific reserved slots must resolve
+ * here too: editor SET, MIDI, motion and runtime loads use this path. */
+static const param_desc_t *param_desc_of(uint32_t e, uint32_t id)
+{
+    if (e == ENGI_GRAIN && id == P_GFILTER_RSVD1) {
+        static const param_desc_t grain_stretch = PD("STRETCH", F_INT, 0, 127, 0);
+        return &grain_stretch;
+    }
+    return id >= P_E0 ? &ENGINES[e]->edit[id - P_E0] : &TP[id];
+}
+
 static const param_desc_t *track_desc(const track_t *t, uint32_t id)
 {
     if (id == P_E3 && t->eng_req % NENGINES == ENGI_GRAIN) {
@@ -244,8 +255,7 @@ static const param_desc_t *track_desc(const track_t *t, uint32_t id)
         return &grain_dens;
     }
     if (id == P_GFILTER_RSVD1 && t->eng_req % NENGINES == ENGI_GRAIN) {
-        static const param_desc_t grain_stretch = PD("STRETCH", F_INT, 0, 127, 0);
-        return &grain_stretch;
+        return param_desc_of(ENGI_GRAIN, id);
     }
     if (id == P_GA || id == P_GB) {
         int32_t type = t->p[P_GTYPE];
@@ -262,13 +272,6 @@ static const param_desc_t *track_desc(const track_t *t, uint32_t id)
     if (t->p[P_ESYNC] && (id == P_ATK || id == P_DEC || id == P_REL))   /* ENV SYNC: note values (1.5, #175) */
         return &ESYNC_DESC[id == P_ATK ? 0 : id == P_DEC ? 1 : 2];
     return &TP[id];
-}
-
-/* the descriptor of parameter id for engine e without the engine's desc hook (the device display
- * only; range and default are the same): what the editor protocol, user presets and projects use */
-static const param_desc_t *param_desc_of(uint32_t e, uint32_t id)
-{
-    return id >= P_E0 ? &ENGINES[e]->edit[id - P_E0] : &TP[id];
 }
 
 /* a retired F_ENUM value kept as an alias, so stored values stay valid: SAMPLE SET and GRAIN SRC 1, once

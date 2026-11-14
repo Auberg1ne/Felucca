@@ -231,6 +231,23 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_stretch_test" tests/grain_stretch_test.c -lm
+    run "GRAIN STRETCH: canonical descriptors, runtime loads, MIDI/motion and HOME K3" "$OUT/grain_stretch_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_stretch_editor_test" tests/grain_stretch_editor_test.c -lm
+    run "GRAIN STRETCH: wire descriptors and editor GET/SET" "$OUT/grain_stretch_editor_test"
+    run "GRAIN STRETCH: editor engine-aware common descriptor refresh" node web/test_stretch_descriptor.mjs
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_stretch_audio_test" web/emu/grain_stretch_audio_test.c -lm
+    for VALUE in 0 1 64 127; do
+        "$OUT/grain_stretch_audio_test" "$VALUE" "$OUT/stretch-$VALUE.f32" > "$OUT/stretch-$VALUE.log"
+    done
+    run "GRAIN STRETCH: meaningful audio effect and existing source-head scaling" python3 tests/grain_stretch_audio_check.py "$OUT"
+    if [ -n "${STRETCH_BASE_TREE:-}" ]; then
+        $CC -w -ffp-contract=off -DSTRETCH_WEB_SOURCE="\"$STRETCH_BASE_TREE/web/emu/felucca_web.c\"" -Ibuild/gen -Ifirmware/src -o "$OUT/grain_stretch_audio_base" web/emu/grain_stretch_audio_test.c -lm
+        for VALUE in 0 1 64 127; do
+            "$OUT/grain_stretch_audio_base" "$VALUE" "$OUT/stretch-base-$VALUE.f32" > "$OUT/stretch-base-$VALUE.log"
+            run "GRAIN STRETCH: byte-identical base audio at $VALUE" cmp "$OUT/stretch-$VALUE.f32" "$OUT/stretch-base-$VALUE.f32"
+        done
+    fi
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/settings_visuals_test" web/emu/settings_visuals_test.c -lm
     run "settings visuals: tab/row accents, live values, toggles and full-range ink bounds" "$OUT/settings_visuals_test"
     for VISUAL in 0 1; do
