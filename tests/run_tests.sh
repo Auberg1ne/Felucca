@@ -231,6 +231,39 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/sample_grid_test" tests/sample_grid_test.c -lm
+    run "SAMPLE grid: mappings, rows, hidden pages/values, modifiers, locks, motion and learn" "$OUT/sample_grid_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/sample_grid_editor_test" tests/sample_grid_editor_test.c -lm
+    run "SAMPLE grid: hidden parameters retain editor wire access" "$OUT/sample_grid_editor_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/sample_grid_visuals_test" web/emu/sample_grid_visuals_test.c -lm
+    run "SAMPLE grid: pixel bounds/contrast, empty space and HOME footer agreement" "$OUT/sample_grid_visuals_test"
+    if [ -n "${SAMPLE_GRID_BASE_TREE:-}" ]; then
+        for SAMPLE in current base; do
+            SAMPLE_SOURCE=ui_test.c
+            [ "$SAMPLE" != base ] || SAMPLE_SOURCE="$SAMPLE_GRID_BASE_TREE/tests/ui_test.c"
+            $CC -w -ffp-contract=off "-DGRID_UI_SOURCE=\"$SAMPLE_SOURCE\"" -Itests -Ibuild/gen -Ifirmware/src -o "$OUT/sample_nav_$SAMPLE" tests/sample_grid_navigation_test.c -lm
+            run "SAMPLE grid: non-SAMPLE-EDIT snapshots ($SAMPLE)" "$OUT/sample_nav_$SAMPLE" "$OUT/sample_nav_$SAMPLE.bin"
+            SAMPLE_SOURCE=felucca_web.c
+            [ "$SAMPLE" != base ] || SAMPLE_SOURCE="$SAMPLE_GRID_BASE_TREE/web/emu/felucca_web.c"
+            $CC -w -ffp-contract=off "-DSAMPLE_WEB_SOURCE=\"$SAMPLE_SOURCE\"" -Iweb/emu -Ibuild/gen -Ifirmware/src -o "$OUT/sample_audio_$SAMPLE" web/emu/sample_grid_audio_test.c -lm
+            for SAMPLE_CASE in 4:0:0 4:2:3 4:3:0 4:13:0 4:14:1 8:3:0 8:13:3; do
+                SAMPLE_E=${SAMPLE_CASE%%:*}; SAMPLE_REST=${SAMPLE_CASE#*:}
+                SAMPLE_S=${SAMPLE_REST%%:*}; SAMPLE_M=${SAMPLE_REST#*:}
+                run "SAMPLE/GRAIN audio ($SAMPLE $SAMPLE_CASE)" "$OUT/sample_audio_$SAMPLE" "$SAMPLE_E" "$SAMPLE_S" "$SAMPLE_M" "$OUT/sample_audio_$SAMPLE-$SAMPLE_CASE.f32"
+            done
+            for SAMPLE_LONG in 0:1 0:0 2:1 13:1; do
+                SAMPLE_S=${SAMPLE_LONG%:*}; SAMPLE_LOOP=${SAMPLE_LONG#*:}
+                run "SAMPLE long/loop audio ($SAMPLE $SAMPLE_LONG)" "$OUT/sample_audio_$SAMPLE" 4 "$SAMPLE_S" 0 "$OUT/sample_long_$SAMPLE-$SAMPLE_LONG.f32" 7000 "$SAMPLE_LOOP"
+            done
+        done
+        run "SAMPLE grid: unchanged GRAIN and non-SAMPLE state/pixels" cmp "$OUT/sample_nav_current.bin" "$OUT/sample_nav_base.bin"
+        for SAMPLE_CASE in 4:0:0 4:2:3 4:3:0 4:13:0 4:14:1 8:3:0 8:13:3; do
+            run "SAMPLE grid: bit-identical audio $SAMPLE_CASE" cmp "$OUT/sample_audio_current-$SAMPLE_CASE.f32" "$OUT/sample_audio_base-$SAMPLE_CASE.f32"
+        done
+        for SAMPLE_LONG in 0:1 0:0 2:1 13:1; do
+            run "SAMPLE grid: bit-identical loop/long-source audio $SAMPLE_LONG" cmp "$OUT/sample_long_current-$SAMPLE_LONG.f32" "$OUT/sample_long_base-$SAMPLE_LONG.f32"
+        done
+    fi
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_theme_test" tests/grain_theme_test.c -lm
     run "GRAIN theme: HOME-identical step symbols, selected track and real transport" "$OUT/grain_theme_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_grid_test" tests/grain_grid_test.c -lm
@@ -655,10 +688,12 @@ else
     run "ASan/UBSan: update loader (other app -> this build)" "$A/ldr_test" "$OUT/old.fwsc" build/felucca.fwsc
     $SCC -DOWN_PKG=1 -o "$A/ota_test" tests/ota_test.c
     run "ASan/UBSan: M-UPGRADE entry (own loader)" "$A/ota_test" build/felucca.fwsc
-    for t in editor_test project_test backup_test robust_test fun10_test fm6bank_test midi_drift_test; do
+    for t in editor_test project_test backup_test robust_test fun10_test fm6bank_test midi_drift_test sample_grid_test sample_grid_editor_test; do
         $SCC -o "$A/$t" tests/$t.c -lm
         run "ASan/UBSan: $t" "$A/$t"
     done
+    $SCC -ffp-contract=off -o "$A/sample_grid_visuals_test" web/emu/sample_grid_visuals_test.c -lm
+    run "ASan/UBSan: SAMPLE grid pixels, blank cells and shared footer" "$A/sample_grid_visuals_test"
     $SCC -o "$A/fuzz_ed" tests/fuzz_ed.c -lm
     run "ASan/UBSan fuzz: editor SysEx and raw USB-MIDI packets (20000, seed 7)" "$A/fuzz_ed" 20000 7
     $SCC -o "$A/fuzz_proj" tests/fuzz_proj.c -lm

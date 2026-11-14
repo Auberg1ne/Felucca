@@ -30,6 +30,7 @@ static int seen(const char*s){for(unsigned i=0;i<text_n;i++)if(!strcmp(texts[i],
 static void draw(void){text_n=0;ui.force=1;ui_draw();}
 static void picture(const char*dir,unsigned page){char p[512];snprintf(p,sizeof p,"%s/grain-%u.ppm",dir,page);FILE*f=fopen(p,"wb");if(!f)return;
  fprintf(f,"P6\n240 240\n255\n");for(unsigned i=0;i<240*240;i++){unsigned v=swap16(web_fb[i]);unsigned char rgb[]={((v>>11)&31)*255/31,((v>>5)&63)*255/63,(v&31)*255/31};fwrite(rgb,3,1,f);}fclose(f);}
+#ifndef GRAIN_GRID_VISUALS_NO_MAIN
 int main(int argc,char**argv){
  web_nor_erase();web_boot();while(fm1_ms<3500)web_ms();open_family(FAM_EDIT);
  static const char*labels[2][12]={{"SRC","POS","SIZE","DENS","PTCH","G-SPRD","RAND","TONE","STRETCH","--","--","--"},{"TYPE","DRIFT","WIDTH","--","CUTOFF","RESON","--","--","VCE","DTUNE","V-SPRD","--"}};
@@ -38,7 +39,7 @@ int main(int argc,char**argv){
   TSEL->p[P_GTYPE]=0;draw();for(unsigned i=0;i<12;i++)REQUIRE(seen(labels[page][i]));
   if(argc>1)picture(argv[1],page+1);
   for(unsigned row=0;row<3;row++){
-   grain_edit_row=row;draw();REQUIRE(web_fb[(28+54*row)*240+30]==swap16(GRAIN_ACCENT[song.sel]));
+   edit_grid_row=row;draw();REQUIRE(web_fb[(28+54*row)*240+30]==swap16(GRAIN_ACCENT[song.sel]));
    REQUIRE(web_fb[(29+54*row)*240+30]==swap16(GRAIN_ACCENT[song.sel]));
    unsigned other=(row+1)%3;REQUIRE(web_fb[(28+54*other)*240+30]==swap16(GRAIN_COFFEE));
    for(unsigned col=0;col<4;col++){
@@ -58,8 +59,10 @@ int main(int argc,char**argv){
   REQUIRE(web_fb[28*240+3]==0); /* rounded corner even with legacy LINE preference */
  }
  REQUIRE(!bad_rects && !bad_ink && !bad_contrast);
- grain_edit_row=0;draw();unsigned n=web_draws;for(unsigned i=0;i<8;i++)ui_draw();REQUIRE(web_draws==n);
+ edit_grid_row=0;draw();unsigned n=web_draws;for(unsigned i=0;i<8;i++)ui_draw();REQUIRE(web_draws==n);
  blits=pixels=0;TSEL->p[P_E2]++;ui_draw();REQUIRE(blits==1 && pixels==57*50);
- go_home();ui_draw();REQUIRE(!grain_grid.valid);
+ go_home();ui_draw();REQUIRE(!edit_grid.valid);
  printf("GRAIN grid visuals: %u checks passed; full value sweep, dynamic labels and 240x240 bounds\n",checks);return 0;
 }
+
+#endif

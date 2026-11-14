@@ -1485,6 +1485,7 @@ static void ui_input(void)
         if (trk[k].eng_req == ENGI_DIGITAL)             /* already): FM6 (fm4_convert.c) */
             fm4_track(&trk[k]);
 #endif
+    sample_grid_normalize();
     perf_latch_on = fx_latch & 1u;                      /* (MENU > FX LATCH; a settings load sets it too) */
     fx_map_sync();                                      /* (the FX layer's key map: ui_layer.c, a settings load too) */
     fx_usb_fixed = (ui_prefs & PREF_USB_FIXED) != 0u;   /* (MENU > USB LEVEL: fx.c, audio.c) */
@@ -1756,8 +1757,9 @@ static void ui_input(void)
     if (!lay && (s = panel_enc(EN_ALGO)) != 0)     /* ALGORITHM: the selected track, on every page */
         track_select((uint32_t)clamp((int32_t)song.sel + (s > 0 ? 1 : -1), 0, NTRK - 1));
     if ((s = glo ? sel : panel_enc(EN_SELECT)) != 0) {   /* SELECT knob = global tempo; */
-        if(grain_grid_active() && !glo && !lay && !kq && !mom_down() && !lock_held()) {
-            grain_edit_row=(uint8_t)(((int32_t)grain_edit_row+3+s%3)%3);
+        if(edit_grid_active() && !glo && !lay && !kq && !mom_down() && !lock_held()) {
+            uint32_t rows=edit_grid_rows(cur_page());
+            edit_grid_row=(uint8_t)(((int32_t)edit_grid_row+(int32_t)rows+s%(int32_t)rows)%(int32_t)rows);
             ui.hot_t=0;ui.force=1;
         } else if (!glo && sel_mode() >= SEL_MODW) {         /* MENU > SELECT MODW / VEL (1.5.6, #84): it plays */
             sel_play(sel_mode(), s);

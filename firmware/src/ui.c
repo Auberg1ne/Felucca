@@ -381,6 +381,7 @@ static const page_t *cur_page(void) { return page_over ? page_over : &PAGES[ui.p
  *            is, the card labels in M;
  *   LK_OFF   LARGE off; the menu (its own LARGE: ui_menu.c), the dialogs and NAME keep their own layout in every case. */
 enum { LK_OFF, LK_LABEL, LK_TALL };
+static int edit_grid_active(void);
 static int grain_grid_active(void);
 static int mixer_visuals_page(void);
 static int clock_visuals_page(void);
@@ -431,6 +432,8 @@ static int page_visible(uint32_t i)
 {
     if(TSEL->eng_req%NENGINES==ENGI_GRAIN && PAGES[i].fam==FAM_EDIT)
         return grain_grid_page(&PAGES[i])!=0;
+    if(TSEL->eng_req%NENGINES==ENGI_SAMPLE && PAGES[i].fam==FAM_EDIT)
+        return sample_grid_page(&PAGES[i]);
     if (PAGES[i].id[0] == P_GTYPE)                  /* PERS: GRAIN only */
         return TSEL->eng_req % NENGINES == ENGI_GRAIN;
     if (PAGES[i].scope == SC_TRACK && PAGES[i].id[0] >= P_LN0 && PAGES[i].id[0] <= P_LN7)
@@ -538,7 +541,7 @@ static void help_start(void) { ui.help_t = (uint8_t)(help_on() ? HELP_FRAMES : 0
 static void page_entered(void)
 {
     const page_t *pg = cur_page();
-    if(grain_grid_page(pg))grain_edit_row=0;
+    if(edit_grid_page(pg))edit_grid_row=0;
     if (!ui.home && pg->graph == GR_EVENTS)      /* AUTOMATION: + ADD on the SEQ cursor's step */
         ev_enter();
     if (!ui.home && lock_page_ok(ui.page))
@@ -550,6 +553,25 @@ static void page_entered(void)
     ui.tl_clean = 0;
     help_start();
     ui.force = 1;
+}
+
+/* Normalize stale/hidden SAMPLE pages before input as well as drawing. Stored
+ * parameter IDs and automation records are untouched. ENV/FX lock sources stay. */
+static void sample_grid_normalize(void)
+{
+    if(TSEL->eng_req%NENGINES!=ENGI_SAMPLE || page_over)return;
+    if(edit_grid_row>=2){edit_grid_row=0;ui.force=1;}
+    int hidden=!ui.home && cur_page()->fam==FAM_EDIT && !sample_grid_page(cur_page());
+    int hidden_lock=ui.plk_src && ui.plk_src<=NPAGES && PAGES[ui.plk_src-1].fam==FAM_EDIT &&
+        !sample_grid_page(&PAGES[ui.plk_src-1]);
+    if(!hidden && !hidden_lock)return;
+    uint32_t first=page_first(FAM_EDIT);
+    if(hidden) {
+        ui.page=(uint8_t)first;ui.fam_last[FAM_EDIT]=ui.page;page_entered();
+    }
+    if(hidden_lock) {
+        ui.plk_src=(uint8_t)(first+1);edit_grid_row=0;
+    }
 }
 
 static int step_on(const step_t *st) { return st->time == ST_NOTE && (st->n || st->hit); }
@@ -1755,7 +1777,8 @@ static void track_select(uint32_t i)
     if (i >= NTRK || i == song.sel)
         return;
     song.sel = (uint8_t)i;
-    if(grain_grid_page(cur_page()))grain_edit_row=0;
+    sample_grid_normalize();
+    if(edit_grid_page(cur_page()) || TSEL->eng_req%NENGINES==ENGI_SAMPLE)edit_grid_row=0;
     ui.entry_open = 0;
     ui.hot_t = 0;
     ui.ev_keep = 0;                              /* (AUTOMATION: a row kept at its default was the other track's) */

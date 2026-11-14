@@ -550,8 +550,8 @@ static const page_t PAGES[] = {
 #define NPAGES (sizeof(PAGES) / sizeof(PAGES[0]))
 static uint8_t mod_ui_slot;      /* the MOD page: the matrix slot (0..3) KNOB 2..4 edit */
 
-/* UI-only GRAIN view state; not part of a sound or any stored format. */
-static uint8_t grain_edit_row;
+/* One shared UI row cursor for GRAIN/SAMPLE; never part of a stored sound. */
+static uint8_t edit_grid_row;
 static const uint8_t GRAIN_GRID[2][3][4]={
     {{P_E0,P_E1,P_E2,P_E3},{P_E4,P_E5,P_E6,P_E7},{P_GFILTER_RSVD1,255,255,255}},
     {{P_GTYPE,P_GA,P_GB,255},{P_GCUT,P_GRES,255,255},{P_VOICE,P_DETUNE,P_SPRD,255}}
@@ -565,10 +565,29 @@ static uint32_t grain_grid_param(uint32_t page,uint32_t row,uint32_t column)
 {
     return page<2 && row<3 && column<4?GRAIN_GRID[page][row][column]:255u;
 }
+/* Stable logical EDIT 1 is SAMPLE's only visible page; no PAGES indices move. */
+static uint32_t sample_grid_page(const page_t *pg)
+{
+    return TSEL->eng_req%NENGINES==ENGI_SAMPLE && pg->fam==FAM_EDIT &&
+        pg->scope==SC_ENGINE && pg->id[0]==P_E0;
+}
+static uint32_t edit_grid_page(const page_t *pg)
+{
+    uint32_t grain=grain_grid_page(pg);
+    return grain?grain:sample_grid_page(pg)?3u:0u;
+}
+static uint32_t edit_grid_rows(const page_t *pg) { return sample_grid_page(pg)?2u:3u; }
+static uint32_t edit_grid_param(uint32_t page,uint32_t row,uint32_t column)
+{
+    static const uint8_t SAMPLE_GRID[2][4]={{P_E2,P_E3,P_E4,255},{P_VOICE,P_DETUNE,P_SPRD,255}};
+    if(column>=4)return 255u;
+    if(page==3)return row<2?SAMPLE_GRID[row][column]:255u;
+    return page && page<=2?grain_grid_param(page-1,row,column):255u;
+}
 static uint32_t page_param_id(const page_t *pg,uint32_t column)
 {
-    uint32_t page=grain_grid_page(pg);
-    return column>=4?255u:page?grain_grid_param(page-1,grain_edit_row,column):pg->id[column];
+    uint32_t page=edit_grid_page(pg);
+    return column>=4?255u:page?edit_grid_param(page,edit_grid_row,column):pg->id[column];
 }
 
 static const param_desc_t *page_desc(const page_t *pg, uint32_t slot, int16_t **valp)

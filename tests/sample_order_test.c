@@ -37,12 +37,15 @@ int main(void)
             int rc=up_store(i,names[i]);REQUIRE(rc==0 || rc==3);
             TSEL->p[P_E0]=0;REQUIRE(up_load(i)==0 && TSEL->p[P_E0]==order[i]);
         }
-        /* Real EDIT encoder: forward/reverse, both clamped endpoints, displayed names. */
-        TSEL->p[P_E0]=0;go_title("EDIT 1");frame();
+        /* Source stays editable on SAMPLE HOME SOUND; GRAIN keeps EDIT row 1. */
+        TSEL->p[P_E0]=0;
+        if(engines[e]==ENGI_SAMPLE){ui_home_view=HV_SCOPE;go_home();}
+        else go_title("EDIT 1");
+        frame();
         turn(EN_K1,-1);REQUIRE(TSEL->p[P_E0]==0);
         for (unsigned i=1;i<NELEM(order);i++) {
             turn(EN_K1,1);REQUIRE(TSEL->p[P_E0]==order[i]);
-            int16_t *value=0;const param_desc_t *shown=page_desc(cur_page(),0,&value);
+            int16_t *value=0;const param_desc_t *shown=ui.home?home_param(0,&value):page_desc(cur_page(),0,&value);
             REQUIRE(shown && value==&TSEL->p[P_E0]);
             REQUIRE(!strcmp(shown->names[*value],names[i]));
         }
@@ -52,7 +55,7 @@ int main(void)
         TSEL->p[P_E0]=3;
         REQUIRE(mom_turn(0,1) && TSEL->p[P_E0]==13);
         mom_restore();REQUIRE(TSEL->p[P_E0]==3);
-        motion_clear(TSEL);ui.plk_src=ui.page+1u;
+        motion_clear(TSEL);ui.plk_src=ui.home?0u:ui.page+1u;
         REQUIRE(lock_id(0)==P_E0);
         lock_turn(0,1,1u);
         int16_t locked=0;REQUIRE(motion_lock_get(TSEL,0,P_E0,&locked) && locked==13);

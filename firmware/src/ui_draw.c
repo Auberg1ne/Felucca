@@ -924,7 +924,7 @@ static void draw_foot(void)
             cv_text_r(232, 2, &AF_S, "ACCENT", T_ACCENT, T_BG);
         else
             cv_key_hint(232 - kh_w(KC_KEYS, "STEPS"), 2, KC_KEYS, "STEPS", 1, T_BG);   /* the keys are the steps */
-    } else if ((ui.home && home_step_icons_enabled()) || mixer_visuals_page() || clock_visuals_page() || grain_grid_active()) {
+    } else if ((ui.home && home_step_icons_enabled()) || mixer_visuals_page() || clock_visuals_page() || edit_grid_active()) {
         draw_home_step_icons(t);
     } else {
         uint32_t i;
@@ -1660,7 +1660,8 @@ static void ui_draw(void)
 #if COFFEE_CLOCK_VISUALS
     if(!clock_visuals_page() || scrn.st!=SCR_ON || kb_boot_hold)clock_visuals.valid=0;
 #endif
-    if(!grain_grid_active() || scrn.st!=SCR_ON || kb_boot_hold)grain_grid.valid=0;
+    sample_grid_normalize();
+    if(!edit_grid_active() || scrn.st!=SCR_ON || kb_boot_hold)edit_grid.valid=0;
     ui.frame++;
     if (counting != (uint8_t)seq_counting()) {          /* a count-in began or ended: the page drawn again after it */
         counting = (uint8_t)seq_counting();
@@ -1723,7 +1724,7 @@ static void ui_draw_page(uint32_t counting)
         page_entered();
     }
     cursor_fix();
-    if(grain_grid_active()){draw_head();draw_grain_grid();}
+    if(edit_grid_active()){draw_head();draw_edit_grid();}
     else {
 #if COFFEE_HOME_VISUALS
     if(ui.home) draw_scientists_home();

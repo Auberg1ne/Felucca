@@ -2058,7 +2058,7 @@ static int mono_screens(uint32_t pal, int (*chk)(void), uint32_t *n)
             settings.palette = pal; palette_set(pal);
             memset(host_screen, 0, sizeof host_screen);
             ui.force = 1; ui_draw();
-            ok &= grain_grid_active() ? !chk() : chk();
+            ok &= edit_grid_active() ? !chk() : chk();
             (*n)++;
         }
         ui_power_on(); set_engine_of(TSEL, e); go_home();
@@ -2083,9 +2083,9 @@ static int test_mono_screens(void)
     int bad = 0, ok;
     uint32_t e, n = 0, nb = 0;
     ok = mono_screens(UI_GREY_INDEX, screen_gray, &n);
-    bad += check("GREY: themed screens remain gray; the fixed-color settings and GRAIN skins are colorful", ok && n > 200u);
+    bad += check("GREY: themed screens remain gray; the fixed-color settings and EDIT grid skins are colorful", ok && n > 200u);
     ok = mono_screens(UI_BW_INDEX, screen_neutral, &nb);
-    bad += check("MONO: themed screens remain neutral; the fixed-color settings and GRAIN skins are colorful",
+    bad += check("MONO: themed screens remain neutral; the fixed-color settings and EDIT grid skins are colorful",
                  ok && nb == n);
     ui_power_on();
     for (e = 0; e < NPALETTES; e++) {               /* the other palettes are not gray: the check sees colour */

@@ -1150,6 +1150,7 @@ static void page_title(char *ti)
     const engine_t *e = ENGINES[t->eng_req % NENGINES];
     uint32_t i, n = 0, k = 0;
     const char *pt = pg->scope == SC_ENGINE ? e->page_title[pg->id[0] != P_E0] : 0;   /* EDIT: the engine's */
+    if(sample_grid_page(pg))pt="SAMPLE";
     if(grain_grid_page(pg))pt=grain_grid_page(pg)==1?"GRAINS":"CHAR";
     for (i = 0; i < NPAGES; i++)
         if (PAGES[i].fam == pg->fam && page_visible(i)) {
