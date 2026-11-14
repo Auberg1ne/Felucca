@@ -23,6 +23,7 @@ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint1
 #include "../firmware/src/gfx.c"
 #include "../firmware/src/panel.c"
 #include "../firmware/src/ui.c"
+#include "../firmware/src/menu_items.c"
 static void panel_setup(void) {}
 
 static uint8_t nor[0x100000], flash_ok = 1;
@@ -248,6 +249,23 @@ int main(int argc, char **argv)
     bad += check("a new LIST makes it readable again", list(0, &len, &crc) == 0 && get(0, 0, 64) == 0);
     usb.resets++;
     bad += check("a USB reset after LIST: GET is stale (5)", get(2, 0, 16) == 5u);
+
+    /* Hidden menu rows remain byte-compatible backup objects. */
+    reset();
+    menu_put(MI_COLOR,6);menu_put(MI_STYLE,1);menu_put(MI_LARGE,1);
+    menu_put(MI_SCOPE,1);menu_put(MI_HOME,HV_LEVELS);menu_put(MI_CHADD,1);
+    menu_put(MI_SELECT,SEL_VEL);menu_put(MI_MFOLLOW,1);menu_put(MI_SCRWAKE,1);
+    favorites.factory[15][13]=0xa5;
+    memset(&ps,0,sizeof ps);settings_export(&ps);
+    memset(&favorites,0,sizeof favorites);
+    bad += check("hidden DISPLAY/CONTROL/MIDI settings and unknown byte survive backup restore",
+                 put_all(1,&ps,sizeof ps,st_crc32(&ps,sizeof ps))==0 &&
+                 menu_get(MI_COLOR)==6 && menu_get(MI_STYLE)==1 && menu_get(MI_LARGE)==1 &&
+                 menu_get(MI_SCOPE)==1 && menu_get(MI_HOME)==HV_LEVELS && menu_get(MI_CHADD)==1 &&
+                 menu_get(MI_SELECT)==SEL_VEL && menu_get(MI_MFOLLOW)==1 && menu_get(MI_SCRWAKE)==1 &&
+                 favorites.factory[15][13]==0xa5);
+    {persist_t roundtrip=ps;settings_export(&roundtrip);
+     bad += check("hidden-setting backup re-export preserves complete canonical PER4 bytes",!memcmp(&ps,&roundtrip,sizeof ps));}
 
     /* settings */
     reset();

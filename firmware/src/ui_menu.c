@@ -209,6 +209,44 @@ static const uint16_t MTAB_ICON[MTAB_COUNT] = {ICON_X_EYE, ICON_X_KNOB, ICON_X_S
 #define MR_LX 16                                       /* its label */
 #define MR_VR 224                                      /* its value's right edge */
 #define MK_Y 224                                       /* the key hints */
+/* Firmware presentation only: logical rows, protocol IDs and settings stay intact. */
+static int menu_visible(uint32_t row)
+{
+    switch(row) {
+    case MI_COLOR: case MI_STYLE: case MI_LARGE: case MI_SCOPE: case MI_HOME:
+    case MI_CHADD: case MI_SELECT: case MI_MFOLLOW: case MI_SCRWAKE:return 0;
+    default:return row<MI_COUNT;
+    }
+}
+static uint32_t menu_visible_count(uint32_t tab)
+{
+    uint32_t n=0;
+    for(uint32_t row=0;row<MI_COUNT;row++)n+=MI_TAB[row]==tab && menu_visible(row);
+    return n;
+}
+static uint32_t menu_visible_row(uint32_t tab,uint32_t index)
+{
+    for(uint32_t row=0;row<MI_COUNT;row++)
+        if(MI_TAB[row]==tab && menu_visible(row)) {if(!index)return row;index--;}
+    return MI_COUNT;
+}
+static uint32_t menu_visible_index(uint32_t row)
+{
+    uint32_t n=0;
+    if(row>=MI_COUNT)return 0;
+    for(uint32_t r=0;r<row && r<MI_COUNT;r++)n+=MI_TAB[r]==MI_TAB[row] && menu_visible(r);
+    return n;
+}
+static void menu_normalize(void)
+{
+    if(!menu_visible(ui.menu_sel)) {
+        uint32_t tab=ui.menu_sel<MI_COUNT?MI_TAB[ui.menu_sel]:MTAB_DISPLAY;
+        /* A stale index must not land on an action such as LEARN CLEAR. */
+        ui.menu_sel=(uint8_t)menu_visible_row(tab,0);
+        ui.menu_row[tab]=0;
+        ui.force=1;
+    }
+}
 static int menu_large(void) { return (ui_prefs & PREF_LARGE) != 0u; }
 static uint32_t menu_tab(void) { return MI_TAB[ui.menu_sel % MI_COUNT]; }
 /* the shown tab's rows: 24 px (LARGE 28, a tab of up to 5 rows), 2 px apart (a tab of 6: 1 px, its panel then ends
@@ -216,10 +254,10 @@ static uint32_t menu_tab(void) { return MI_TAB[ui.menu_sel % MI_COUNT]; }
  * 1 px apart, its panel then ends 4 px lower, LARGE too; 1.3, a tab of 8: 18 px rows 1 px apart, the same end) */
 static int32_t mr_h(void)
 {
-    uint32_t n = mtab_rows(menu_tab());
+    uint32_t n = menu_visible_count(menu_tab());
     return n > 7u ? 18 : n > 6u ? 21 : menu_large() && n <= 5u ? 28 : 24;
 }
-static int32_t mr_gap(void) { return mtab_rows(menu_tab()) <= 5u ? 2 : 1; }
+static int32_t mr_gap(void) { return menu_visible_count(menu_tab()) <= 5u ? 2 : 1; }
 static int32_t mr_y(uint32_t k) { return MP_Y + MP_PAD + (int32_t)k * (mr_h() + mr_gap()); }
 
 /* the tab bar's place: the tab shown at pos tab * MT_ONE; with ANIM ON it follows in halving steps, a frame each
@@ -306,7 +344,7 @@ static void menu_row(uint32_t k, uint32_t row)
     v = menu_valued(row) ? menu_vname(row, menu_get(row)) : "";
     if (sel)
         cv_rrect(MR_X, y, MR_W, h, 6, T_THEME, T_SURF);
-    else if (k && row - 1u != ui.menu_sel)             /* a rule from the row above (none beside the selected one) */
+    else if (k && menu_visible_row(menu_tab(),k-1u) != ui.menu_sel)             /* a rule from the row above (none beside the selected one) */
         cv_rect(MR_X + 6, y - 1, MR_W - 12, 1, ux.style ? T_RULE : T_LINE);
     GFX_HOOK_ALIGN(0, y, 0, y + h, AL_V, "menu row name centred up/down");
     cv_text_on(MR_LX, vy, &AF_M, MI_NAME[row], fg, bg);
@@ -414,7 +452,8 @@ static void draw_menu(void)
     static const khint_t KEYS[3][3] = {{{KC_ALGO, "TAB"}, {KC_PRESETS, "ROW"}, {KC_OCTPM, "VALUE"}},
                                        {{KC_ALGO, "TAB"}, {KC_PRESETS, "ROW"}, {KC_OCTUP, "OPEN"}},
                                        {{KC_ALGO, "TAB"}, {KC_PRESETS, "ROW"}, {KC_OCTUP, "CLEAR"}}};
-    uint32_t pass, k, first, n, split, sig;
+    uint32_t pass, k, n, split, sig;
+    menu_normalize();
     int32_t pos0 = mt.pos;
     if (ui.menu == 1)
         mt_follow();
@@ -471,8 +510,7 @@ static void draw_menu(void)
         cv_blit(0, H_HEAD + MENU_DOC_H);
         return;
     }
-    first = mtab_first(menu_tab());
-    n = mtab_rows(menu_tab());
+    n = menu_visible_count(menu_tab());
     split = menu_split(n);
     for (pass = 0; pass < 2u; pass++) {
         int32_t top_y = pass ? (int32_t)split : H_HEAD;
@@ -484,7 +522,7 @@ static void draw_menu(void)
             cv_rrect(4, MP_Y, 232, mr_y(n) - mr_gap() + MP_PAD - MP_Y, 8, T_SURF, T_BG);
         for (k = 0; k < n; k++)
             if (mr_y(k) + mr_h() > top_y && mr_y(k) - 1 < top_y + (int32_t)cv_h)
-                menu_row(k, first + k);
+                menu_row(k, menu_visible_row(menu_tab(),k));
         if (pass)
             cv_key_row(8, 232, MK_Y, KEYS[ui.menu_sel == MI_LCLEAR ? 2 : !menu_valued(ui.menu_sel)], 3, 7u, T_BG);
         cv_oy = 0;
@@ -512,20 +550,23 @@ static void menu_close(void)
  * (ui_input.c) */
 static void menu_move(int32_t s)                       /* PRESETS: the next / previous row of the tab */
 {
-    uint32_t t = menu_tab(), f = mtab_first(t), n = mtab_rows(t), k = (ui.menu_sel - f + (s > 0 ? 1u : n - 1u)) % n;
-    ui.menu_sel = (uint8_t)(f + k);
+    menu_normalize();
+    uint32_t t = menu_tab(), n = menu_visible_count(t), k = (menu_visible_index(ui.menu_sel) + (s > 0 ? 1u : n - 1u)) % n;
+    ui.menu_sel = (uint8_t)menu_visible_row(t,k);
     ui.menu_row[t] = (uint8_t)k;
 }
 static void menu_tab_go(int32_t s)                     /* ALGORITHM: the next / previous tab, at its last row */
 {
+    menu_normalize();
     uint32_t t = menu_tab(), k;
-    ui.menu_row[t] = (uint8_t)(ui.menu_sel - mtab_first(t));
+    ui.menu_row[t] = (uint8_t)menu_visible_index(ui.menu_sel);
     t = (t + (s > 0 ? 1u : MTAB_COUNT - 1u)) % MTAB_COUNT;
-    k = ui.menu_row[t] < mtab_rows(t) ? ui.menu_row[t] : 0u;
-    ui.menu_sel = (uint8_t)(mtab_first(t) + k);
+    k = ui.menu_row[t] < menu_visible_count(t) ? ui.menu_row[t] : 0u;
+    ui.menu_sel = (uint8_t)menu_visible_row(t,k);
 }
 static void menu_input(uint32_t oct)                  /* oct: ui_input.c oct_taps */
 {
+    menu_normalize();
     int32_t s;
     uint32_t k, up = (oct >> 1) & 1u, dn = oct & 1u;
     if (ui.menu >= 2) {                                /* ABOUT: PRESETS scrolls (bounded); INFO, ABOUT: OCT- back to
