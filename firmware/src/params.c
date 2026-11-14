@@ -550,9 +550,30 @@ static const page_t PAGES[] = {
 #define NPAGES (sizeof(PAGES) / sizeof(PAGES[0]))
 static uint8_t mod_ui_slot;      /* the MOD page: the matrix slot (0..3) KNOB 2..4 edit */
 
+/* UI-only GRAIN view state; not part of a sound or any stored format. */
+static uint8_t grain_edit_row;
+static const uint8_t GRAIN_GRID[2][3][4]={
+    {{P_E0,P_E1,P_E2,P_E3},{P_E4,P_E5,P_E6,P_E7},{P_GFILTER_RSVD1,255,255,255}},
+    {{P_GTYPE,P_GA,P_GB,255},{P_GCUT,P_GRES,255,255},{P_VOICE,P_DETUNE,P_SPRD,255}}
+};
+static uint32_t grain_grid_page(const page_t *pg)
+{
+    if(TSEL->eng_req%NENGINES!=ENGI_GRAIN || pg->fam!=FAM_EDIT || pg->scope!=SC_ENGINE)return 0;
+    return pg->id[0]==P_E0?1u:pg->id[0]==P_E4?2u:0u;
+}
+static uint32_t grain_grid_param(uint32_t page,uint32_t row,uint32_t column)
+{
+    return page<2 && row<3 && column<4?GRAIN_GRID[page][row][column]:255u;
+}
+static uint32_t page_param_id(const page_t *pg,uint32_t column)
+{
+    uint32_t page=grain_grid_page(pg);
+    return column>=4?255u:page?grain_grid_param(page-1,grain_edit_row,column):pg->id[column];
+}
+
 static const param_desc_t *page_desc(const page_t *pg, uint32_t slot, int16_t **valp)
 {
-    uint32_t id = pg->id[slot];
+    uint32_t id = page_param_id(pg,slot);
     if (id == 0xFFu) {
         *valp = 0;
         return 0;

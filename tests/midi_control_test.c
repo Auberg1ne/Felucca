@@ -661,6 +661,8 @@ static int learn_test(void)
     uint32_t i;
     int16_t before[P_COUNT], cut, lvl;
     midi_test_reset();
+    /* CUT / RES on EDIT 2 are ANALOG controls, not GRAIN grid coordinates. */
+    set_engine_of(TSEL, 0u); TSEL->engine = 0u;
     bad += check("MIDI LEARN: nothing learned at power-on (every older setting: all 0)", !ui.ml.on && !ml_count() &&
                  !ml_tab[0] && !memcmp(ml_tab, ml_tab + 1, 31));
     memcpy(before, trk[0].p, sizeof before);

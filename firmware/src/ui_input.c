@@ -1118,7 +1118,7 @@ static void act_do(void)
             confirm_open(CF_ERASE_PROJ, k);
         return;
     }
-    id = cur_page()->id[c & 3u];
+    id = page_param_id(cur_page(),c & 3u);
     if (id != G_LOAD)
         ui.act = 0;
     switch (id) {
@@ -1756,7 +1756,10 @@ static void ui_input(void)
     if (!lay && (s = panel_enc(EN_ALGO)) != 0)     /* ALGORITHM: the selected track, on every page */
         track_select((uint32_t)clamp((int32_t)song.sel + (s > 0 ? 1 : -1), 0, NTRK - 1));
     if ((s = glo ? sel : panel_enc(EN_SELECT)) != 0) {   /* SELECT knob = global tempo; */
-        if (!glo && sel_mode() >= SEL_MODW) {         /* MENU > SELECT MODW / VEL (1.5.6, #84): it plays */
+        if(grain_grid_active() && !glo && !lay && !kq && !mom_down() && !lock_held()) {
+            grain_edit_row=(uint8_t)(((int32_t)grain_edit_row+3+s%3)%3);
+            ui.hot_t=0;ui.force=1;
+        } else if (!glo && sel_mode() >= SEL_MODW) {         /* MENU > SELECT MODW / VEL (1.5.6, #84): it plays */
             sel_play(sel_mode(), s);
         } else if (!glo && sel_mode() == SEL_PAGE) {   /* MENU > SELECT PAGE (1.5.5, #188): the pages, a detent
                                                          * each (ui.c page_turn); the tempo is GLO + SELECT, CLOCK's

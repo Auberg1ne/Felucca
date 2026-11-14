@@ -2058,7 +2058,7 @@ static int mono_screens(uint32_t pal, int (*chk)(void), uint32_t *n)
             settings.palette = pal; palette_set(pal);
             memset(host_screen, 0, sizeof host_screen);
             ui.force = 1; ui_draw();
-            ok &= chk();
+            ok &= grain_grid_active() ? !chk() : chk();
             (*n)++;
         }
         ui_power_on(); set_engine_of(TSEL, e); go_home();
@@ -2083,9 +2083,9 @@ static int test_mono_screens(void)
     int bad = 0, ok;
     uint32_t e, n = 0, nb = 0;
     ok = mono_screens(UI_GREY_INDEX, screen_gray, &n);
-    bad += check("GREY: themed screens remain gray; the fixed-color settings skin is colorful", ok && n > 200u);
+    bad += check("GREY: themed screens remain gray; the fixed-color settings and GRAIN skins are colorful", ok && n > 200u);
     ok = mono_screens(UI_BW_INDEX, screen_neutral, &nb);
-    bad += check("MONO: themed screens remain neutral; the fixed-color settings skin is colorful",
+    bad += check("MONO: themed screens remain neutral; the fixed-color settings and GRAIN skins are colorful",
                  ok && nb == n);
     ui_power_on();
     for (e = 0; e < NPALETTES; e++) {               /* the other palettes are not gray: the check sees colour */
@@ -9432,9 +9432,9 @@ static int test_help(void)
         ok &= help_fits(HELP_LAYER[l]);
     bad += check("1.5 HELP: a hint for every page, HOME, LEVELS, the grid and every layer; each fits its row, no word dropped", ok);
 
-    set_engine_of(TSEL, ENGI_GRAIN); go_title("PERS"); frame();
-    bad += check("HELP PERS: TYPE and personality amounts; parsed hints fit the footer",
-                 str_eq(help_page(), "[K1]TYPE[K2]AMOUNT[K3]AMOUNT") && help_fits(help_page()));
+    set_engine_of(TSEL, ENGI_GRAIN); go_title("EDIT 2"); frame();
+    bad += check("HELP GRAIN grid: SELECT row, K1-4 edit, EDIT page; parsed hints fit the footer",
+                 str_eq(help_page(), "[SELECT]ROW[K1-4]EDIT[EDIT]PAGE") && help_fits(help_page()));
     set_engine_of(TSEL, 0u); go_title("A-FILT"); frame();
     bad += check("HELP A-FILT: LP BP HP and CUTOFF; parsed hints fit the footer",
                  str_eq(help_page(), "[K1]LP BP HP[K2]CUTOFF[EDIT]VOICE") && help_fits(help_page()));

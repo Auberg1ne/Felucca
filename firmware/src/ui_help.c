@@ -76,6 +76,8 @@ static const char *help_page(void)
         return home_levels() ? H_LEVELS : H_HOME;
     if (grid_on() && !detail_on())
         return H_GRID;
+    if (grain_grid_page(cur_page()))
+        return "[SELECT]ROW[K1-4]EDIT[EDIT]PAGE";
     t = cur_page()->title;
     if (sel_mode() != SEL_BPM && str_eq(t, "CLOCK"))   /* (1.5.5: SELECT steps the pages; 1.5.6: or plays) */
         return "[K1]TEMPO[GLO]HOLD: TAP";

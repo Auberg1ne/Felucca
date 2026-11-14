@@ -21,6 +21,7 @@ int main(int argc,char **argv)
  t->p[P_MUTE]=0;t->p[P_E0]=3;t->p[P_E1]=0;t->p[P_E2]=80;t->p[P_E3]=90;t->p[P_E4]=0;t->p[P_E5]=0;t->p[P_E6]=0;
  t->p[P_GTYPE]=0;t->p[P_GB]=0;t->p[P_GCUT]=50;t->p[P_GRES]=0;t->p[P_GFILTER_RSVD1]=stretch;
  t->p[P_ATK]=0;t->p[P_DEC]=0;t->p[P_SUS]=127;t->p[P_REL]=0;t->p[P_REV]=t->p[P_DLY]=t->p[P_CHOR]=t->p[P_DIST]=0;
+ open_family(FAM_EDIT); /* Exercise the live EDIT renderer during the audio regression. */
  render(1200);web_midi(0x90,60,127);render(50);
  uint32_t before=0,after=0;for(unsigned i=0;i<GR_POLY;i++)before+=gr_of(t)->head[i];
  recording=1;render(16);for(unsigned i=0;i<GR_POLY;i++)after+=gr_of(t)->head[i];render(484);fclose(out);

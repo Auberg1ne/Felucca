@@ -231,6 +231,19 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_grid_test" tests/grain_grid_test.c -lm
+    run "GRAIN grid: row/page routing, editing, empty cells, locks, motion and SELECT priority" "$OUT/grain_grid_test"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_grid_visuals_test" web/emu/grain_grid_visuals_test.c -lm
+    run "GRAIN grid: native bounds, dynamic labels and every live value" "$OUT/grain_grid_visuals_test"
+    if [ -n "${GRAIN_GRID_BASE_TREE:-}" ]; then
+        for GRID in current base; do
+            GRID_SOURCE=ui_test.c
+            [ "$GRID" != base ] || GRID_SOURCE="$GRAIN_GRID_BASE_TREE/tests/ui_test.c"
+            $CC -w -ffp-contract=off "-DGRID_UI_SOURCE=\"$GRID_SOURCE\"" -Itests -Ibuild/gen -Ifirmware/src -o "$OUT/grid_nav_$GRID" tests/grain_grid_navigation_test.c -lm
+            run "GRAIN grid: non-grid state/pixel snapshots ($GRID)" "$OUT/grid_nav_$GRID" "$OUT/grid_nav_$GRID.bin"
+        done
+        run "GRAIN grid: all non-grid snapshots byte-identical to Stage 1" cmp "$OUT/grid_nav_current.bin" "$OUT/grid_nav_base.bin"
+    fi
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_stretch_test" tests/grain_stretch_test.c -lm
     run "GRAIN STRETCH: canonical descriptors, runtime loads, MIDI/motion and HOME K3" "$OUT/grain_stretch_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_stretch_editor_test" tests/grain_stretch_editor_test.c -lm

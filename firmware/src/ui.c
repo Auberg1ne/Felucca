@@ -381,6 +381,7 @@ static const page_t *cur_page(void) { return page_over ? page_over : &PAGES[ui.p
  *            is, the card labels in M;
  *   LK_OFF   LARGE off; the menu (its own LARGE: ui_menu.c), the dialogs and NAME keep their own layout in every case. */
 enum { LK_OFF, LK_LABEL, LK_TALL };
+static int grain_grid_active(void);
 static int mixer_visuals_page(void);
 static int clock_visuals_page(void);
 static uint32_t large_kind(void)
@@ -428,6 +429,8 @@ static uint32_t layer_btn(void);
  * track's (its patch's operators, ui_fm6op.c) */
 static int page_visible(uint32_t i)
 {
+    if(TSEL->eng_req%NENGINES==ENGI_GRAIN && PAGES[i].fam==FAM_EDIT)
+        return grain_grid_page(&PAGES[i])!=0;
     if (PAGES[i].id[0] == P_GTYPE)                  /* PERS: GRAIN only */
         return TSEL->eng_req % NENGINES == ENGI_GRAIN;
     if (PAGES[i].scope == SC_TRACK && PAGES[i].id[0] >= P_LN0 && PAGES[i].id[0] <= P_LN7)
@@ -510,13 +513,13 @@ static int lock_page_ok(uint32_t i)
     if (i >= NPAGES || (PAGES[i].scope != SC_TRACK && PAGES[i].scope != SC_ENGINE) || PAGES[i].graph == GR_MOD)
         return 0;
     for (k = 0; k < 4u; k++)
-        if (PAGES[i].id[k] != 0xFFu && motion_param(PAGES[i].id[k]))
+        if (page_param_id(&PAGES[i],k) != 0xFFu && motion_param(page_param_id(&PAGES[i],k)))
             return 1;
     return 0;
 }
 static uint32_t lock_id(uint32_t k)
 {
-    uint32_t id = ui.plk_src && lock_page_ok(ui.plk_src - 1u) ? PAGES[ui.plk_src - 1u].id[k & 3u]
+    uint32_t id = ui.plk_src && lock_page_ok(ui.plk_src - 1u) ? page_param_id(&PAGES[ui.plk_src - 1u],k & 3u)
                                                                : ENGINES[TSEL->eng_req % NENGINES]->knob[k & 3u];
     return id < P_COUNT && motion_param(id) ? id : 0xFFu;
 }
@@ -535,6 +538,7 @@ static void help_start(void) { ui.help_t = (uint8_t)(help_on() ? HELP_FRAMES : 0
 static void page_entered(void)
 {
     const page_t *pg = cur_page();
+    if(grain_grid_page(pg))grain_edit_row=0;
     if (!ui.home && pg->graph == GR_EVENTS)      /* AUTOMATION: + ADD on the SEQ cursor's step */
         ev_enter();
     if (!ui.home && lock_page_ok(ui.page))
@@ -1751,6 +1755,7 @@ static void track_select(uint32_t i)
     if (i >= NTRK || i == song.sel)
         return;
     song.sel = (uint8_t)i;
+    if(grain_grid_page(cur_page()))grain_edit_row=0;
     ui.entry_open = 0;
     ui.hot_t = 0;
     ui.ev_keep = 0;                              /* (AUTOMATION: a row kept at its default was the other track's) */
@@ -1807,7 +1812,7 @@ static uint32_t act_col(void)
 static const char *act_name(uint32_t c)          /* column c's action (the footer hint) */
 {
     static const char *const UP_GO[3] = {"LOAD", "ERASE", "SAVE"};
-    uint32_t id = cur_page()->id[c & 3u];
+    uint32_t id = page_param_id(cur_page(),c & 3u);
     if (cur_page()->graph == GR_EVENTS) return ev_act_name();
     if (cur_page()->graph == GR_TOOLS) {
         static const char *const actions[] = {"CLEAR", "INIT", "DELETE", "CLEAR"};
@@ -1849,7 +1854,7 @@ static int act_ready(void)
 #endif
     if (cur_page()->graph == GR_SLOTS && c == 1u)       /* PROJECT ERASE: a used slot, stopped */
         return !song.playing && project_used((uint32_t)song.g[G_SLOT] - 1u);
-    id = cur_page()->id[c & 3u];
+    id = page_param_id(cur_page(),c & 3u);
     if (id == G_LOAD)
         return project_used((uint32_t)song.g[G_SLOT] - 1u);
     if (id == G_SAVE)

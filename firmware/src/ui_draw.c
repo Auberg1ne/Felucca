@@ -1629,6 +1629,7 @@ static uint32_t home_levels_poll(home_level_view_t *view, uint32_t now)
 #include "ui_knob_motion.c"
 #include "mixer_visuals.c"
 #include "clock_visuals.c"
+#include "grain_edit_grid.c"
 static int home_step_icons_enabled(void) { return COFFEE_HOME_VISUALS; }
 static uint16_t home_step_accent(uint32_t channel)
 {
@@ -1659,6 +1660,7 @@ static void ui_draw(void)
 #if COFFEE_CLOCK_VISUALS
     if(!clock_visuals_page() || scrn.st!=SCR_ON || kb_boot_hold)clock_visuals.valid=0;
 #endif
+    if(!grain_grid_active() || scrn.st!=SCR_ON || kb_boot_hold)grain_grid.valid=0;
     ui.frame++;
     if (counting != (uint8_t)seq_counting()) {          /* a count-in began or ended: the page drawn again after it */
         counting = (uint8_t)seq_counting();
@@ -1721,6 +1723,8 @@ static void ui_draw_page(uint32_t counting)
         page_entered();
     }
     cursor_fix();
+    if(grain_grid_active()){draw_head();draw_grain_grid();}
+    else {
 #if COFFEE_HOME_VISUALS
     if(ui.home) draw_scientists_home();
 #if COFFEE_MIXER_VISUALS
@@ -1751,6 +1755,7 @@ static void ui_draw_page(uint32_t counting)
 #if COFFEE_HOME_VISUALS
     }
 #endif
+    }
     if (ui.msg_t && !--ui.msg_t && ui.msg2[0]) {     /* the second message (ui_notices) */
         str_cpy(ui.msg, ui.msg2, sizeof ui.msg);
         ui.msg2[0] = 0;
