@@ -1344,3 +1344,14 @@ device gone at ~0.3 s, the MIDI port gone at ~0.57 s and back at ~1.15 s; ON -> 
 at ~0.6 s while the MIDI port was not seen to disappear at all (so do not wait for a disconnect event: after
 a real change, wait ~1.5 s and open again). What the editor sends in that window is lost, `WATCH` ends with the
 bus reset (send `INFO` and `WATCH` again after reconnecting), and a backup in progress answers rc 5 (stale).
+
+### Optional GRAIN-only product capability
+
+A GRAIN-only build appends `[0x47, 1, 8]` at the end of INFO metadata. Engine
+count/names/IDs and parameter descriptors retain the multi-engine ABI. Only
+engine 8 may be activated; clients should filter engine and sound-preset choices.
+Unsupported engine SET/PRESET/PROJECT and FM6 writes do not return a successful
+reply (the existing failed-operation convention for commands without an error
+field). Backup commit rejects incompatible objects with status 2 before writing.
+Legacy backup reads remain available. See `docs/grain-only.md` for autosave,
+read-only storage, per-object restore and older-client limitations.

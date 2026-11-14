@@ -934,16 +934,38 @@ static void project_capture(project_t *p)
     p->sum = proj_sum(p);
 }
 
+/* Parsing/storage codecs stay multi-engine. Policy only gates activation/writes. */
+static int grain_project_ok(const project_t *p)
+{
+    if (!FELUCCA_GRAIN_ONLY) return 1;
+    for (uint32_t k = 0; k < NTRK; k++)
+        if (p->t[k].engine != ENGI_GRAIN || p->t[k].preset == PROJ_DEF_KEEP) return 0;
+    return 1;
+}
+static int grain_slot_readonly(uint32_t slot)
+{
+    if (!FELUCCA_GRAIN_ONLY) return 0;
+    if(!proj_import(&proj_scratch,&proj_slot[slot&3u],sizeof(project_store_t)))return 0;
+    return !grain_project_ok(&proj_scratch);
+}
 /* the music as it is now -> slot, named `name` (0: the current name; "" none); 0 saved, nonzero refused or failed.
  * The current name becomes the saved one */
 static int project_save_as(uint32_t slot, const char *name)
 {
     project_t *p = &proj_scratch;
+    if (grain_slot_readonly(slot)) {
+        ui_message("GRAIN ONLY: PROJECT READ ONLY");
+        return 1;
+    }
     if (transport_busy()) {                            /* a flash erase silences the audio and stalls the */
         ui_message("STOP TO SAVE");                     /* sequencer (storage_hw.c): only while stopped */
         return 1;
     }
     project_capture(p);
+    if (!grain_project_ok(p)) {
+        ui_message("GRAIN ONLY: SAVE REFUSED");
+        return 1;
+    }
     if (name) {
         memset(p->name, 0, sizeof p->name);
         memcpy(p->name, name, str_len(name) < PROJ_NAME_LEN ? str_len(name) : PROJ_NAME_LEN);
@@ -1032,6 +1054,10 @@ static int project_info(uint32_t slot, char *b, uint16_t *len48, uint32_t *den, 
  * an empty slot), 2 failed (the slot as it was) */
 static int project_rename(uint32_t slot, const char *name)
 {
+    if (grain_slot_readonly(slot)) {
+        ui_message("GRAIN ONLY: PROJECT READ ONLY");
+        return 1;
+    }
     project_t *p = &proj_scratch;
     if (transport_busy()) {
         ui_message("STOP TO SAVE");
@@ -1068,6 +1094,10 @@ static int project_rename(uint32_t slot, const char *name)
  * header's slot letter goes). 0 erased, 1 refused (playing, an empty slot), 2 failed (the slot as it was) */
 static int project_erase(uint32_t slot)
 {
+    if (grain_slot_readonly(slot)) {
+        ui_message("GRAIN ONLY: PROJECT READ ONLY");
+        return 1;
+    }
     uint32_t k;
     slot &= 3u;
     if (transport_busy()) {                            /* (a flash erase silences the audio: project_save_as) */
@@ -1107,6 +1137,10 @@ static int project_restore_runtime(const project_t *input)
     project_t *p = &proj_scratch;
     uint32_t i, k;
     if (!proj_ok(input) || !proj_engines_ok(input)) return 1;
+    if (!grain_project_ok(input)) {
+        ui_message("GRAIN ONLY: LEGACY PROJECT");
+        return 2;
+    }
     mom_back(0);                                  /* (ui_input.c MOMENTARY: the values as they were, then the load) */
     memset(drum_mute, 0, sizeof drum_mute);       /* (1.4.1: the DRUM lanes' mutes, performance state) */
     if (p != input) memcpy(p, input, sizeof *p);
@@ -1181,17 +1215,19 @@ static int project_restore_runtime(const project_t *input)
     memset(snd_said, 0, sizeof snd_said);               /* a missing sample is said again, after LOADED */
     return 0;
 }
-static void project_load(uint32_t slot)
+static int project_load(uint32_t slot)
 {
 #if FELUCCA_FLASH
     if (flash_ok && !proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) proj_fetch(slot);
 #endif
-    if (!proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) { ui_message("EMPTY SLOT"); return; }
+    if (!proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) { ui_message("EMPTY SLOT"); return 1; }
     proj_bound(&proj_scratch);                          /* a retained RAM slot of an older format: as from flash */
     if (!project_restore_runtime(&proj_scratch)) {
         proj_cur = (uint8_t)(slot & 3u);
         pat_from_set((slot & 3u) + 1u);
+        return 0;
     }
+    return 1;
 }
 
 /* settings + learned panel table: one flash object. The flash copy wins at
@@ -1260,6 +1296,10 @@ static uint32_t chain_prepare(void)
                 continue;
             if (!project_used(s))
                 return 3u + s;
+            if (!grain_project_ok(&proj_scratch)) {
+                ui_message("GRAIN ONLY: LEGACY SONG");
+                return 7u;
+            }
             used |= 1u << s;
         }
     chain.config = chain_config;
@@ -1408,7 +1448,7 @@ static void autosave_poll(void)
 {
 #if FELUCCA_FLASH
     uint32_t sig;
-    if (!flash_ok || fm1_ms - as.poll < AS_POLL_MS)
+    if (grain_autosave_protected || !flash_ok || fm1_ms - as.poll < AS_POLL_MS)
         return;
     as.poll = fm1_ms;
     sig = autosave_sig();
@@ -1439,7 +1479,12 @@ static int autosave_boot(int allowed)
 {
     int rc = 0;
 #if FELUCCA_FLASH
-    if (flash_ok && allowed && !(ui_prefs & PREF_RESTORE_OFF)) {
+    if(FELUCCA_GRAIN_ONLY && flash_ok){
+        int n=st_load(OBJ_AUTOSAVE,&proj_wire,sizeof proj_wire);
+        grain_autosave_protected|=n>0 && (!proj_import(&proj_scratch,&proj_wire,n) || !grain_project_ok(&proj_scratch));
+        if(grain_autosave_protected)ui_message("GRAIN ONLY: AUTOSAVE READ ONLY");
+    }
+    if (!grain_autosave_protected && flash_ok && allowed && !(ui_prefs & PREF_RESTORE_OFF)) {
         int n;
         proj_wire_gen++;
         n = st_load(OBJ_AUTOSAVE, &proj_wire, sizeof proj_wire);

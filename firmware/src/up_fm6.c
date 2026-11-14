@@ -184,7 +184,7 @@ static void upf_boot(void)                       /* up_boot, after the user pres
     if (flash_ok && st_load(OBJ_UPFM6, &upf, sizeof upf) == (int)sizeof upf && upf_valid(&upf))
         return;
     upf_empty();
-    if (flash_ok && st_current(OBJ_FM6BANK, &h) >= 0 && h.len == sizeof(fm6_bank_t) &&
+    if (!FELUCCA_GRAIN_ONLY && flash_ok && st_current(OBJ_FM6BANK, &h) >= 0 && h.len == sizeof(fm6_bank_t) &&
         fm6_bank_valid((const fm6_bank_t *)st_buf)) {
         upf_migrate((const fm6_bank_t *)st_buf);   /* (st_buf holds the bank until upf_save) */
         upf_save();

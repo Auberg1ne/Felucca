@@ -454,6 +454,7 @@ const parse = {
       if (trailer[r] === 0x4E && trailer[r + 1] === 1) r += 3;                            /* and the MENU settings (1.0.4) */
       if (o.syncCaps && trailer[r] === 0x52 && trailer[r + 1] === 1) o.ratchet = trailer[r + 2];   /* RATCH: max hits */
     }
+    o.engineOnly = a.length>=3 && a[a.length-3]===0x47 && a[a.length-2]===1 ? a[a.length-1] : null;
     return o;
   },
   [CMD.UI_STATE](a) {
@@ -1271,6 +1272,7 @@ const trackOwn = (i, pe0) => TRACK_OWN.has(i) || (pe0 >= 83 && P_CHORD.includes(
    there = undo) and treats the SETs right after G_ENGSEL as part of this load (EDITOR_PROTOCOL.md "undo").
    opt: {gEng: G_ENGSEL id, progress(i, n)} */
 async function auditionPatch(rq, info, pt, opt = {}) {
+  if(!engineAllowed(info,pt.engine))throw new Error("GRAIN-only firmware: incompatible preset; original preserved");
   await rq(req.set(1, opt.gEng ?? 20, pt.engine));
   const dump = parse[CMD.DUMP](await rq(req.dump()), info);
   const n = Math.min(info.pcount, pt.p.length);
@@ -2484,11 +2486,13 @@ function engineOrder(names) {
     .sort((a, b) => rank(names[a]) - rank(names[b]) || a - b);
 }
 
+function deviceEngineOrder(info) { return engineOrder(info.engines).filter((e) => info.engineOnly == null || e === info.engineOnly); }
+function engineAllowed(info, engine) { return info.engineOnly == null || engine === info.engineOnly; }
 function devicePresetRows(info, names, preferences) {
   if (!preferences || !(preferences.state.caps & 8)) return [];
-  const rows = engineOrder(info.engines).filter((engine) => names[engine]).flatMap((engine) => names[engine]
+  const rows = deviceEngineOrder(info).filter((engine) => names[engine]).flatMap((engine) => names[engine]
     .map((name, preset) => ({ engine, preset, name, user: false })).filter((row) => aliasOf(names[engine], row.preset) === row.preset));
-  for (const slot of preferences.slots.slots) if (slot.used)
+  for (const slot of preferences.slots.slots) if (slot.used && engineAllowed(info, slot.engine))
     rows.push({ engine: info.nengines, preset: slot.slot, name: slot.name, user: true });
   return rows.map((row) => ({ ...row, favorite: !!(preferences.favorites[row.engine] || [])[row.preset] }))
     .filter((row) => !preferences.state.filter || row.favorite);
@@ -3091,7 +3095,7 @@ async function loadSteps(d = dev) {
 function buildUI() {
   const sel = $("engine");
   /* (engine 1, "-": DIGITAL retired, reserved: never offered) */
-  sel.replaceChildren(...engineOrder(dev.info.engines).map((i) => el("option", { value: i, text: dev.info.engines[i] })));   /* (shown order) */
+  sel.replaceChildren(...deviceEngineOrder(dev.info).map((i) => el("option", { value: i, text: dev.info.engines[i] })));   /* (shown order) */
   dev.mix = null;
   buildGroups();
   updateBrowser();
@@ -3306,6 +3310,7 @@ $("engine").addEventListener("change", () => choosePreset(+$("engine").value, 0)
 $("preset").addEventListener("change", () => { if (dev) choosePreset(dev.dump.engine, +$("preset").value); });
 async function choosePreset(e, p) {
   if (!dev) return;
+  if(!engineAllowed(dev.info,e))throw new Error("GRAIN-only firmware: incompatible engine");
   const releaseBusy = beginBusy();
   try {
     selfLoad(true);
@@ -4515,7 +4520,7 @@ $("file").addEventListener("change", async () => {
     data = JSON.parse(await f.text());
     assertSession(session);
     if (!Number.isInteger(data.engine) || !Number.isInteger(data.preset) || !Array.isArray(data.p)) throw new Error("engine / preset / p");
-    if (data.engine < 0 || data.engine >= dev.info.nengines) throw new Error("engine " + data.engine);
+    if (data.engine < 0 || data.engine >= dev.info.nengines || !engineAllowed(dev.info, data.engine)) throw new Error("incompatible engine " + data.engine);
   } catch (e) { if (e.message !== "closed") sayK("badfile", e.message); return; }
   const releaseBusy = beginBusy();
   try {

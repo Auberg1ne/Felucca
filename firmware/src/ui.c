@@ -6,7 +6,7 @@
  * every element remembers what it last drew and is redrawn only on change. */
 static int project_save(uint32_t slot);
 static void panel_setup(void);
-static void project_load(uint32_t slot);
+static int project_load(uint32_t slot);
 static int project_used(uint32_t slot);
 static uint32_t chain_prepare(void);
 static int up_used(uint32_t k);              /* user presets: upreset.c */
@@ -495,6 +495,8 @@ static void chain_play_ui(void)
     uint32_t rc = chain_prepare();
     if (!rc) {
         ui.force = 1;
+    } else if(rc==7u) {
+        ui_message("GRAIN ONLY: LEGACY SONG");
     } else if (rc >= 3u) {
         char b[8] = "A EMPTY";
         b[0] = (char)('A' + rc - 3u);
@@ -1097,6 +1099,10 @@ static void undo_swap(void)
         return;
     }
     t = &trk[(undo.trk - 1u) % NTRK];
+    if ((undo.what & UNDO_SOUND) && !grain_engine_allowed(undo.eng)) {
+        ui_message("GRAIN ONLY: LEGACY UNDO");
+        return;
+    }
     motion_restore(t);
     motion_store_t current_motion;
     motion_snapshot_track(t, &current_motion);
@@ -1306,6 +1312,10 @@ static uint32_t preset_rank(const engine_t *e, uint32_t k)
  * (fm4_convert.c). Every path that brings a DIGITAL sound into a track ends here: a track never keeps engine 1 */
 static void fm4_apply(track_t *t, int16_t *p)
 {
+    if (FELUCCA_GRAIN_ONLY) {
+        ui_message("GRAIN ONLY: PRESET REFUSED");
+        return;
+    }
     uint8_t v[FP_SIZE + 1u];
     uint32_t pr = fm4_convert(p, v), tr = trk_index(t), f;
     fm6_set_patch(tr, v);
@@ -1326,6 +1336,10 @@ static void fm4_track(track_t *t)                     /* t holds a DIGITAL sound
  * power-on sound): its sound as a preset load sets it, converted. The sound only (not the steps, not param_kept) */
 static void fm4_load_preset(track_t *t, uint32_t k)
 {
+    if (FELUCCA_GRAIN_ONLY) {
+        ui_message("GRAIN ONLY: PRESET REFUSED");
+        return;
+    }
     int16_t p[P_COUNT];
     uint32_t i;
     load_begin(t, UNDO_SOUND);
@@ -1349,6 +1363,10 @@ static void apply_preset_to(track_t *t, uint32_t pi)
 {
     const engine_t *e = ENGINES[t->eng_req % NENGINES];
     uint32_t i;
+    if (!grain_engine_allowed(t->eng_req)) {
+        ui_message("GRAIN ONLY: PRESET REFUSED");
+        return;
+    }
 #if !FELUCCA_FM4
     if (t->eng_req % NENGINES == ENGI_DIGITAL) {
         fm4_load_preset(t, pi);
@@ -1395,6 +1413,10 @@ static void apply_preset_to(track_t *t, uint32_t pi)
  * its values or the new one with its own (voice.c engine_block), never one with the other's */
 static void set_engine_of(track_t *t, uint32_t ei)
 {
+    if (!grain_engine_allowed(ei)) {
+        ui_message("GRAIN ONLY: ENGINE REFUSED");
+        return;
+    }
     const engine_t *e = ENGINES[ei % NENGINES];
     uint32_t i;
 #if !FELUCCA_FM4
@@ -1426,6 +1448,10 @@ static void set_engine(uint32_t ei) { set_engine_of(TSEL, ei); }
 static void clean_engine_of(track_t *t)
 {
     uint32_t ei = t->eng_req % NENGINES, i;
+    if (!grain_engine_allowed(t->eng_req)) {
+        ui_message("GRAIN ONLY: INIT REFUSED");
+        return;
+    }
     const engine_t *e = ENGINES[ei];
 #if !FELUCCA_FM4
     if (ei == ENGI_DIGITAL) {                         /* (retired: it becomes FM6, fm4_track) */
@@ -1515,6 +1541,10 @@ static void track_defaults(track_t *t)
 /* switch engine (its defaults + first preset) and say so */
 static void select_engine(uint32_t e)
 {
+    if (!grain_engine_allowed(e)) {
+        ui_message("GRAIN ONLY: ENGINE REFUSED");
+        return;
+    }
     set_engine(e);
     ui_say("ENGINE ", ENGINES[TSEL->eng_req]->name);
     ui.force = 1;
@@ -1522,6 +1552,26 @@ static void select_engine(uint32_t e)
 
 /* the presets of every engine (in ENGINE_ORDER), then the used user presets, as one list (the PRESETS knob and the
  * PRESETS page browse it) */
+/* Storage/editor slots keep their original numbering, including read-only legacy records. */
+static int up_playable(uint32_t k) { return up_used(k) && grain_engine_allowed(up_engine(k)); }
+static uint32_t up_playable_count(void)
+{
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < UP_SLOTS; k++) n += up_playable(k);
+    return n;
+}
+static uint32_t up_playable_nth(uint32_t n)
+{
+    for (uint32_t k = 0; k < UP_SLOTS; k++)
+        if (up_playable(k) && !n--) return k;
+    return UP_SLOTS;
+}
+static uint32_t up_playable_rank(uint32_t slot)
+{
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < slot; k++) n += up_playable(k);
+    return n;
+}
 static uint32_t preset_all_pos(uint32_t *total)          /* list index of the selected track's preset */
 {
     uint32_t n = 0, cur = 0, e, r;
@@ -1532,8 +1582,8 @@ static uint32_t preset_all_pos(uint32_t *total)          /* list index of the se
         n += preset_shown(e);
     }
     if (user_of(TSEL) < UP_SLOTS)
-        cur = n + up_rank(user_of(TSEL));
-    *total = n + up_count();
+        cur = n + up_playable_rank(user_of(TSEL));
+    *total = n + up_playable_count();
     return cur;
 }
 
@@ -1544,7 +1594,7 @@ static uint32_t preset_all_at(uint32_t n, uint32_t *k)
     for (r = 0; r < NENG_SHOWN && n >= preset_shown(eng_vis(r)); r++)
         n -= preset_shown(eng_vis(r));
     if (r == NENG_SHOWN) {
-        *k = up_nth(n);
+        *k = up_playable_nth(n);
         return NENGINES;
     }
     e = eng_vis(r);

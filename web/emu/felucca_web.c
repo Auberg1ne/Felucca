@@ -482,6 +482,10 @@ EXPORT uint8_t *web_anim_levels(void)
  * steps, held; T4 DRUM, kick snare and hats. PLAY is the page's (or the test's) to press */
 EXPORT void web_test_heavy(void)
 {
+#if FELUCCA_GRAIN_ONLY
+    for(uint32_t p=0;p<NTRK;p++){host_preset(&trk[p],ENGI_GRAIN,p);uint8_t note=(uint8_t)(48+4*p);for(uint32_t i=0;i<16;i+=4)put_step(&trk[p],i,1,&note,ST_NOTE,0);}
+    ui.force=1;return;
+#endif
     static const uint8_t ENG[3][2] = {{12, 4}, {ENGI_PHYS, 7}, {8, 0}};
     static const uint8_t CH[4][4] = {{48, 55, 60, 64}, {45, 52, 57, 60}, {41, 48, 53, 57}, {43, 50, 55, 59}};
     uint32_t p, i;

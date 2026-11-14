@@ -115,6 +115,15 @@ static int up_valid(const up_rec_t *r)
 
 static int up_used(uint32_t k) { return k < UP_SLOTS && up_valid(up_rec(k)); }
 
+#ifndef UP_HOST
+static int grain_bank_readonly(const up_bank_t *b)
+{
+    if(!FELUCCA_GRAIN_ONLY)return 0;
+    for(uint32_t i=0;i<UP_PER_BANK;i++)if(b->r[i].used==UP_USED &&
+        (!up_valid(&b->r[i]) || !grain_engine_allowed(b->r[i].engine)))return 1;
+    return 0;
+}
+#endif
 static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_VER_GRID; }
 static int16_t up_value(const up_rec_t *r, uint32_t k) { return r->ver >= 4u ? (int16_t)r->packed[k] - 64 : r->p[k]; }
 static void up_set_value(up_rec_t *r, uint32_t k, int16_t v)
@@ -147,6 +156,9 @@ static void up_bank_check(uint32_t b, int len)
         up_rec_t *r = &bk->r[i];
         if (!up_valid(r))
             continue;
+#ifndef UP_HOST
+        if(FELUCCA_GRAIN_ONLY && !grain_engine_allowed(r->engine))continue; /* retain legacy bytes verbatim */
+#endif
         up_migrate(r);
         for (k = 0; k < 16u; k++)
             if (up_grid(r))
@@ -314,6 +326,8 @@ static int up_put(uint32_t k, const up_rec_t *r)
 #endif
     if (k >= UP_SLOTS)
         return 1;
+    if(FELUCCA_GRAIN_ONLY && ((up_rec(k)->used==UP_USED && (!up_valid(up_rec(k)) || !grain_engine_allowed(up_rec(k)->engine))) ||
+       (r && !grain_engine_allowed(r->engine)))){ui_message("GRAIN ONLY: PRESET READ ONLY");return 1;}
     if (transport_busy()) {                            /* no flash erase while playing (project_save) */
         ui_message("STOP TO SAVE");
         return 2;
@@ -461,6 +475,10 @@ static int up_load(uint32_t k)
     if (!up_used(k))
         return 1;
     r = up_rec(k);
+    if (!grain_engine_allowed(r->engine)) {
+        ui_message("GRAIN ONLY: LEGACY PRESET");
+        return 1;
+    }
     up_values(r, v);
     load_begin(t, UNDO_SOUND);                          /* (ui.c: the copy for SAVE held = undo) */
     panic_req |= (uint8_t)(1u << song.sel);
@@ -572,6 +590,10 @@ static void up_ui_named(uint32_t op, uint32_t k, const char *name, uint32_t cat)
     char l[4];
     int rc;
     up_slot_label(l, k);
+    if (FELUCCA_GRAIN_ONLY && k<UP_SLOTS && up_rec(k)->used==UP_USED && (!up_valid(up_rec(k)) || !grain_engine_allowed(up_rec(k)->engine))) {
+        ui_message("GRAIN ONLY: PRESET READ ONLY");
+        return;
+    }
     if ((op < 2u || op == 3u) && !up_used(k)) {
         ui_message("EMPTY SLOT");
         return;

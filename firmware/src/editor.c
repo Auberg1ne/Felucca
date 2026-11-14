@@ -647,6 +647,10 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
     const param_desc_t *d;
     if (!ed_args_ok(cmd, a, na))
         return;
+    if (FELUCCA_GRAIN_ONLY && (cmd==ED_FM6_PUT || cmd==ED_FM6_ERASE || (cmd>=ED_FM6B_BEGIN && cmd<=ED_FM6B_END))) {
+        ui_message("GRAIN ONLY: FM6 READ ONLY");
+        return;
+    }
     if ((cmd >= ED_SMP_BEGIN && cmd <= ED_SMP_INFO) || (cmd >= ED_BACKUP_LIST && cmd <= ED_BACKUP_PUT) ||
         (cmd >= ED_FM6B_BEGIN && cmd <= ED_FM6B_END))
         autosave_hold();                                /* (a transfer: no autosave meanwhile, project.c) */
@@ -704,6 +708,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(0x43); ed_b(1); ed_b(ML_N);   /* 1.5: MIDI LEARN's map (cmds 78, 79; editor_learn.c) */
         ed_b(0x4B); ed_b(1); ed_b(NCOND);   /* 1.5.5: a step's condition (1..11) after its nudge */
         ed_b(0x45); ed_b(1); ed_b(ED_PAL_N);   /* 1.6: CUSTOM, the user's palette: 5 colours (cmds 80, 81; editor_palette.c) */
+        if(FELUCCA_GRAIN_ONLY){ed_b(0x47);ed_b(1);ed_b(ENGI_GRAIN);} /* optional, appended policy tag */
         break;
     case ED_GET:
     case ED_SET:
@@ -712,6 +717,10 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         if (cmd == ED_SET && na >= 4u && !(chain_busy() && !a[0] && chain_owns(a[1]))) {
             if (a[0] == 1 && a[1] == G_ENGSEL) {          /* engine change: the safe path (1 without FELUCCA_FM4:
                                                            * DIGITAL's first preset, as FM6) */
+                if (!grain_engine_allowed((uint32_t)ed_rv(a+2))) {
+                    ui_message("GRAIN ONLY: ENGINE REFUSED");
+                    return;
+                }
                 ed_load_t b;
                 ed_load_before(&b);
                 set_engine((uint32_t)clamp(ed_rv(a + 2), 0, NENGINES - 1));
@@ -773,6 +782,10 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_load_t b;
         if (na < 2u || a[0] >= NENGINES)
             return;
+        if (!grain_engine_allowed(a[0])) {
+            ui_message("GRAIN ONLY: PRESET REFUSED");
+            return;
+        }
         ed_load_before(&b);
 #if !FELUCCA_FM4
         if (a[0] == ENGI_DIGITAL)                          /* a DIGITAL preset (retired): its sound, as FM6 */
@@ -797,8 +810,10 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
             if (ed_flash_stop() || project_save(a[1]))
                 return;                              /* the legacy reply has no failure bit: do not confirm a failed save */
         }
-        else if (a[0] == 0u)
-            project_load(a[1] & 3u);
+        else if (a[0] == 0u) {
+            int rc=project_load(a[1]&3u);
+            if(FELUCCA_GRAIN_ONLY && rc)return;
+        }
         ed_b(a[0]);
         ed_b(a[1] & 3u);
         ed_b(project_used(a[1] & 3u));

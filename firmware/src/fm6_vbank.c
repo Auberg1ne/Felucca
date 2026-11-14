@@ -126,7 +126,8 @@ static void fvb_boot(void)
             s = t;
             best = c;
         }
-    if (best < 2u && !fvb_valid(st_sector(OBJ_AUTOSAVE, best), 1, &s) && !st_erase(FVB_HOME) &&
+    if(FELUCCA_GRAIN_ONLY && best<2u)grain_autosave_protected=1;
+    if (!FELUCCA_GRAIN_ONLY && best < 2u && !fvb_valid(st_sector(OBJ_AUTOSAVE, best), 1, &s) && !st_erase(FVB_HOME) &&
         !fvb_prog(FVB_HOME + FVB_INFO, st_buf, FVB_LEN))
         fvb_commit(FVB_HOME, 0, s.seq);
     if (!fvb_valid(FVB_HOME, 0, &h))

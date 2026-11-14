@@ -98,7 +98,15 @@ static uint32_t ed_bk_commit(void)
     uint32_t obj;
     if (ed_bk_pos != ed_bk_len || st_crc32(raw, ed_bk_len) != ed_bk_crc) return 2;
     if (ed_bk_id == 0u || (ed_bk_id >= 2u && ed_bk_id <= 5u)) {
+        if (ed_bk_id>=2u && grain_slot_readonly(ed_bk_id-2u)) {
+            ui_message("GRAIN ONLY: PROJECT READ ONLY");
+            return 2;
+        }
         if (ed_bk_len && !proj_import(&proj_scratch, raw, (int)ed_bk_len)) return 2;
+        if (ed_bk_len && !grain_project_ok(&proj_scratch)) {
+            ui_message("GRAIN ONLY: LEGACY BACKUP");
+            return 2;
+        }
         if (ed_bk_len) {                            /* an older format becomes FUN10 inside its ranges */
             proj_bound(&proj_scratch);
             if (!proj_pack((project_store_t *)raw, &proj_scratch)) return 2;
@@ -118,10 +126,15 @@ static uint32_t ed_bk_commit(void)
         const up_bank_t *p = (const up_bank_t *)raw;
         if (ed_bk_len && (ed_bk_len != sizeof *p || p->magic != UP_BANK_MAGIC ||
             p->rsize != sizeof(up_rec_t) || p->nslot != UP_PER_BANK)) return 2;
+        if (grain_bank_readonly(&up_bank[ed_bk_id-6u]) || (ed_bk_len && grain_bank_readonly(p))) {
+            ui_message("GRAIN ONLY: PRESET BANK READ ONLY");
+            return 2;
+        }
         /* Unknown record versions remain inert bytes, preserving future/older bank data. */
         obj = OBJ_UPRESET0 + ed_bk_id - 6u;
     } else if (ed_bk_id == 8u) {                    /* an older archive's FM6 bank: into the restored user presets */
         if (!ed_bk_len) return 0;
+        if(FELUCCA_GRAIN_ONLY)return 2;
         if (ed_bk_len != sizeof(fm6_bank_t) || !fm6_bank_valid((const fm6_bank_t *)raw)) return 2;
         upf_migrate((const fm6_bank_t *)raw);
         sync_reload = 1; ui.force = 1;
@@ -129,6 +142,10 @@ static uint32_t ed_bk_commit(void)
     } else if (ed_bk_id == 9u) {                    /* the user presets' FM6 patches (0: none) */
         const upf_t *u = (const upf_t *)raw;
         if (ed_bk_len && (ed_bk_len != sizeof *u || !upf_valid(u) || (u->used >> (UP_SLOTS - 1u) >> 1))) return 2;
+        if(FELUCCA_GRAIN_ONLY){
+            if((ed_bk_len && u->used) || (upf_valid(&upf) && upf.used))return ed_bk_len==sizeof upf && !memcmp(&upf,raw,sizeof upf)?0:2;
+            return 0; /* empty sidecar restore is a no-op; no FM6 storage writes */
+        }
         if (ed_bk_len) memcpy(&upf, raw, sizeof upf); else upf_empty();
         sync_reload = 1; ui.force = 1;
         return upf_save() == 2 ? 4u : 0u;           /* (a failed write keeps the restored RAM copy) */

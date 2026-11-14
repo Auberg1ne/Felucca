@@ -423,6 +423,7 @@ static int autosave_test(void)
     return bad;
 }
 
+#ifndef PERSISTENCE_TEST_NO_MAIN
 int main(void)
 {
     int bad = 0, ok;
@@ -729,3 +730,5 @@ int main(void)
     printf("%s\n", bad ? "PERSISTENCE TEST FAILED" : "persistence test passed");
     return bad != 0;
 }
+
+#endif
