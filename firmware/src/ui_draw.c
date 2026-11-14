@@ -814,7 +814,7 @@ static void sound_name(const track_t *t, char *b)
         str_cpy(b, e->presets[t->preset % e->npresets].name, 16);
 }
 
-/* The scientist HOME's step strip only; other pages keep their existing bars. */
+/* Shared coffee-bean strip: HOME, MIXER, CLOCK and GRAIN EDIT. Other pages keep bars. */
 static int home_step_icons_enabled(void);
 static int mixer_visuals_page(void);
 static int clock_visuals_page(void);
@@ -924,7 +924,7 @@ static void draw_foot(void)
             cv_text_r(232, 2, &AF_S, "ACCENT", T_ACCENT, T_BG);
         else
             cv_key_hint(232 - kh_w(KC_KEYS, "STEPS"), 2, KC_KEYS, "STEPS", 1, T_BG);   /* the keys are the steps */
-    } else if ((ui.home && home_step_icons_enabled()) || mixer_visuals_page() || clock_visuals_page()) {
+    } else if ((ui.home && home_step_icons_enabled()) || mixer_visuals_page() || clock_visuals_page() || grain_grid_active()) {
         draw_home_step_icons(t);
     } else {
         uint32_t i;

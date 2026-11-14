@@ -231,6 +231,8 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_theme_test" tests/grain_theme_test.c -lm
+    run "GRAIN theme: HOME-identical step symbols, selected track and real transport" "$OUT/grain_theme_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_grid_test" tests/grain_grid_test.c -lm
     run "GRAIN grid: row/page routing, editing, empty cells, locks, motion and SELECT priority" "$OUT/grain_grid_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_grid_visuals_test" web/emu/grain_grid_visuals_test.c -lm

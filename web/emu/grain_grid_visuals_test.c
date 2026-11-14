@@ -2,14 +2,25 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-static unsigned checks,bad_rects,bad_ink,text_n,blits,pixels;
+static unsigned checks,bad_rects,bad_ink,text_n,blits,pixels,ink_luma,bad_contrast;
 static char texts[128][32];
-static void grid_watch_ink(int x0,int y0,int x1,int y1,const char*s,unsigned flags,unsigned w,unsigned h){
+static void grid_watch_ink(int x0,int y0,int x1,int y1,const char*s,unsigned flags,unsigned w,unsigned h,const uint16_t *px){
  if(text_n<128)snprintf(texts[text_n++],32,"%s",s);
+ if(w==57 && h==50){
+  unsigned brightest=0;
+  for(int y=y0<0?0:y0;y<y1 && y<(int)h;y++)for(int x=x0<0?0:x0;x<x1 && x<(int)w;x++){
+   unsigned v=px[y*w+x],c=(v>>8)|((v&255)<<8);
+   unsigned l=((c>>11)*255u/31u*54u+((c>>5)&63)*255u/63u*183u+(c&31)*255u/31u*19u)>>8;
+   if(l>brightest)brightest=l;
+  }
+  /* The unchanged dim empty marker peaks at 94 on the light-palette AA curve. */
+  if(ink_luma<100 || brightest<(!strcmp(s,"--")?90u:150u)){bad_contrast++;fprintf(stderr,"contrast %s: ink%u brightest%u\n",s,ink_luma,brightest);}
+ }
  if(w==57 && h==50 && (x0<2 || y0<2 || x1>55 || y1>48 || (flags&3))){bad_ink++;fprintf(stderr,"ink %s: %d %d %d %d flags%u\n",s,x0,y0,x1,y1,flags);}
 }
 static void rect(unsigned x,unsigned y,unsigned w,unsigned h){blits++;pixels+=w*h;bad_rects+=x+w>240 || y+h>240 || w*h>240u*124u;}
-#define GFX_HOOK_TEXT(x0,y0,x1,y1,s,flags) grid_watch_ink(x0,y0,x1,y1,s,flags,cv_w,cv_h)
+#define GFX_HOOK_INK(fg,bg) (ink_luma=ux.mono?((fg)>>11)*255u/31u:ux_luma(fg))
+#define GFX_HOOK_TEXT(x0,y0,x1,y1,s,flags) grid_watch_ink(x0,y0,x1,y1,s,flags,cv_w,cv_h,cv_px)
 #define GFX_HOOK_BLIT(x,y,r0) rect(x,y,cv_w,cv_h)
 #define GFX_HOOK_BEGIN() ((void)0)
 #define GFX_HOOK_PIXELS(n) ((void)0)
@@ -27,7 +38,9 @@ int main(int argc,char**argv){
   TSEL->p[P_GTYPE]=0;draw();for(unsigned i=0;i<12;i++)REQUIRE(seen(labels[page][i]));
   if(argc>1)picture(argv[1],page+1);
   for(unsigned row=0;row<3;row++){
-   grain_edit_row=row;draw();REQUIRE(web_fb[(28+54*row)*240+8]==swap16(GRAIN_ACCENT[song.sel]));
+   grain_edit_row=row;draw();REQUIRE(web_fb[(28+54*row)*240+30]==swap16(GRAIN_ACCENT[song.sel]));
+   REQUIRE(web_fb[(29+54*row)*240+30]==swap16(GRAIN_ACCENT[song.sel]));
+   unsigned other=(row+1)%3;REQUIRE(web_fb[(28+54*other)*240+30]==swap16(GRAIN_COFFEE));
    for(unsigned col=0;col<4;col++){
     unsigned id=grain_grid_param(page,row,col);if(id>=P_COUNT)continue;
     const param_desc_t*d=track_desc(TSEL,id);int old=TSEL->p[id];
@@ -39,7 +52,12 @@ int main(int argc,char**argv){
   if(page)for(unsigned type=0;type<4;type++){TSEL->p[P_GTYPE]=type;draw();REQUIRE(seen(personality[type][0]) && (type==3?(seen("HARMO") && seen("NICS")):seen(personality[type][1])));}
   open_family(FAM_EDIT);
  }
- REQUIRE(!bad_rects && !bad_ink);
+ for(unsigned palette=0;palette<NPALETTES;palette++)for(unsigned style=0;style<2;style++)for(unsigned channel=0;channel<4;channel++){
+  settings.palette=palette;ui_style=style;palette_set(palette);song.sel=channel;TSEL->eng_req=ENGI_GRAIN;draw();
+  REQUIRE(web_fb[28*240+30]==swap16(GRAIN_ACCENT[channel]));
+  REQUIRE(web_fb[28*240+3]==0); /* rounded corner even with legacy LINE preference */
+ }
+ REQUIRE(!bad_rects && !bad_ink && !bad_contrast);
  grain_edit_row=0;draw();unsigned n=web_draws;for(unsigned i=0;i<8;i++)ui_draw();REQUIRE(web_draws==n);
  blits=pixels=0;TSEL->p[P_E2]++;ui_draw();REQUIRE(blits==1 && pixels==57*50);
  go_home();ui_draw();REQUIRE(!grain_grid.valid);
