@@ -817,6 +817,7 @@ static void sound_name(const track_t *t, char *b)
 /* The scientist HOME's step strip only; other pages keep their existing bars. */
 static int home_step_icons_enabled(void);
 static int mixer_visuals_page(void);
+static int clock_visuals_page(void);
 static uint16_t home_step_accent(uint32_t channel);
 static void home_step_bean(int32_t x,uint16_t color,int accent)
 {
@@ -923,7 +924,7 @@ static void draw_foot(void)
             cv_text_r(232, 2, &AF_S, "ACCENT", T_ACCENT, T_BG);
         else
             cv_key_hint(232 - kh_w(KC_KEYS, "STEPS"), 2, KC_KEYS, "STEPS", 1, T_BG);   /* the keys are the steps */
-    } else if ((ui.home && home_step_icons_enabled()) || mixer_visuals_page()) {
+    } else if ((ui.home && home_step_icons_enabled()) || mixer_visuals_page() || clock_visuals_page()) {
         draw_home_step_icons(t);
     } else {
         uint32_t i;
@@ -1625,7 +1626,9 @@ static uint32_t home_levels_poll(home_level_view_t *view, uint32_t now)
 }
 
 #include "home_scientists.c"
+#include "ui_knob_motion.c"
 #include "mixer_visuals.c"
+#include "clock_visuals.c"
 static int home_step_icons_enabled(void) { return COFFEE_HOME_VISUALS; }
 static uint16_t home_step_accent(uint32_t channel)
 {
@@ -1652,6 +1655,9 @@ static void ui_draw(void)
         mixer_top.valid=0;
 #endif
     }
+#endif
+#if COFFEE_CLOCK_VISUALS
+    if(!clock_visuals_page() || scrn.st!=SCR_ON || kb_boot_hold)clock_visuals.valid=0;
 #endif
     ui.frame++;
     if (counting != (uint8_t)seq_counting()) {          /* a count-in began or ended: the page drawn again after it */
@@ -1728,6 +1734,9 @@ static void ui_draw_page(uint32_t counting)
 #endif
         draw_mixer_visuals();
     }
+#endif
+#if COFFEE_CLOCK_VISUALS
+    else if(clock_visuals_page())draw_clock_visuals();
 #endif
     else {
 #endif

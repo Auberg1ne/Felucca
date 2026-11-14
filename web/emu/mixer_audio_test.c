@@ -22,7 +22,12 @@ int main(int argc,char **argv)
 {
     if(argc!=2 || !(out=fopen(argv[1],"wb")))return 2;
     web_nor_erase();web_boot();render(4000);web_test_heavy();home_tap();ui_draw();
+#ifdef CLOCK_AUDIO
+    home_tap();ui_draw();
+    if(ui.home || cur_page()->scope!=SC_GLOBAL)return 3;
+#else
     if(ui.home || cur_page()->scope!=SC_TRK)return 3;
+#endif
     web_buttons(1u<<B_PLAY);render(60);web_buttons(0);render(60);rec=1;
     render(500);web_enc(EN_ALGO,1);render(100);
     web_enc(EN_K2,-1);render(400);web_enc(EN_K3,1);render(250);

@@ -11,10 +11,15 @@ static void snapshot(FILE *f)
     fwrite(state,sizeof state,1,f);
     for(unsigned p=0;p<4;p++)fwrite(trk[p].p,sizeof trk[p].p,1,f);
     int mixer=!ui.home && !ui.menu && !ui.layer && !ui.confirm && cur_page()->scope==SC_TRK && cur_page()->graph==GR_TRK;
+#ifdef CLOCK_COMPARISON
+    int clock=!ui.home && !ui.menu && !ui.layer && !ui.confirm && cur_page()->scope==SC_GLOBAL && cur_page()->id[0]==G_BPM;
+    if(!clock)fwrite(host_screen,sizeof host_screen,1,f);
+#else
     if(!mixer)fwrite(host_screen,sizeof host_screen,1,f);
 #ifdef MIXER_TOP_COMPARISON
     else { fwrite(host_screen,240*28*sizeof host_screen[0],1,f);
            fwrite(host_screen+240*72,240*(240-72)*sizeof host_screen[0],1,f); }
+#endif
 #endif
     fwrite(&ui_prefs,sizeof ui_prefs,1,f);fwrite(&ui_prefs2,sizeof ui_prefs2,1,f);
     fwrite(song.g,sizeof song.g,1,f);

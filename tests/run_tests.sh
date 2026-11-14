@@ -231,6 +231,16 @@ if [ -f build/gen/felucca_tables.h ]; then
     done
     run "MIXER: identical controls, globals, HOME, CLOCK and non-MIXER pixels" cmp "$OUT/mixer_nav_0.bin" "$OUT/mixer_nav_1.bin"
     run "MIXER: bit-identical audio during edits" cmp "$OUT/mixer_audio_0.f32" "$OUT/mixer_audio_1.f32"
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/clock_visuals_test" web/emu/clock_visuals_test.c -lm
+    run "CLOCK: real values, smoothing, transport, USB/TRS timing and bounds" "$OUT/clock_visuals_test"
+    for CLOCK in 0 1; do
+        $CC -w -ffp-contract=off -DCOFFEE_HOME_VISUALS=1 -DCLOCK_COMPARISON=1 -DCOFFEE_CLOCK_VISUALS=$CLOCK -Ibuild/gen -Ifirmware/src -o "$OUT/clock_nav_$CLOCK" tests/mixer_navigation_test.c -lm
+        run "CLOCK navigation ($CLOCK)" "$OUT/clock_nav_$CLOCK" "$OUT/clock_nav_$CLOCK.bin"
+        $CC -w -ffp-contract=off -DCLOCK_AUDIO=1 -DCOFFEE_CLOCK_VISUALS=$CLOCK -Ibuild/gen -Ifirmware/src -o "$OUT/clock_audio_$CLOCK" web/emu/mixer_audio_test.c -lm
+        run "CLOCK audio ($CLOCK)" "$OUT/clock_audio_$CLOCK" "$OUT/clock_audio_$CLOCK.f32"
+    done
+    run "CLOCK: identical navigation and non-CLOCK pixels" cmp "$OUT/clock_nav_0.bin" "$OUT/clock_nav_1.bin"
+    run "CLOCK: byte-identical audio" cmp "$OUT/clock_audio_0.f32" "$OUT/clock_audio_1.f32"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/mixer_smooth_knobs_test" web/emu/mixer_smooth_knobs_test.c -lm
     run "MIXER smoothing: elapsed time, reversals, settling, channel isolation and immediate text" "$OUT/mixer_smooth_knobs_test"
     for SMOOTH in 0 1; do
