@@ -79,10 +79,5 @@ static void draw_grain_grid(void)
             graph_adsr(TSEL,0xfce0);graph_ht=100;cv_blit(0,140);
         }
     }
-    if(full) {
-        char text[32];str_cpy(text,env?"ENV 1/1 R":page?"CHAR/VOICE 2/2 R":"GRAINS 1/2 R",sizeof text);
-        fmt_int(text+str_len(text),grain_edit_row+1);str_cpy(text+str_len(text),env?"/2":"/3",4);
-        cv_begin(240,12,0);cv_text(4,0,&AF_S,text,0xffff);cv_text_r(236,0,&AF_S,"SELECT ROW",0xbdf7,0);cv_blit(0,188);
-    }
     grain_grid.valid=1;grain_grid.channel=channel;grain_grid.page=page;grain_grid.row=grain_edit_row;
 }

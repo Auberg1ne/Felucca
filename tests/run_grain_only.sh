@@ -142,3 +142,7 @@ fi
 if [ -n "${ENV_GRID_BASE_TREE:-}" ]; then
     python3 tests/env_grid_compare.py --base-tree "$ENV_GRID_BASE_TREE" --out "$out/env-grid-comparison"
 fi
+
+if [ -n "${GRID_HINTS_BASE_TREE:-}" ]; then
+    python3 tests/grid_hints_compare.py --base-tree "$GRID_HINTS_BASE_TREE" --out "$out/grid-hints-comparison"
+fi
