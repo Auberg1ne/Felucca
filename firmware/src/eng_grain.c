@@ -41,10 +41,17 @@
  * s[2] filter output, s[3..4] resonant filter state, s[5] TONE sample state,
  * s[6] TONE coefficient Q14. ph[0] is fallback sine phase, ph[1] STUTTER phase. */
 /* Experimental build only: no UI, protocol or persisted selector. */
+#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT && !FELUCCA_GRAIN_WINDOW_EXPERIMENT
+#error "GRAIN morph experiment requires the window experiment"
+#endif
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
 #include "grain_tukey.h"
 #include "grain_gauss.h"
 static uint8_t gr_test_window; /* tests set 0=legacy Hann, 1=Tukey, 2=Gaussian before spawning */
+#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
+static uint8_t gr_test_morph_mode[NPART]; /* 0 off, 1 morph; invalid modes select Hann */
+static uint8_t gr_test_morph[NPART] = {64,64,64,64}; /* test controls, never persisted */
+#endif
 #endif
 #define GR_POLY 3                /* voices per part */
 #define GR_NG 12                 /* grains per part */
@@ -364,6 +371,12 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     g->wph = 0;
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
     g->window = gr_test_window <= 2u ? gr_test_window : 0u;
+#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
+    uint32_t part = gr_part(t);
+    if (gr_test_morph_mode[part])
+        g->window = gr_test_morph_mode[part] == 1u && gr_test_morph[part] <= 127u
+                  ? (uint8_t)(128u + gr_test_morph[part]) : 0u;
+#endif
 #endif
     g->winc = 0xFFFFFFFFu / len;
     g->left = len;
@@ -403,9 +416,23 @@ static inline int32_t gr_win(uint32_t wph)         /* the Hann window, Q15 */
     return GR_HANN[wi] + (((GR_HANN[wi + 1u] - GR_HANN[wi]) * (int32_t)((wph >> 9) & 0x7FFFu)) >> 15);
 }
 
+#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
+#include "grain_morph.h"
+static inline int32_t gr_morph_win(uint32_t morph, uint32_t phase)
+{
+    if (morph > 127u || morph == 64u) return gr_win(phase);
+    if (!morph) return gr_gauss_win(phase);
+    if (morph == 127u) return gr_tukey_win(phase);
+    return morph < 64u ? gr_morph_mix(morph, gr_gauss_win(phase), gr_win(phase))
+                       : gr_morph_mix(morph, gr_win(phase), gr_tukey_win(phase));
+}
+#endif
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
 static inline int32_t gr_experiment_win(const gr_grain_t *g, uint32_t phase)
 {
+#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
+    if (g->window & 128u) return gr_morph_win(g->window & 127u, phase);
+#endif
     return g->window == 1u ? gr_tukey_win(phase) : g->window == 2u ? gr_gauss_win(phase) : gr_win(phase);
 }
 #define GR_RENDER_WIN(g, phase) gr_experiment_win((g), (phase))
