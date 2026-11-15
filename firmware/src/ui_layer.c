@@ -1007,8 +1007,39 @@ static void layer_fx(void)
         lcell(LC_X(e), LM_Y, LM_H, n, ICON_MUTE, trk_icon(e, 0), 0, (held >> (PF_M1 + e)) & 1u ? LS_MUTE : LS_OFF, 0);
     }
 }
+static int glo_white_down(uint32_t place)
+{
+    for(unsigned k=0;k<27;k++)if(((fm1_in.notes>>k)&1u) && !key_black(k) && key_place(k)==place)return 1;
+    return 0;
+}
+static void glo_cell(int32_t x,int32_t y,int32_t h,const char *note,const char *name,unsigned channel,int on,int dim,int track)
+{
+    uint16_t accent=GRAIN_ACCENT[channel&3u],bg=on?0x18c4:0x0841,edge=on?accent:GRAIN_COFFEE;
+    cv_rrect(x,y,LC_W,h,-6,edge,T_SURF);cv_rrect(x+1,y+1,LC_W-2,h-2,-5,bg,edge);
+    cv_rect(x+7,y+1,LC_W-14,on?2:1,dim?GRAIN_COFFEE:accent);
+    cv_text_on(x+4,y+(h>30?3:5),&AF_S,note,0xbdf7,bg);
+    if(track){char t[2]={(char)('1'+channel),0};cv_text_r(x+LC_W-5,y+3,&AF_S,t,0xffff,bg);}
+    if(h>30)cv_text_in(x+3,y+24,LC_W-6,&AF_S,name,dim?0x8410:0xffff,bg);
+    else cv_text_r(x+LC_W-4,y+5,&AF_S,name,dim?0x8410:0xffff,bg);
+    if(on)cv_rect(x+7,y+h-3,LC_W-14,1,accent);
+}
+static void layer_glo_coffee(void)
+{
+    char n[3]={0,0,0};
+    for(unsigned e=0;e<NTRK;e++){
+        n[0]=W_NOTE[e];glo_cell(LC_X(e),4,LC_H,n,"SOLO",e,(perf_solo>>e)&1u,0,1);
+    }
+    n[0]='C';glo_cell(LC_X(0),50,LC_H,n,"ALL",0,glo_white_down(4),0,0);
+    n[0]='D';glo_cell(LC_X(1),50,LC_H,n,"LEARN",1,ui.ml.on,0,0);
+    n[0]='E';glo_cell(LC_X(2),50,LC_H,n,"FILL",2,seq_fill,0,0);
+    n[0]='F';glo_cell(LC_X(3),50,LC_H,n,"TAP",3,glo_white_down(7),song.g[G_CLOCK]!=0,0);
+    for(unsigned e=0;e<NTRK;e++){
+        bnote(n,e);glo_cell(LC_X(e),LM_Y,LM_H,n,"MUTE",e,trk[e].p[P_MUTE]!=0,0,0);
+    }
+}
 static void layer_glo(void)
 {
+    if(FELUCCA_GRAIN_ONLY){layer_glo_coffee();return;}
     uint32_t e;
     char n[3] = {0, 0, 0};
     for (e = 0; e < NTRK; e++) {                        /* F3 .. B3: SOLO while held */
@@ -1251,7 +1282,7 @@ static void draw_layer(void)
             sig = sig * 33u + perf_map[p];
     }
     else if (l == LAYER_GLO)
-        sig += perf_solo * 31u + (uint32_t)song.g[G_CLOCK] * 5u + ui.ml.on * 7u + seq_fill * 1009u +
+        sig += (FELUCCA_GRAIN_ONLY?(uint32_t)(glo_white_down(4)+2*glo_white_down(7))*2654435761u:0u) + perf_solo * 31u + (uint32_t)song.g[G_CLOCK] * 5u + ui.ml.on * 7u + seq_fill * 1009u +
                (uint32_t)(trk[0].p[P_MUTE] | trk[1].p[P_MUTE] << 1 | trk[2].p[P_MUTE] << 2 | trk[3].p[P_MUTE] << 3) * 131u;
     else if (l == LAYER_SCL)
         sig += (uint32_t)TSEL->p[P_SCALE] * 31u;

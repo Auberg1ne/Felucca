@@ -2055,6 +2055,18 @@ static void sg_picture(const song_lay_t *L, int32_t off, uint32_t k, uint32_t i,
 }
 /* lane k's block of sections i .. j - 1 on slot s; c: the cursor's section when it is in this lane, else past it;
  * sp: the playhead on screen (-100: none) */
+/* Decorative outline only: timeline geometry/data and scrolling remain unchanged. */
+static void sg_coffee_frame(int32_t bx,int32_t bw,int32_t y,uint32_t channel,uint32_t current,int32_t cx,int32_t cw)
+{
+    if(!FELUCCA_GRAIN_ONLY)return;
+    int32_t lo=SG_X0,hi=SG_X0+SG_W,x0=bx>lo?bx:lo,x1=bx+bw<hi?bx+bw:hi;
+    if(x1<=x0)return;
+    if(x0==bx && x1==bx+bw && bw>=5){
+        cv_line(x0+2,y,x1-3,y,GRAIN_COFFEE);cv_line(x0+2,y+SG_LH-1,x1-3,y+SG_LH-1,GRAIN_COFFEE);
+        cv_line(x0,y+2,x0,y+SG_LH-3,GRAIN_COFFEE);cv_line(x1-1,y+2,x1-1,y+SG_LH-3,GRAIN_COFFEE);
+    }else sg_frame(bx,bw,y,SG_LH,1,lo,hi,GRAIN_COFFEE);
+    if(current)sg_frame(cx,cw,y,SG_LH,2,lo,hi,GRAIN_ACCENT[channel]);
+}
 static void sg_block(const song_lay_t *L, int32_t off, uint32_t k, uint32_t i, uint32_t j, uint32_t s, uint32_t c,
                      int32_t sp)
 {
@@ -2071,10 +2083,12 @@ static void sg_block(const song_lay_t *L, int32_t off, uint32_t k, uint32_t i, u
             sg_frame(bx, bw, y, SG_LH, 1, SG_X0, hi, T_DIM);
             sg_frame(cx, cw, y, SG_LH, 2, SG_X0, hi, T_THEME);
             sg_letter((cx > SG_X0 ? cx : SG_X0) + SG_PAD, x1, y, s, T_THEME, T_SURF);
+            sg_coffee_frame(bx,bw,y,k,1,cx,cw);
             return;
         }
         sg_frame(bx, bw, y, SG_LH, 1, SG_X0, hi, T_DIM);
         sg_letter(x0 + SG_PAD, x1, y, s, T_DIM, T_SURF);
+        sg_coffee_frame(bx,bw,y,k,0,0,0);
         return;
     }
     cv_rrect(x0, y, x1 - x0, SG_LH, x0 != bx || x1 != bx + bw ? 0 : 2, T_RAISE, T_SURF);
@@ -2109,6 +2123,7 @@ static void sg_block(const song_lay_t *L, int32_t off, uint32_t k, uint32_t i, u
         skip[3] = F.c0 + SG_PAD + w + 2;
     }
     sg_picture(L, off, k, i, j, s, x0, x1, &F, skip);
+    sg_coffee_frame(bx,bw,y,k,cur,SG_X0+L->x[c<L->n?c:i]-off,L->x[(c<L->n?c:i)+1]-L->x[c<L->n?c:i]-SG_GAP);
 }
 static void graph_song(void)
 {
@@ -2123,8 +2138,14 @@ static void graph_song(void)
     sp = px >= 0 ? SG_X0 + px - off : -100;
     total = L.u0[L.n];
     bars = (total + SG_BARU - 1u) / SG_BARU;
-    for (k = 0; k < NTRK; k++)                        /* the lanes' cushions */
-        cv_trk(SG_TX, SG_LY(k) + (SG_LH - 16) / 2, 16, k, k == lane ? T_ACCENT : T_MID, T_SURF);
+    for (k = 0; k < NTRK; k++) {                      /* the lanes' cushions */
+        if(FELUCCA_GRAIN_ONLY){
+            int32_t y=SG_LY(k)+(SG_LH-16)/2;uint16_t edge=k==lane?GRAIN_ACCENT[k]:GRAIN_COFFEE;
+            cv_rrect(SG_TX,y,16,16,-4,edge,T_SURF);cv_rrect(SG_TX+1,y+1,14,14,-3,0x0841,edge);
+            char n[2]={(char)('1'+k),0};cv_text_in(SG_TX,y+2,16,&AF_S,n,0xffff,0x0841);
+            cv_rect(SG_TX+4,y,8,1,GRAIN_ACCENT[k]);
+        }else cv_trk(SG_TX, SG_LY(k) + (SG_LH - 16) / 2, 16, k, k == lane ? T_ACCENT : T_MID, T_SURF);
+    }
     for (i = 1; i < L.n; i++) {                       /* the sections' boundaries, faint, behind the blocks */
         int32_t x = SG_X0 + L.x[i] - off - 1;
         if (x >= SG_X0 && x < hi)
@@ -2144,7 +2165,7 @@ static void graph_song(void)
                 if (ex > sx)
                     cv_rect(sx, SG_LY(k) + SG_LH / 2, ex - sx, 1, T_LINE);
                 if (k == lane && c >= i && c < j)      /* the cursor on a silent cell: its outline */
-                    sg_frame(SG_X0 + L.x[c] - off, L.x[c + 1u] - L.x[c] - SG_GAP, SG_LY(k), SG_LH, 1, SG_X0, hi, T_THEME);
+                    sg_frame(SG_X0 + L.x[c] - off, L.x[c + 1u] - L.x[c] - SG_GAP, SG_LY(k), SG_LH, 1, SG_X0, hi, FELUCCA_GRAIN_ONLY?GRAIN_ACCENT[k]:T_THEME);
             }
         }
     if (L.add) {                                       /* + ADD */

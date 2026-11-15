@@ -12,7 +12,7 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test grain_dtune_test long_edit_test env_grid_test lfo_mod_ui_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test grain_dtune_test long_edit_test env_grid_test lfo_mod_ui_test glo_theme_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
@@ -153,4 +153,8 @@ fi
 
 if [ -n "${MOD_LABEL_BASE_TREE:-}" ]; then
     python3 tests/mod_label_compare.py --base-tree "$MOD_LABEL_BASE_TREE" --out "$out/mod-label-comparison"
+fi
+
+if [ -n "${GLO_THEME_BASE_TREE:-}" ]; then
+    python3 tests/glo_theme_compare.py --base-tree "$GLO_THEME_BASE_TREE" --out "$out/glo-theme-comparison"
 fi

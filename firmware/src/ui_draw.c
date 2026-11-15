@@ -645,6 +645,30 @@ static void draw_column_tall(uint32_t c, const char *label, const char *val, con
  * the motion icon in place of its own, in the theme colour; a long label moves it left, up to the card's edge;
  * a label with no room for it at all (or FELUCCA_ICONS=0): the label in the theme colour.
  * vc: the value's colour (T_THEME, T_DIM inactive, T_ACCENT the knob just turned) */
+/* GLO presentation only. Reuse existing card cache/coordinates and formatter output. */
+static void glo_card(uint32_t c,const char *label,const char *val,const char *unit,uint16_t vc,int32_t ratio,int hot)
+{
+    char key[48],text[24];unsigned track=ui.layer==LAYER_GLO?c:ui.song_trk%NTRK;
+    unsigned dim=vc==T_DIM;uint16_t accent=GRAIN_ACCENT[track],bg=hot?0x18c4:0x0841;
+    str_cpy(key,"COFFEE|",sizeof key);str_cpy(key+str_len(key),label,12);str_cpy(key+str_len(key),"|",2);
+    str_cpy(key+str_len(key),val,14);str_cpy(key+str_len(key),unit,8);str_cpy(key+str_len(key),"|",2);
+    fmt_int(key+str_len(key),(int32_t)(track+4u*dim+8u*hot+16u*(ratio+1)));
+    if(!ui.force && str_eq(key,ui.col[c]))return;
+    str_cpy(ui.col[c],key,sizeof ui.col[c]);memset(&ui.roll[c],0,sizeof ui.roll[c]);
+    cv_oy=cv_scroll=cv_flip=0;cv_begin(CARD_W,CARD_H,0);
+    cv_rrect(0,0,CARD_W,CARD_H,-7,dim?GRAIN_COFFEE:accent,0);
+    cv_rrect(1,1,CARD_W-2,CARD_H-2,-6,bg,dim?GRAIN_COFFEE:accent);
+    if(ui.layer==LAYER_GLO){
+        cv_text_on(4,3,&AF_S,label,0xffff,bg);char n[2]={(char)('1'+c),0};cv_text_r(53,3,&AF_S,n,0xffff,bg);
+    }else cv_text_in(2,3,53,&AF_S,label,0xffff,bg);
+    cv_rect(7,16,43,1,GRAIN_COFFEE);
+    str_cpy(text,val,sizeof text);if(*unit){str_cpy(text+str_len(text)," ",2);str_cpy(text+str_len(text),unit,sizeof text-str_len(text));}
+    const aafont_t *face=*unit || text_w(&AF_M,text)>51?&AF_S:&AF_M;
+    cv_text_in(3,*unit?23:19,51,face,text,dim?0x8410:0xffff,bg);
+    if(ratio>=0){cv_rect(5,40,47,1,GRAIN_COFFEE);unsigned w=(uint32_t)clamp(ratio,0,1000)*47u/1000u;if(w)cv_rect(5,40,w,1,accent);}
+    cv_blit(CARD_X(c),Y_LABEL);
+}
+
 static void draw_column(uint32_t c, const char *label, const char *val, const char *unit, uint16_t vc,
                         int32_t ratio, uint32_t icon)
 {
@@ -662,6 +686,9 @@ static void draw_column(uint32_t c, const char *label, const char *val, const ch
     fmt_named = 0;                                      /* (params.c: a name, for this card only) */
     card_mot_next = 0;                                  /* (the same: MOTION, this card only) */
     card_mot = (uint8_t)((card_mot & ~(1u << c)) | (uint32_t)mot << c);
+    if(FELUCCA_GRAIN_ONLY && (ui.layer==LAYER_GLO || (!ui.home && !ui.layer && cur_page()->graph==GR_SONG))){
+        glo_card(c,label,val,unit,vc,ratio,hot);return;
+    }
     if (str_eq(unit, label))
         unit = "";                                      /* "BPM 124 BPM", "USB OFF USB": the label says it */
     if (icon == ICON_AUTO)

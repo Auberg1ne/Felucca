@@ -10,10 +10,6 @@ static int parameter_grid_active(void)
         !name_on() && !seq_counting() && parameter_grid_rows(cur_page());
 }
 static struct {uint32_t sig[12];uint8_t valid,channel,page,row;} grain_grid;
-static const uint16_t GRAIN_ACCENT[4]={0x07ff,0xffe0,0xf81f,0x07e0};
-/* Warm brown from HOME_SPRITE_PALETTE[189], converted from panel byte order.
- * Constants avoid linking scientist bitmaps on hardware just for a color. */
-#define GRAIN_COFFEE 0x4964u
 static void draw_grain_grid(void)
 {
     int env=env_grid_page(cur_page()),lfo=lfo_grid_page(cur_page());

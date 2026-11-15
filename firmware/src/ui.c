@@ -380,6 +380,11 @@ static const page_t *cur_page(void) { return page_over ? page_over : &PAGES[ui.p
  *            AUTOMATION, SLICES), HOME with MENU > HOME TRACKS (1.3) and the quick layers' maps: the layout as it
  *            is, the card labels in M;
  *   LK_OFF   LARGE off; the menu (its own LARGE: ui_menu.c), the dialogs and NAME keep their own layout in every case. */
+static const uint16_t GRAIN_ACCENT[4]={0x07ff,0xffe0,0xf81f,0x07e0};
+/* Warm brown from HOME_SPRITE_PALETTE[189], converted from panel byte order.
+ * Constants avoid linking scientist bitmaps on hardware just for a color. */
+#define GRAIN_COFFEE 0x4964u
+
 enum { LK_OFF, LK_LABEL, LK_TALL };
 static int grain_grid_active(void);
 static int parameter_grid_active(void);
