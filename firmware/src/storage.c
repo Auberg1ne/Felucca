@@ -95,6 +95,42 @@ static int st_body(uint32_t obj, uint32_t copy, const st_hdr_t *h)   /* payload 
     return 0;
 }
 
+/* Main-loop scratch only; 1 erased, 0 nonempty, -1 read failure. */
+static int st_erased_range(uint32_t off, uint32_t n)
+{
+    int erased = 1;
+    while (n) {
+        uint32_t k = n > 128u ? 128u : n;
+        if (st_read(off, st_buf, k)) return -1;
+        for (uint32_t i = 0; i < k; i++) erased &= st_buf[i] == 255u;
+        off += k; n -= k;
+    }
+    return erased;
+}
+/* Read-only physical ownership probe, independent of cache/header presence.
+ * 0 wholly erased sector, 1 CRC-valid object in st_buf, -1 nonempty corrupt,
+ * -2 I/O failure. Never treats a failed commit/payload read as empty. */
+static int st_copy_state(uint32_t obj, uint32_t copy, st_hdr_t *h)
+{
+    if (obj >= OBJ_COUNT || copy > 1u) return -2;
+    uint32_t base = st_sector(obj, copy);
+    if (st_read(base, h, sizeof *h)) return -2;
+    if (h->magic != ST_MAGIC || h->type != obj || h->slot != copy ||
+        h->len > ST_PAYLOAD_MAX || h->hcrc != st_crc32(h, sizeof *h - 4u)) {
+        int blank = st_erased_range(base, ST_SECTOR);
+        return blank < 0 ? -2 : blank ? 0 : -1;
+    }
+    if (h->rsv[0] != UINT32_MAX || h->rsv[1] != UINT32_MAX) return -1;
+    /* Known writers erase all padding. A valid-looking header cannot claim
+     * an orphan payload/extension in its gap or beyond its declared length. */
+    int gap = st_erased_range(base + sizeof *h, ST_PAYLOAD_OFF - sizeof *h);
+    int tail = st_erased_range(base + ST_PAYLOAD_OFF + h->len, ST_PAYLOAD_MAX - h->len);
+    if (gap < 0 || tail < 0) return -2;
+    if (!gap || !tail) return -1;
+    if (st_read(base + ST_PAYLOAD_OFF, st_buf, h->len)) return -2;
+    return st_crc32(st_buf, h->len) == h->crc ? 1 : -1;
+}
+
 /* the current copy: the newest valid sequence (A on a tie), -1 when
  * neither is valid. Headers first, so only the winner's payload is read (it
  * is left in st_buf); *h gets its header. */

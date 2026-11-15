@@ -37,7 +37,20 @@ static const uint8_t *ed_bk_object(uint32_t id, uint32_t *len)
     if (id == 0u) { *len = sizeof(project_store_t); return ED_BK_RAW; }
     if (id == 1u) { *len = sizeof ed_bk_settings; return (const uint8_t *)&ed_bk_settings; }
     if (id >= 2u && id <= 5u) {
-        if (project_used(id - 2u)) *len = sizeof proj_slot[0];
+        int state = project_slot_state(id - 2u);
+        if (state >= PS_UNSUPPORTED) return 0;
+#if FELUCCA_FLASH
+        if (state != PS_EMPTY) {
+            int n = st_load(OBJ_PROJECT0 + id - 2u, st_buf, sizeof st_buf);
+            if (n <= 0 || !proj_import(&proj_scratch, st_buf, n)) return 0;
+            proj_bound(&proj_scratch);
+            if (!proj_pack((project_store_t *)st_buf, &proj_scratch)) return 0;
+            *len = sizeof(project_store_t);
+            return st_buf; /* never export a lost/stale retained cache */
+        }
+#else
+        if (state != PS_EMPTY) *len = sizeof proj_slot[0];
+#endif
         return (const uint8_t *)&proj_slot[id - 2u];
     }
     if (id == 6u || id == 7u) {
@@ -66,6 +79,10 @@ static const uint8_t *ed_bk_object(uint32_t id, uint32_t *len)
 static uint32_t ed_bk_capture(void)
 {
     if (ed_flash_stop()) return 3;
+    /* A raw sector pair cannot be represented by this archive protocol.
+     * Refuse rather than export a zeroed cache as an empty/project object. */
+    for (uint32_t slot = 0; slot < 4u; slot++)
+        if (project_slot_state(slot) >= PS_UNSUPPORTED) return 2;
     project_capture(&proj_scratch);
     if (!proj_pack((project_store_t *)ED_BK_RAW, &proj_scratch)) return 2;
     ed_bk_gen = ++proj_wire_gen;
@@ -99,7 +116,7 @@ static uint32_t ed_bk_commit(void)
     if (ed_bk_pos != ed_bk_len || st_crc32(raw, ed_bk_len) != ed_bk_crc) return 2;
     if (ed_bk_id == 0u || (ed_bk_id >= 2u && ed_bk_id <= 5u)) {
         if (ed_bk_id>=2u && grain_slot_readonly(ed_bk_id-2u)) {
-            ui_message("GRAIN ONLY: PROJECT READ ONLY");
+            project_readonly_message(ed_bk_id-2u);
             return 2;
         }
         if (ed_bk_len && !proj_import(&proj_scratch, raw, (int)ed_bk_len)) return 2;
@@ -221,12 +238,16 @@ static int ed_backup_handle(uint32_t cmd, const uint8_t *a, uint32_t n)
 {
     if (cmd == ED_BACKUP_LIST) {
         uint32_t rc = n ? 1u : ed_bk_capture();
+        uint32_t len[ED_BK_N], crc[ED_BK_N]; /* bounded 144-byte manifest, no payload buffer */
+        if (!rc) for (uint32_t i = 0; i < ED_BK_N; i++) {
+            const uint8_t *p = ed_bk_object(ED_BK_IDS[i], &len[i]);
+            if (!p && ED_BK_IDS[i] >= 2u && ED_BK_IDS[i] <= 5u) { rc = 2; break; }
+            crc[i] = st_crc32(p, len[i]);
+            fm1_wdt_feed();
+        }
         ed_b(1); ed_b(rc); ed_b(rc ? 0u : ED_BK_N);
         if (!rc) for (uint32_t i = 0; i < ED_BK_N; i++) {
-            uint32_t len;
-            const uint8_t *p = ed_bk_object(ED_BK_IDS[i], &len);
-            ed_b(ED_BK_IDS[i]); ed_bk_u32(len); ed_bk_u32(st_crc32(p, len));
-            fm1_wdt_feed();
+            ed_b(ED_BK_IDS[i]); ed_bk_u32(len[i]); ed_bk_u32(crc[i]);
         }
         return 1;
     }

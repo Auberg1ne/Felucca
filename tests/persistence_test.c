@@ -31,7 +31,16 @@ static void panel_setup(void) {}
 static uint8_t nor[0x100000], flash_ok = 1;
 static int erase_error, fail_after = -1;
 static uint32_t erases, as_erases;               /* (as_erases: the autosave's two sectors, 0xE5000 / 0xE6000) */
-static int st_read(uint32_t off, void *dst, uint32_t n) { memcpy(dst, nor + off, n); return 0; }
+#ifdef BRIDGE_TEST_IO
+static uint32_t bridge_programs;
+static int bridge_read_fail;
+#endif
+static int st_read(uint32_t off, void *dst, uint32_t n) {
+#ifdef BRIDGE_TEST_IO
+    if (bridge_read_fail) return -8;
+#endif
+    memcpy(dst, nor + off, n); return 0;
+}
 static int st_erase(uint32_t off)
 {
     erases++;
@@ -44,6 +53,9 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)
 {
     const uint8_t *s = src;
     uint32_t i;
+#ifdef BRIDGE_TEST_IO
+    bridge_programs++;
+#endif
     if (fail_after == 0) return -9;
     if (fail_after > 0) fail_after--;
     for (i = 0; i < n; i++) nor[off + i] &= s[i];
@@ -77,6 +89,7 @@ static int check(const char *what, int ok)
 
 static void reset(void)
 {
+    grain_autosave_protected = 0; /* BSS reset: a new simulated boot */
     memset(nor, 0xFF, sizeof nor);
     memset(&song, 0, sizeof song);
     memset(trk, 0, sizeof trk);
@@ -236,6 +249,7 @@ static void as_run(uint32_t ms)                          /* the main loop for ms
 }
 static void as_power_on(void)                            /* RAM lost: the defaults, then main.c's restore */
 {
+    grain_autosave_protected = 0; /* protection is rediscovered from NOR after reset */
     uint32_t k;
     memset(trk, 0, sizeof trk);
     memset(&motion, 0, sizeof motion);

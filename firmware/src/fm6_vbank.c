@@ -150,11 +150,12 @@ static int fvb_tx_ok(void)
 }
 
 /* FM6B_BEGIN: the sector erased, no voice yet. rc 0, 4 flash */
+static int project_autosave_writable(void); /* project.c: shared staging ownership */
 static uint32_t fvb_begin(void)
 {
     st_hdr_t h;
     fvb_tx.on = 0;
-    if (!flash_ok)
+    if (!flash_ok || !project_autosave_writable())
         return 4;
     fvb_tx.copy = st_current(OBJ_AUTOSAVE, &h) == 0 ? 1u : 0u;   /* the copy st_save writes next */
     if (st_erase(fvb_stage()))

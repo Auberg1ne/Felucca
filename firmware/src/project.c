@@ -889,16 +889,93 @@ static void proj_bound(project_t *q)
     q->sum = proj_sum(q);
 }
 
+/* Storage ownership is independent of decoded engine compatibility. Re-probe
+ * both copies before each operation: no retained header/cache grants ownership. */
+static int grain_project_ok(const project_t *p);
+enum { PS_EMPTY, PS_VALID, PS_INCOMPATIBLE, PS_UNSUPPORTED, PS_CORRUPT, PS_IO };
+static int project_raw_state(const void *raw, uint32_t n)
+{
+    if (!n) return PS_EMPTY;
+    if (proj_import(&proj_scratch, raw, (int)n)) {
+        for (uint32_t t = 0; t < NTRK; t++)
+            for (uint32_t i = 0; i < FM6_PACKED; i++)
+                if (proj_scratch.fm6[t][i] > 127u) return PS_CORRUPT;
+        return grain_project_ok(&proj_scratch) ? PS_VALID : PS_INCOMPATIBLE;
+    }
+    uint32_t magic = 0;
+    if (n >= 4u) memcpy(&magic, raw, 4);
+    return ((magic >= PROJ_MAGIC_V1 && magic <= PROJ_MAGIC_V9) || magic == PROJ_MAGIC_V10 || magic == PROJ_MAGIC_V11) ? PS_CORRUPT : PS_UNSUPPORTED;
+}
+#if FELUCCA_FLASH
+static int project_object_state(uint32_t obj)
+{
+    if (!flash_ok) return PS_IO;
+    st_hdr_t h, newest = {0};
+    int selected = -1, state = PS_EMPTY, protected = PS_EMPTY;
+    for (uint32_t c = 0; c < 2u; c++) {
+        int physical = st_copy_state(obj, c, &h);
+        /* The autosave pair also has a documented FM6 staging owner. Only
+         * its complete CRC-valid known version may be reclaimed by that
+         * diagnostic feature; never waive protection for arbitrary bytes. */
+        if (obj == OBJ_AUTOSAVE && physical == -1 &&
+            !fvb_valid(st_sector(obj, c), 1u, &h) &&
+            h.rsv[0] == UINT32_MAX && h.rsv[1] == UINT32_MAX &&
+            st_erased_range(st_sector(obj, c) + sizeof h, FVB_INFO - sizeof h) == 1 &&
+            st_erased_range(st_sector(obj, c) + FVB_INFO + FVB_LEN, ST_SECTOR - FVB_INFO - FVB_LEN) == 1) {
+            if (FELUCCA_GRAIN_ONLY && protected < PS_INCOMPATIBLE) protected = PS_INCOMPATIBLE;
+            continue;
+        }
+        int decoded = physical == -2 ? PS_IO : physical == -1 ? PS_CORRUPT :
+                      !physical ? PS_EMPTY : project_raw_state(st_buf, h.len);
+        /* Protect even an inactive unsupported/damaged copy: a save would
+         * erase it. Known valid A/B history and committed empty tombstones
+         * remain writable. No automatic repair of an ambiguous peer. */
+        if (decoded >= PS_UNSUPPORTED && decoded > protected) protected = decoded;
+        if (physical == 1 && (selected < 0 || (h.seq != newest.seq && h.seq - newest.seq < 0x80000000u))) {
+            selected = (int)c; newest = h; state = decoded;
+        }
+    }
+    return protected >= PS_INCOMPATIBLE ? protected : state;
+}
+static int project_autosave_writable(void)
+{
+    return project_object_state(OBJ_AUTOSAVE) < PS_INCOMPATIBLE;
+}
+#endif
+static int project_slot_state(uint32_t slot)
+{
+#if FELUCCA_FLASH
+    /* Physical ownership is authoritative, including a positively verified
+     * empty pair. Random/stale noinit bytes cannot make erased NOR unwritable. */
+    return project_object_state(OBJ_PROJECT0 + (slot & 3u));
+#else
+    const project_store_t *raw = &proj_slot[slot & 3u];
+    /* A missing RAM header says nothing about NOR (already probed above).
+     * In RAM-only operation protect any nonempty object, even a damaged header. */
+    int zero = 1, erased = 1;
+    for (uint32_t i = 0; i < sizeof *raw; i++) {
+        zero &= raw->raw[i] == 0u;
+        erased &= raw->raw[i] == 255u;
+    }
+    return zero || erased ? PS_EMPTY : project_raw_state(raw, sizeof *raw);
+#endif
+}
+
 #if FELUCCA_FLASH
 /* slot from flash into RAM (format 7, or format 6 / 5 / 4 / 3 / 2 / 1 converted) */
 static void proj_fetch(uint32_t slot)
 {
     project_store_t *q = &proj_slot[slot & 3u];
     int n;
+    int state = project_object_state(OBJ_PROJECT0 + (slot & 3u));
+    if (state >= PS_UNSUPPORTED)
+        return; /* preserve retained bytes too on ambiguous physical ownership */
+    if (state == PS_EMPTY) { memset(q, 0, sizeof *q); return; }
     proj_wire_gen++;
     n = st_load(OBJ_PROJECT0 + (slot & 3u), &proj_wire, sizeof proj_wire);
-    if (!proj_import(&proj_scratch, &proj_wire, n))
-        memset(q->raw, 0, 4);
+    if (!n) memset(q, 0, sizeof *q);
+    else if (!proj_import(&proj_scratch, &proj_wire, n))
+        return;
     else {
         proj_bound(&proj_scratch);
         if (!proj_pack(q, &proj_scratch))
@@ -944,9 +1021,12 @@ static int grain_project_ok(const project_t *p)
 }
 static int grain_slot_readonly(uint32_t slot)
 {
-    if (!FELUCCA_GRAIN_ONLY) return 0;
-    if(!proj_import(&proj_scratch,&proj_slot[slot&3u],sizeof(project_store_t)))return 0;
-    return !grain_project_ok(&proj_scratch);
+    int state = project_slot_state(slot);
+    return state >= PS_INCOMPATIBLE;
+}
+static void project_readonly_message(uint32_t slot)
+{
+    ui_message(project_slot_state(slot) >= PS_UNSUPPORTED ? "PROJECT READ ONLY" : "GRAIN ONLY: PROJECT READ ONLY");
 }
 /* the music as it is now -> slot, named `name` (0: the current name; "" none); 0 saved, nonzero refused or failed.
  * The current name becomes the saved one */
@@ -954,7 +1034,7 @@ static int project_save_as(uint32_t slot, const char *name)
 {
     project_t *p = &proj_scratch;
     if (grain_slot_readonly(slot)) {
-        ui_message("GRAIN ONLY: PROJECT READ ONLY");
+        project_readonly_message(slot);
         return 1;
     }
     if (transport_busy()) {                            /* a flash erase silences the audio and stalls the */
@@ -1039,8 +1119,19 @@ static int project_info(uint32_t slot, char *b, uint16_t *len48, uint32_t *den, 
         memset(den, 0, NTRK * sizeof *den);
         memset(n, 0, NTRK);
     }
-    if (!proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t)))
-        return 0;
+    int state = project_slot_state(slot);
+    if (state >= PS_UNSUPPORTED) {
+        str_cpy(b, state == PS_IO ? "READ ERROR" : state == PS_CORRUPT ? "CORRUPT" : "UNSUPPORTED", PROJ_NAME_LEN + 1u);
+        return 1;
+    }
+#if FELUCCA_FLASH
+    if (flash_ok && !proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) proj_fetch(slot);
+#endif
+    if (!proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) {
+        if (state == PS_EMPTY) return 0;
+        str_cpy(b, "READ ERROR", PROJ_NAME_LEN + 1u);
+        return 1; /* a late read failure is not an empty physical slot */
+    }
     proj_name_get(b, (const uint8_t *)proj_scratch.name);
     for (k = 0; len48 && k < NTRK; k++)
         len48[k] = (uint16_t)len48_of(proj_scratch.t[k].p[P_SLEN], proj_scratch.t[k].p[P_SDIV]);
@@ -1055,7 +1146,7 @@ static int project_info(uint32_t slot, char *b, uint16_t *len48, uint32_t *den, 
 static int project_rename(uint32_t slot, const char *name)
 {
     if (grain_slot_readonly(slot)) {
-        ui_message("GRAIN ONLY: PROJECT READ ONLY");
+        project_readonly_message(slot);
         return 1;
     }
     project_t *p = &proj_scratch;
@@ -1095,7 +1186,7 @@ static int project_rename(uint32_t slot, const char *name)
 static int project_erase(uint32_t slot)
 {
     if (grain_slot_readonly(slot)) {
-        ui_message("GRAIN ONLY: PROJECT READ ONLY");
+        project_readonly_message(slot);
         return 1;
     }
     uint32_t k;
@@ -1217,10 +1308,12 @@ static int project_restore_runtime(const project_t *input)
 }
 static int project_load(uint32_t slot)
 {
+    int state = project_slot_state(slot);
+    if (state >= PS_UNSUPPORTED) { ui_message("PROJECT READ ONLY"); return 1; }
 #if FELUCCA_FLASH
     if (flash_ok && !proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) proj_fetch(slot);
 #endif
-    if (!proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) { ui_message("EMPTY SLOT"); return 1; }
+    if (!proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t))) { ui_message(state == PS_EMPTY ? "EMPTY SLOT" : "READ ERROR"); return 1; }
     proj_bound(&proj_scratch);                          /* a retained RAM slot of an older format: as from flash */
     if (!project_restore_runtime(&proj_scratch)) {
         proj_cur = (uint8_t)(slot & 3u);
@@ -1279,7 +1372,7 @@ static void persist_boot(void)                    /* before settings_init / pane
 #endif
 }
 
-static int project_used(uint32_t slot) { return proj_import(&proj_scratch, &proj_slot[slot & 3u], sizeof(project_store_t)); }
+static int project_used(uint32_t slot) { return project_slot_state(slot) != PS_EMPTY; }
 
 /* Main loop only: no flash access or copies when the ISR changes rows. */
 static uint32_t chain_prepare(void)
@@ -1294,7 +1387,7 @@ static uint32_t chain_prepare(void)
             uint32_t s = chain_config.row[i].slot[k];
             if (s >= 4u || ((used >> s) & 1u))
                 continue;
-            if (!project_used(s))
+            if (project_slot_state(s) >= PS_UNSUPPORTED || !proj_import(&proj_scratch, &proj_slot[s], sizeof(project_store_t)))
                 return 3u + s;
             if (!grain_project_ok(&proj_scratch)) {
                 ui_message("GRAIN ONLY: LEGACY SONG");
@@ -1460,6 +1553,7 @@ static void autosave_poll(void)
     if (sig == as.saved || (ui_prefs & PREF_RESTORE_OFF) || fm1_ms - as.t < AS_IDLE_MS ||
         (as.wrote && fm1_ms - as.last < (as.err ? AS_RETRY_MS : AS_GAP_MS)))
         return;
+    if (project_object_state(OBJ_AUTOSAVE) >= PS_INCOMPATIBLE) { grain_autosave_protected = 1; return; }
     as.last = fm1_ms;
     as.wrote = 1;
     project_capture(&proj_scratch);
@@ -1479,16 +1573,19 @@ static int autosave_boot(int allowed)
 {
     int rc = 0;
 #if FELUCCA_FLASH
-    if(FELUCCA_GRAIN_ONLY && flash_ok){
-        int n=st_load(OBJ_AUTOSAVE,&proj_wire,sizeof proj_wire);
+    {
+        grain_autosave_protected|=project_object_state(OBJ_AUTOSAVE) >= PS_INCOMPATIBLE;
+        int n=flash_ok ? st_load(OBJ_AUTOSAVE,&proj_wire,sizeof proj_wire) : -1;
         grain_autosave_protected|=n>0 && (!proj_import(&proj_scratch,&proj_wire,n) || !grain_project_ok(&proj_scratch));
         if(grain_autosave_protected)ui_message("GRAIN ONLY: AUTOSAVE READ ONLY");
     }
-    if (!grain_autosave_protected && flash_ok && allowed && !(ui_prefs & PREF_RESTORE_OFF)) {
+    /* A verified known fallback may be read from a damaged pair; the
+     * ownership latch still prevents any subsequent autosave/staging write. */
+    if (flash_ok && allowed && !(ui_prefs & PREF_RESTORE_OFF)) {
         int n;
         proj_wire_gen++;
         n = st_load(OBJ_AUTOSAVE, &proj_wire, sizeof proj_wire);
-        if (n > 0 && proj_import(&proj_scratch, &proj_wire, n)) {
+        if (n > 0 && project_raw_state(&proj_wire, (uint32_t)n) == PS_VALID) {
             proj_bound(&proj_scratch);
             if (!project_restore_runtime(&proj_scratch)) {
                 ui_message("RESTORED");
