@@ -496,6 +496,10 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     return g->left != 0;
 }
 
+#if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
+#include "grain_fidelity.h"
+#endif
+
 /* Q14 one-pole: ~72 Hz at 0, ~760 Hz at 64, unity/exact bypass at 127.
  * Coefficients are computed once per block, independently of FLT/CUTOFF/RESON. */
 #define GR_TONE_UNITY 16384
@@ -614,7 +618,11 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             nact += t->v[i].active;
         for (i = 0; i < GR_NG; i++)
             if (P->g[i].owner == vi + 1u)
+#if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
+                mine += gr_run_fidelity(P, &P->g[i], acc, n, gr_test_fidelity[gr_part(t)], gr_test_fidelity_cap[gr_part(t)]);
+#else
                 mine += gr_run(P, &P->g[i], acc, n);
+#endif
 
         /* STRETCH sets base scanning; CLOUD DRIFT scales it, never grain pitch. */
         if (P->head_zl[vi] == (uint8_t)zl) {
