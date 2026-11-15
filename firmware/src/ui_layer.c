@@ -269,6 +269,14 @@ static uint32_t layer_gesture(uint32_t now, uint32_t combo)
         *t0 |= LY_DEAD;
         ui.lock = 0;                                    /* (the menu, a dialog, NAME: the lock closes) */
     }
+    /* COFFEE GRAINS: consume an EDIT-only hold without opening its sound layer.
+     * Check release too, so a late poll cannot turn a long hold into a tap.
+     * Explicit combos/locked layers and diagnostic multi-engine builds stay as before. */
+    if (FELUCCA_GRAIN_ONLY && l == LAYER_EDIT && !combo && !(*t0 & (LY_OPEN | LY_DEAD)) &&
+        now - (*t0 & ~15u) >= (uint32_t)HOLD_MS[settings_hold % 4u] * 1000u * FM1_TICKS_PER_US) {
+        *t0 |= LY_DEAD;
+        lys.dtap = 0;
+    }
     if (ly_down(l)) {
         if (!(*t0 & (LY_OPEN | LY_DEAD)) &&
             (combo || now - (*t0 & ~15u) >= (uint32_t)HOLD_MS[settings_hold % 4u] * 1000u * FM1_TICKS_PER_US)) {
