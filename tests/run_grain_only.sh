@@ -12,7 +12,7 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
@@ -21,6 +21,14 @@ for type in 0 1 2 3; do
     for cut in -25 0 25 switch; do
         "$out/grain_cutoff_audio_test" "$type" "$cut" "$out/cutoff.pcm" 4
     done
+done
+$cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_position_audio_test.c -lm -o "$out/grain_position_audio_test"
+for type in 0 1 2 3; do
+    for source in 0 2 3 13 14; do
+        "$out/grain_position_audio_test" "$type" "$source" 64 0 static 4 "$out/position.pcm"
+    done
+    "$out/grain_position_audio_test" "$type" medium 0 127 pos 4 "$out/position.pcm"
+    "$out/grain_position_audio_test" "$type" medium 64 127 shape 4 "$out/position.pcm"
 done
 node web/test_grain_only.mjs
 # Optional exact-base rendering comparison (base must already have generated tables).
@@ -36,4 +44,10 @@ if [ -n "${GRAIN_ONLY_BASE_TREE:-}" ]; then
     done
     cmp "$out/audio-base.bin" "$out/audio-current.bin"
     cmp "$out/navigation-base.bin" "$out/navigation-current.bin"
+fi
+
+# F2/F3/F6 intentionally change long-source audio. Keep historical comparators
+# intact; this separate exact-base matrix also requires unaffected short-source identity.
+if [ -n "${GRAIN_POSITION_BASE_TREE:-}" ]; then
+    python3 tests/grain_position_compare.py --base-tree "$GRAIN_POSITION_BASE_TREE" --out "$out/position-comparison"
 fi

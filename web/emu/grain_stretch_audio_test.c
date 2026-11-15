@@ -3,6 +3,15 @@
 #define STRETCH_WEB_SOURCE "felucca_web.c"
 #endif
 #include STRETCH_WEB_SOURCE
+/* Read either the exact old source or the split head when comparing revisions. */
+static uint64_t head_q16(const gr_part_t *p,unsigned i)
+{
+#ifdef GR_HEAD_FRAC_BITS
+ return ((uint64_t)p->head[i].sample<<16)|p->head[i].frac;
+#else
+ return p->head[i];
+#endif
+}
 static FILE *out;static unsigned recording,frames;static double energy,peak;
 static void render(unsigned ms)
 {
@@ -23,9 +32,12 @@ int main(int argc,char **argv)
  t->p[P_ATK]=0;t->p[P_DEC]=0;t->p[P_SUS]=127;t->p[P_REL]=0;t->p[P_REV]=t->p[P_DLY]=t->p[P_CHOR]=t->p[P_DIST]=0;
  open_family(FAM_EDIT); /* Exercise the live EDIT renderer during the audio regression. */
  render(1200);web_midi(0x90,60,127);render(50);
- uint32_t before=0,after=0;for(unsigned i=0;i<GR_POLY;i++)before+=gr_of(t)->head[i];
- recording=1;render(16);for(unsigned i=0;i<GR_POLY;i++)after+=gr_of(t)->head[i];render(484);fclose(out);
+ uint64_t before=0,after=0;
+ for(unsigned i=0;i<GR_POLY;i++)before+=head_q16(gr_of(t),i);
+ recording=1;render(16);
+ for(unsigned i=0;i<GR_POLY;i++)after+=head_q16(gr_of(t),i);
+ render(484);fclose(out);
  double rms=sqrt(energy/(2*frames));if(frames!=22050 || peak<0.001 || rms<0.0001 || !isfinite(rms))return 1;
- uint32_t head=after-before;
- printf("STRETCH=%u frames=%u peak=%.6f RMS=%.6f head-Q16=%u\n",stretch,frames,peak,rms,head);return 0;
+ uint64_t head=after-before;
+ printf("STRETCH=%u frames=%u peak=%.6f RMS=%.6f head-Q16=%llu\n",stretch,frames,peak,rms,(unsigned long long)head);return 0;
 }

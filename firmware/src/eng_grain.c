@@ -88,6 +88,14 @@ typedef struct {
     uint8_t zl;                  /* its zone in the set */
 } gr_grain_t;
 
+/* A bounded sample index and Q16 fraction, not a 16-bit integer packed into Q16. */
+#define GR_HEAD_FRAC_BITS 16
+#define GR_POS_MAX (127u << 8)
+typedef struct {
+    uint32_t sample;
+    uint16_t frac, target;       /* last admitted POS + SHP, Q8 in 0..127 */
+} gr_head_t;
+
 typedef struct {
     gr_grain_t g[GR_NG];
     int16_t rb[GR_NG][GR_RB];    /* reverse windows */
@@ -97,7 +105,7 @@ typedef struct {
     uint32_t stamp;              /* what the index was built for (user slots: smp_user_gen) */
     uint8_t src;                 /* SRC + 1 the index holds, 0 = none */
     uint8_t nz;
-    uint32_t head[GR_POLY];      /* shared source position per voice, Q16 */
+    gr_head_t head[GR_POLY];     /* shared source position per voice */
     uint8_t head_zl[GR_POLY];    /* zone associated with each source head */
 } gr_part_t;
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
@@ -122,6 +130,49 @@ static uint32_t gr_stamp(uint32_t src)
 }
 static inline uint32_t gr_rnd(const track_t *t) { return noise32(&gr_rng[gr_part(t)]); }
 static inline uint32_t gr_scale(uint32_t n, uint32_t f16) { return (n >> 16) * f16 + (((n & 0xFFFFu) * f16) >> 16); }
+
+/* Keep the legacy interior POS mapping; bound its endpoint to the usable domain. */
+static uint32_t gr_head_anchor(uint32_t n, uint32_t target)
+{
+    if (n <= 3u) return 0;
+    uint32_t c = gr_scale(n - 1u, target * 65535u / GR_POS_MAX);
+    return c < n - 3u ? c : n - 4u;
+}
+static uint32_t gr_head_target(const track_t *t, const vmod_t *m)
+{
+    return (uint32_t)clamp((t->p[P_E1] << 8) + m->shape - (64 << 8), 0, GR_POS_MAX);
+}
+/* Seed once. Apply target deltas only to an admitted grain's candidate head.
+ * Saturating control changes retain scan phase/fraction and existing grains. */
+static void gr_head_retarget(gr_head_t *h, int fresh, uint32_t n, uint32_t target)
+{
+    if (n <= 3u) return;
+    if (fresh) {
+        h->sample = gr_head_anchor(n, target);
+        h->frac = 0;
+    } else if (h->target != target) {
+        uint32_t a = gr_head_anchor(n, target), old = gr_head_anchor(n, h->target);
+        if (a >= old) {
+            uint32_t d = a - old, room = n - 4u - h->sample;
+            h->sample += d < room ? d : room;
+        } else {
+            uint32_t d = old - a;
+            h->sample = d < h->sample ? h->sample - d : 0;
+        }
+    }
+    h->target = (uint16_t)target;
+}
+/* One advance per voice/block. Avoid adding an overflowing full Q16 position;
+ * division is needed only when crossing the end, never in the sample loop. */
+static void gr_head_advance(gr_head_t *h, uint32_t domain, uint32_t move)
+{
+    if (!domain) return;
+    uint32_t frac = h->frac + (move & 65535u);
+    uint32_t whole = (move >> GR_HEAD_FRAC_BITS) + (frac >> GR_HEAD_FRAC_BITS);
+    h->frac = (uint16_t)frac;
+    uint32_t room = domain - h->sample;
+    h->sample = whole < room ? h->sample + whole : (whole - room) % domain;
+}
 
 /* one IMA ADPCM sample of zone z at index pos */
 static inline int32_t gr_dec(const smp_zone_t *z, uint32_t pos, int32_t *pred, int32_t *idx)
@@ -164,6 +215,10 @@ static void gr_reset(gr_part_t *P, uint32_t src, uint32_t stamp)
     P->nz = (uint8_t)(nz < GR_MAXZ ? nz : GR_MAXZ);
     for (i = 0; i < GR_NG; i++)
         P->g[i].owner = 0;
+    for (i = 0; i < GR_POLY; i++) {
+        P->head[i] = (gr_head_t){0};
+        P->head_zl[i] = 0xFFu;
+    }
     for (i = 0; i < P->nz; i++) {
         uint32_t c = (gr_zone(src, i)->n + GR_SEG - 1u) >> GR_SEG_LOG2;
         if (tot + c > GR_NIDX)
@@ -236,7 +291,7 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     const smp_zone_t *z = gr_zone(P->src - 1u, zl);
     gr_grain_t *g = 0;
     uint32_t i, n = z->n, len, step, span, c, sp, r1 = gr_rnd(t), r2 = gr_rnd(t), ov, rev;
-    int32_t d16, amt, posq, pos;
+    int32_t d16, amt, pos;
     for (i = 0; i < GR_NG && !g; i++)
         if (!P->g[i].owner)
             g = &P->g[i];
@@ -254,21 +309,20 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     step = (pow2_q16(clamp(d16, -1536, 576)) >> 8) * (z->rate >> 8);
     step = step > GR_STEP_MAX ? GR_STEP_MAX : step < 256u ? 256u : step;
     rev = ((r1 >> 16) & 255u) < (uint32_t)p[P_E6];  /* RAND 127: half of them */
-    span = (len * step) >> 16;                      /* source samples the grain reads */
-    if (span + 3u > n) {                            /* a short zone: shorter grain */
+    /* Reverse's negative fractional accumulator advances by ceil, forward by floor. */
+    span = (uint32_t)(((uint64_t)len * step + (rev ? 65535u : 0u)) >> 16);
+    if (span > n - 3u) {                            /* a short zone: shorter grain */
         span = n - 3u;
-        len = (span << 8) / (step >> 8);
+        /* Aligned steps keep the exact old 32-bit divide; other rates need all bits. */
+        len = (step & 255u) ? (uint32_t)(((uint64_t)span << 16) / step)
+                           : (span << 8) / (step >> 8);
     }
     if (len < 16u)
         return;
     /* position: POS (+ the SHP modulation) is the centre, SPRD the random spread */
-    posq = clamp((p[P_E1] << 8) + m->shape - (64 << 8), 0, 127 << 8);
-    c = gr_scale(n - 1u, (uint32_t)posq * 65535u / (127u << 8));
-    if (P->head_zl[vi] != zl) {
-        P->head[vi] = c << 16;
-        P->head_zl[vi] = (uint8_t)zl;
-    }
-    c = P->head[vi] >> 16;
+    gr_head_t head = P->head[vi];
+    gr_head_retarget(&head, P->head_zl[vi] != zl, n, gr_head_target(t, m));
+    c = head.sample;
     sp = gr_scale(n, (uint32_t)p[P_E5] * 516u);
     if ((uint32_t)p[P_GTYPE] == 0u)
         sp = gr_scale(n, (uint32_t)p[P_GB] * 516u);
@@ -286,6 +340,8 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
             c += P->g[i].step << P->g[i].rev;
     if (c > GR_LOAD_MAX)
         return;
+    P->head[vi] = head;
+    P->head_zl[vi] = (uint8_t)zl;
     g->z = z;
     g->step = step;
     g->frac = 0;
@@ -389,7 +445,7 @@ static void grain_note_on(track_t *t, voice_t *v)
     gr_part_t *P = gr_of(t);
     uint32_t vi = (uint32_t)(v - t->v) % NVOICE, i;
     v->s[0] = gr_find((uint32_t)t->p[P_E0] % SMP_NALL, v->note);
-    P->head[vi] = 0;
+    P->head[vi] = (gr_head_t){0};
     P->head_zl[vi] = 0xFFu;
     v->s[1] = 0;                                    /* the first grain at once */
     v->ph[0] = 0;                                   /* (the sine's phase: no data) */
@@ -465,13 +521,10 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             int32_t hd16 = m->pitch16 - hz->root16 + p[P_E4] * 16;
             uint32_t hs = (pow2_q16(clamp(hd16, -1536, 576)) >> 8) * (hz->rate >> 8);
             uint32_t factor = pow2_q16(-(int32_t)p[P_GFILTER_RSVD1] * 10);
-            uint32_t move, maxhead = (hz->n - 3u) << 16;
+            uint32_t move;
             if (hs > 65535u) hs = 65535u;
             move = ((hs >> 8) * (factor >> 8)) * n;
-            if (maxhead) {
-                uint32_t next = P->head[vi] + move;
-                P->head[vi] = next >= maxhead ? next % maxhead : next;
-            }
+            gr_head_advance(&P->head[vi], hz->n > 3u ? hz->n - 3u : 0u, move);
         }
 
         /* The next grain: DENS a second, 1..98 /s (SPRD jitters the interval). */
