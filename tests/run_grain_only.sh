@@ -12,7 +12,7 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
@@ -50,4 +50,18 @@ fi
 # intact; this separate exact-base matrix also requires unaffected short-source identity.
 if [ -n "${GRAIN_POSITION_BASE_TREE:-}" ]; then
     python3 tests/grain_position_compare.py --base-tree "$GRAIN_POSITION_BASE_TREE" --out "$out/position-comparison"
+fi
+
+# TONE final-output checks: include the fallback and a real user-zone descriptor.
+$cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_tone_audio_test.c -lm -o "$out/grain_tone_audio_test"
+for type in 0 1 2 3; do
+    for source in 0 user sine; do
+        for tone in 0 1 32 64 96 126 127; do
+            "$out/grain_tone_audio_test" "$type" "$source" "$tone" 0 0 static 4 "$out/tone.pcm"
+        done
+        "$out/grain_tone_audio_test" "$type" "$source" 127 0 0 live 4 "$out/tone.pcm"
+    done
+done
+if [ -n "${GRAIN_TONE_BASE_TREE:-}" ]; then
+    python3 tests/grain_tone_compare.py --base-tree "$GRAIN_TONE_BASE_TREE" --out "$out/tone-comparison"
 fi

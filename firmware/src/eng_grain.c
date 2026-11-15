@@ -26,8 +26,9 @@
  * (1..98 /s; SPRD also jitters the interval); POS (0..100 % of the zone, + the track's SHP
  * modulation: an LFO scans, ENV -> SHP sweeps) is the centre, SPRD the random spread around it
  * (SPRD 0: a frozen position). RAND: the random detune (quadratic, up to +-1 octave) and the
- * share of reversed grains (up to 50 %). TONE: a one-pole low-pass (+ the track's FLT
- * modulation), as SAMPLE's CUT. A grain is fitted into its zone (shortened if the zone is short).
+ * share of reversed grains (up to 50 %). TONE: an independent, smoothed one-pole low-pass
+ * before CUTOFF/RESON. TONE 127 is transparent; FLT modulation retains its existing
+ * routing. A grain is fitted into its zone (shortened if the zone is short).
  *
  * Cost bound: the grain rate is capped at 2 source samples per output sample (max 2 decodes, 4
  * for a reverse grain); a grain only starts while the part's grains decode at most GR_LOAD_MAX
@@ -37,7 +38,8 @@
  * PHASE WIRE 1510, TRIO CHIP CHOIR 1455, WHEEL FULL ORGAN 1413 (8 keys, no sends). State: per part the grain pool, the reverse windows and the index
  * (gr_part_t, in the part's engine memory: engines.c eng_mem), the random numbers outside it (gr_rng: they run on
  * over notes and engine switches); per voice s[0] the zone, s[1] the countdown to the next grain,
- * s[2] legacy low-pass state, s[3] HP state, s[4] LP state, voice_t's phases are unused. */
+ * s[2] filter output, s[3..4] resonant filter state, s[5] TONE sample state,
+ * s[6] TONE coefficient Q14. ph[0] is fallback sine phase, ph[1] STUTTER phase. */
 #define GR_POLY 3                /* voices per part */
 #define GR_NG 12                 /* grains per part */
 #define GR_SEG_LOG2 8
@@ -440,6 +442,40 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     return g->left != 0;
 }
 
+/* Q14 one-pole: ~72 Hz at 0, ~760 Hz at 64, unity/exact bypass at 127.
+ * Coefficients are computed once per block, independently of FLT/CUTOFF/RESON. */
+#define GR_TONE_UNITY 16384
+static int32_t gr_tone_coef(int32_t tone)
+{
+    return tone == 127 ? GR_TONE_UNITY : (int32_t)(pow2_q16(-(127 - tone) * 10) >> 2);
+}
+static void gr_tone(voice_t *v, int32_t *acc, uint32_t n, int32_t target)
+{
+    int32_t a = v->s[6], y = v->s[5];
+    if (!n) return;
+    if (a == GR_TONE_UNITY && target == GR_TONE_UNITY) {
+        /* Track the input for click-free re-entry, without touching bypass audio. */
+        v->s[5] = clamp(acc[n - 1u], -65535, 65535);
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        int32_t d = target - a;
+        /* ~5.8 ms time constant; minimum step converges exactly, including bypass. */
+        if (d) {
+            int32_t step = (d < 0 ? -d : d) >> 8;
+            if (!step) step = 1;
+            a += d < 0 ? -step : step;
+        }
+        int32_t x = clamp(acc[i], -65535, 65535);
+        /* |x-y| <= 131070, a <= 16384: product fits signed int32. Division
+         * truncates symmetrically (no negative-shift bias). Convex update is stable. */
+        y += ((x - y) * a) / GR_TONE_UNITY;
+        if (a != GR_TONE_UNITY) acc[i] = y;
+    }
+    v->s[5] = y;
+    v->s[6] = a;
+}
+
 static void grain_note_on(track_t *t, voice_t *v)
 {
     gr_part_t *P = gr_of(t);
@@ -454,6 +490,8 @@ static void grain_note_on(track_t *t, voice_t *v)
             if (P->g[i].owner == vi + 1u)
                 P->g[i].owner = 0;
         v->s[2] = 0;
+        v->s[5] = 0;
+        v->s[6] = gr_tone_coef(t->p[P_E7]);
     }
 }
 
@@ -557,6 +595,8 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             v->ph[1] += n;
         }
     }
+
+    gr_tone(v, acc, n, gr_tone_coef(p[P_E7]));
 
     /* Zero is a genuine bypass; negative is HP, positive is LP. */
     if (cutoff == 0) {
