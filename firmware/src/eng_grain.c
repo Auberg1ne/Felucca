@@ -520,6 +520,15 @@ static void grain_block(track_t *t)
     gr_build(P, t);
 }
 
+/* Preserve voice_amp's two Q15 roundings without resonant signed overflow.
+ * Saturate only an unrepresentable final buffer sum, never the filter signal. */
+static int32_t gr_output(int32_t previous, int32_t sample, const vmod_t *m, uint32_t i)
+{
+    int64_t gained = ((int64_t)sample * amp_at(m, i)) >> 15;
+    int64_t sum = (int64_t)previous + ((gained * VOICE_FS) >> 15) * 2;
+    return sum > INT32_MAX ? INT32_MAX : sum < INT32_MIN ? INT32_MIN : (int32_t)sum;
+}
+
 static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const vmod_t *m)
 {
     gr_part_t *P = gr_of(t);
@@ -610,9 +619,7 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
     /* Zero is a genuine bypass; negative is HP, positive is LP. */
     if (cutoff == 0) {
         for (i = 0; i < n; i++) {
-            /* Keep the existing gain/ramp scaling, including above-unity AMP modulation. */
-            int64_t dry = ((int64_t)clamp(acc[i], -65535, 65535) * amp_at(m, i)) >> 15;
-            out[i] += (int32_t)((dry * VOICE_FS) >> 15) * 2;
+            out[i] = gr_output(out[i], clamp(acc[i], -65535, 65535), m, i);
         }
         v->s[2] = 0;
         v->s[3] = 0;
@@ -631,7 +638,7 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
         int32_t bp = (ic1 + old_ic1) >> 1;
         int32_t hp = x - ((k * bp) >> 12) - lp;
         y = cutoff > 0 ? lp : hp;
-        out[i] += voice_amp(y, m, i) << 1;
+        out[i] = gr_output(out[i], y, m, i);
     }
 
     v->s[3] = ic1;

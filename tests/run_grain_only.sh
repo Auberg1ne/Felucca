@@ -100,3 +100,34 @@ done
 if [ -n "${GRAIN_DTUNE_BASE_TREE:-}" ]; then
     python3 tests/grain_dtune_compare.py --base-tree "$GRAIN_DTUNE_BASE_TREE" --out "$out/dtune-comparison"
 fi
+
+# Headroom tests do not inherit historical signed-overflow exclusions.
+safe_flags='-O1 -g -w -ffp-contract=off -Ibuild/gen -Ifirmware/src'
+if [ "${SANITIZE:-1}" != 0 ]; then
+    safe_flags="$safe_flags -fsanitize=address,undefined -fno-sanitize-recover=undefined"
+fi
+for test in grain_headroom_repro grain_headroom_test; do
+    $cc $safe_flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
+    "$out/$test"
+done
+# Other historical mixer bit shifts remain excluded, but signed overflow stays on.
+audio_safe_flags=$safe_flags
+if [ "${SANITIZE:-1}" != 0 ]; then audio_safe_flags="$audio_safe_flags -fno-sanitize=shift"; fi
+$cc $audio_safe_flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_headroom_audio_test.c -lm -o "$out/grain_headroom_audio_test"
+for type in 0 1 2 3; do
+    for source in 0 2 3 13 14 user sine; do
+        for cut in -50 -25 0 25 50; do
+            for res in 0 127; do
+                "$out/grain_headroom_audio_test" "$type" "$source" 127 "$cut" "$res" static 4 "$out/headroom.pcm"
+            done
+        done
+        "$out/grain_headroom_audio_test" "$type" "$source" 127 0 0 sweep 4 "$out/headroom.pcm"
+    done
+    for source in 0 2 3 13 14; do
+        "$out/grain_headroom_audio_test" "$type" "$source" 127 25 127 unison 4 "$out/headroom.pcm"
+        "$out/grain_headroom_audio_test" "$type" "$source" 127 25 127 hot 4 "$out/headroom.pcm"
+    done
+done
+if [ -n "${GRAIN_HEADROOM_BASE_TREE:-}" ]; then
+    python3 tests/grain_headroom_compare.py --base-tree "$GRAIN_HEADROOM_BASE_TREE" --out "$out/headroom-comparison"
+fi
