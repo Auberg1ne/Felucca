@@ -3,6 +3,8 @@
 /* Render helper follows native_check.c (Leo Kuroshita, Huegelton Instruments).
  * Identical real DSP gestures with old/new MIXER visuals; compare output bytes. */
 #include "felucca_web.c"
+#include "../../tests/audio_stats.h"
+static audio_stats_t sounding;
 static FILE *out;
 static int rec;
 static void render(double ms)                     /* as emu_test.mjs: 128-frame calls, the last one shorter */
@@ -14,6 +16,7 @@ static void render(double ms)                     /* as emu_test.mjs: 128-frame 
         for (i = 0; rec && i < m; i++) {
             float s[2] = {out_l[i], out_r[i]};
             fwrite(s, sizeof s, 1, out);
+            audio_stats_push(&sounding,s[0]);audio_stats_push(&sounding,s[1]);
         }
     }
 }
@@ -21,7 +24,7 @@ static void render(double ms)                     /* as emu_test.mjs: 128-frame 
 int main(int argc,char **argv)
 {
     if(argc!=2 || !(out=fopen(argv[1],"wb")))return 2;
-    web_nor_erase();web_boot();render(4000);web_test_heavy();home_tap();ui_draw();
+    web_master(700);web_nor_erase();web_boot();render(4000);web_test_heavy();home_tap();ui_draw();
 #ifdef CLOCK_AUDIO
     home_tap();ui_draw();
     if(ui.home || cur_page()->scope!=SC_GLOBAL)return 3;
@@ -32,5 +35,8 @@ int main(int argc,char **argv)
     render(500);web_enc(EN_ALGO,1);render(100);
     web_enc(EN_K2,-1);render(400);web_enc(EN_K3,1);render(250);
     web_enc(EN_K4,1);render(250);web_enc(EN_K4,-1);render(500);
-    fclose(out);return 0;
+    fclose(out);
+    printf("final browser audio: peak=%.6f RMS=%.6f nonzero=%llu/%llu\n",sounding.peak,audio_stats_rms(&sounding),
+           (unsigned long long)sounding.nonzero,(unsigned long long)sounding.samples);
+    return !audio_stats_sounding(&sounding,0.001,0.0001);
 }

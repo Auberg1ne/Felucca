@@ -5,6 +5,7 @@
 #endif
 #define UI_TEST_NO_MAIN 1
 #include "ui_test.c"
+#include "audio_stats.h"
 static unsigned checks;
 #define REQUIRE(x) do{checks++;if(!(x)){fprintf(stderr,"HOME levels line %u: %s\n",__LINE__,#x);return 1;}}while(0)
 int main(int argc,char **argv)
@@ -13,6 +14,8 @@ int main(int argc,char **argv)
     REQUIRE(argc<2 || audio);
     for(unsigned spread=0;spread<2;spread++) for(unsigned part=0;part<4;part++) {
         ui_power_on();
+        song.master_q12 = 4096;
+        audio_stats_t sounding = {0};
 #if FELUCCA_HOME_LEVELS
         memset(home_level_raw,0,sizeof home_level_raw);memset(home_level_env,0,sizeof home_level_env);
         for(unsigned p=0;p<4;p++)home_level_pub[p]=0;
@@ -27,7 +30,11 @@ int main(int argc,char **argv)
         trk_note_on(&trk[part],60,110);
         for(unsigned j=0;j<1000;j++) {
             int32_t out[CTL*2];mix_block(out,CTL);if(audio)fwrite(out,sizeof out,1,audio);
+            for(unsigned i=0;i<CTL*2;i++)audio_stats_push(&sounding,out[i]);
         }
+        REQUIRE(audio_stats_sounding(&sounding,32,1));
+        printf("final audio: peak=%.0f RMS=%.6f nonzero=%llu/%llu\n",sounding.peak,audio_stats_rms(&sounding),
+               (unsigned long long)sounding.nonzero,(unsigned long long)sounding.samples);
 #if FELUCCA_HOME_LEVELS
         for(unsigned p=0;p<4;p++)REQUIRE(p==part?home_level_read(p)>100:home_level_read(p)==0);
         /* Existing meters are read/cleared by UI; the new signal is independent. */

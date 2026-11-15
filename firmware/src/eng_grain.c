@@ -507,6 +507,11 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
 
     /* Zero is a genuine bypass; negative is HP, positive is LP. */
     if (cutoff == 0) {
+        for (i = 0; i < n; i++) {
+            /* Keep the existing gain/ramp scaling, including above-unity AMP modulation. */
+            int64_t dry = ((int64_t)clamp(acc[i], -65535, 65535) * amp_at(m, i)) >> 15;
+            out[i] += (int32_t)((dry * VOICE_FS) >> 15) * 2;
+        }
         v->s[2] = 0;
         v->s[3] = 0;
         v->s[4] = 0;

@@ -12,9 +12,15 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
+done
+$cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_cutoff_audio_test.c -lm -o "$out/grain_cutoff_audio_test"
+for type in 0 1 2 3; do
+    for cut in -25 0 25 switch; do
+        "$out/grain_cutoff_audio_test" "$type" "$cut" "$out/cutoff.pcm" 4
+    done
 done
 node web/test_grain_only.mjs
 # Optional exact-base rendering comparison (base must already have generated tables).
