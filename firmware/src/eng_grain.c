@@ -43,7 +43,8 @@
 /* Experimental build only: no UI, protocol or persisted selector. */
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
 #include "grain_tukey.h"
-static uint8_t gr_test_window; /* tests set 0=legacy Hann, 1=Tukey before spawning */
+#include "grain_gauss.h"
+static uint8_t gr_test_window; /* tests set 0=legacy Hann, 1=Tukey, 2=Gaussian before spawning */
 #endif
 #define GR_POLY 3                /* voices per part */
 #define GR_NG 12                 /* grains per part */
@@ -362,7 +363,7 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     g->frac = 0;
     g->wph = 0;
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
-    g->window = gr_test_window == 1u;
+    g->window = gr_test_window <= 2u ? gr_test_window : 0u;
 #endif
     g->winc = 0xFFFFFFFFu / len;
     g->left = len;
@@ -405,7 +406,7 @@ static inline int32_t gr_win(uint32_t wph)         /* the Hann window, Q15 */
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
 static inline int32_t gr_experiment_win(const gr_grain_t *g, uint32_t phase)
 {
-    return g->window ? gr_tukey_win(phase) : gr_win(phase);
+    return g->window == 1u ? gr_tukey_win(phase) : g->window == 2u ? gr_gauss_win(phase) : gr_win(phase);
 }
 #define GR_RENDER_WIN(g, phase) gr_experiment_win((g), (phase))
 #else

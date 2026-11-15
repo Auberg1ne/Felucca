@@ -10,7 +10,7 @@ int main(int argc,char **argv)
  if(argc!=6)return 2;
  unsigned window=atoi(argv[1]),type=atoi(argv[2]),scenario=atoi(argv[4]);
  int user=!strcmp(argv[3],"user"),sine=!strcmp(argv[3],"sine");unsigned src=user||sine?5:atoi(argv[3]);
- if(window>1 || type>3 || scenario>2)return 2;
+ if(window>2 || type>3 || scenario>2)return 2;
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
  gr_test_window=window;
 #else
@@ -35,7 +35,9 @@ int main(int argc,char **argv)
  }
  audio_stats_t stats={0};double de=0;int32_t prev[2]={0},maxjump=0;unsigned fw=0,rv=0;
  for(unsigned b=0;b<4096;b++){
-  int32_t out[CTL*2];mix_block(out,CTL);if(fwrite(out,sizeof out,1,f)!=1)return 2;
+  struct{uint32_t pre;int32_t out[CTL*2];uint32_t post;} buf={.pre=0x12345678,.post=0xabcdef};
+  int32_t *out=buf.out;mix_block(out,CTL);if(buf.pre!=0x12345678 || buf.post!=0xabcdef)return 1;
+  if(fwrite(out,sizeof buf.out,1,f)!=1)return 2;
   for(unsigned i=0;i<CTL*2;i++){
    audio_stats_push(&stats,out[i]);int32_t d=out[i]-prev[i&1];prev[i&1]=out[i];de+=(double)d*d;if(abs(d)>maxjump)maxjump=abs(d);
   }
@@ -44,6 +46,6 @@ int main(int argc,char **argv)
  if(!audio_stats_sounding(&stats,2,0.1))return 1;
  if(!sine && (!fw || !rv))return 1;
  for(unsigned ch=0;ch<4;ch++)if(!home_level_read(ch))return 1;
- printf("window=%u type=%u source=%s scenario=%u peak=%.0f RMS=%.9f nonzero=%llu energy=%.0f diff-energy=%.0f max-jump=%d forward=%u reverse=%u grain-bytes=%zu part-bytes=%zu\n",window,type,argv[3],scenario,stats.peak,audio_stats_rms(&stats),(unsigned long long)stats.nonzero,stats.energy,de,maxjump,fw,rv,sizeof(gr_grain_t),sizeof(gr_part_t));
+ printf("window=%u type=%u source=%s scenario=%u peak=%.0f RMS=%.9f nonzero=%llu energy=%.0f diff-energy=%.0f max-jump=%d forward=%u reverse=%u grain-bytes=%zu part-bytes=%zu track-bytes=%zu\n",window,type,argv[3],scenario,stats.peak,audio_stats_rms(&stats),(unsigned long long)stats.nonzero,stats.energy,de,maxjump,fw,rv,sizeof(gr_grain_t),sizeof(gr_part_t),sizeof(track_t));
  return fclose(f)!=0;
 }
