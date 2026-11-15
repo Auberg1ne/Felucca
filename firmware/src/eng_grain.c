@@ -41,6 +41,9 @@
  * s[2] filter output, s[3..4] resonant filter state, s[5] TONE sample state,
  * s[6] TONE coefficient Q14. ph[0] is fallback sine phase, ph[1] STUTTER phase. */
 /* Experimental build only: no UI, protocol or persisted selector. */
+#if defined(FELUCCA_GRAIN_HYBRID_EXPERIMENT) && FELUCCA_GRAIN_HYBRID_EXPERIMENT && !FELUCCA_GRAIN_FIDELITY_EXPERIMENT
+#error "GRAIN hybrid experiment requires fidelity experiment"
+#endif
 #if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT && !FELUCCA_GRAIN_WINDOW_EXPERIMENT
 #error "GRAIN morph experiment requires the window experiment"
 #endif
@@ -498,6 +501,9 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
 
 #if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
 #include "grain_fidelity.h"
+#if defined(FELUCCA_GRAIN_HYBRID_EXPERIMENT) && FELUCCA_GRAIN_HYBRID_EXPERIMENT
+#include "grain_hybrid.h"
+#endif
 #endif
 
 /* Q14 one-pole: ~72 Hz at 0, ~760 Hz at 64, unity/exact bypass at 127.
@@ -619,7 +625,11 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
         for (i = 0; i < GR_NG; i++)
             if (P->g[i].owner == vi + 1u)
 #if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
+#if defined(FELUCCA_GRAIN_HYBRID_EXPERIMENT) && FELUCCA_GRAIN_HYBRID_EXPERIMENT
+                mine += gr_run_envelope(P,&P->g[i],acc,n,gr_test_fidelity[gr_part(t)],gr_test_fidelity[gr_part(t)]==3u?gr_test_hybrid_cap[gr_part(t)]:gr_test_fidelity_cap[gr_part(t)],gr_test_hybrid_threshold[gr_part(t)],gr_test_hybrid_opt[gr_part(t)]);
+#else
                 mine += gr_run_fidelity(P, &P->g[i], acc, n, gr_test_fidelity[gr_part(t)], gr_test_fidelity_cap[gr_part(t)]);
+#endif
 #else
                 mine += gr_run(P, &P->g[i], acc, n);
 #endif
