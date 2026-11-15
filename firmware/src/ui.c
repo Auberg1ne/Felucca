@@ -382,6 +382,7 @@ static const page_t *cur_page(void) { return page_over ? page_over : &PAGES[ui.p
  *   LK_OFF   LARGE off; the menu (its own LARGE: ui_menu.c), the dialogs and NAME keep their own layout in every case. */
 enum { LK_OFF, LK_LABEL, LK_TALL };
 static int grain_grid_active(void);
+static int parameter_grid_active(void);
 static int mixer_visuals_page(void);
 static int clock_visuals_page(void);
 static uint32_t large_kind(void)
@@ -429,6 +430,8 @@ static uint32_t layer_btn(void);
  * track's (its patch's operators, ui_fm6op.c) */
 static int page_visible(uint32_t i)
 {
+    if(FELUCCA_GRAIN_ONLY && TSEL->eng_req%NENGINES==ENGI_GRAIN && PAGES[i].fam==FAM_ENV)
+        return env_grid_page(&PAGES[i]);
     if(TSEL->eng_req%NENGINES==ENGI_GRAIN && PAGES[i].fam==FAM_EDIT)
         return grain_grid_page(&PAGES[i])!=0;
     if (PAGES[i].id[0] == P_GTYPE)                  /* PERS: GRAIN only */
@@ -540,7 +543,7 @@ static void help_start(void) { ui.help_t = (uint8_t)(help_on() ? HELP_FRAMES : 0
 static void page_entered(void)
 {
     const page_t *pg = cur_page();
-    if(grain_grid_page(pg))grain_edit_row=0;
+    if(parameter_grid_rows(pg))grain_edit_row=0;
     if (!ui.home && pg->graph == GR_EVENTS)      /* AUTOMATION: + ADD on the SEQ cursor's step */
         ev_enter();
     if (!ui.home && lock_page_ok(ui.page))
@@ -1805,7 +1808,7 @@ static void track_select(uint32_t i)
     if (i >= NTRK || i == song.sel)
         return;
     song.sel = (uint8_t)i;
-    if(grain_grid_page(cur_page()))grain_edit_row=0;
+    if(parameter_grid_rows(cur_page()))grain_edit_row=0;
     ui.entry_open = 0;
     ui.hot_t = 0;
     ui.ev_keep = 0;                              /* (AUTOMATION: a row kept at its default was the other track's) */

@@ -1756,8 +1756,9 @@ static void ui_input(void)
     if (!lay && (s = panel_enc(EN_ALGO)) != 0)     /* ALGORITHM: the selected track, on every page */
         track_select((uint32_t)clamp((int32_t)song.sel + (s > 0 ? 1 : -1), 0, NTRK - 1));
     if ((s = glo ? sel : panel_enc(EN_SELECT)) != 0) {   /* SELECT knob = global tempo; */
-        if(grain_grid_active() && !glo && !lay && !kq && !mom_down() && !lock_held()) {
-            grain_edit_row=(uint8_t)(((int32_t)grain_edit_row+3+s%3)%3);
+        if(parameter_grid_active() && !glo && !lay && !kq && !mom_down() && !lock_held()) {
+            uint32_t rows=parameter_grid_rows(cur_page());
+            grain_edit_row=(uint8_t)(((int32_t)grain_edit_row+(int32_t)rows+s%(int32_t)rows)%(int32_t)rows);
             ui.hot_t=0;ui.force=1;
         } else if (!glo && sel_mode() >= SEL_MODW) {         /* MENU > SELECT MODW / VEL (1.5.6, #84): it plays */
             sel_play(sel_mode(), s);

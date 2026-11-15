@@ -12,7 +12,7 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test grain_dtune_test long_edit_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test grain_dtune_test long_edit_test env_grid_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
@@ -137,4 +137,8 @@ $cc $safe_flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/long_edit_timi
 "$out/long_edit_timing_test"
 if [ -n "${LONG_EDIT_BASE_TREE:-}" ]; then
     python3 tests/long_edit_compare.py --base-tree "$LONG_EDIT_BASE_TREE" --out "$out/long-edit-comparison"
+fi
+
+if [ -n "${ENV_GRID_BASE_TREE:-}" ]; then
+    python3 tests/env_grid_compare.py --base-tree "$ENV_GRID_BASE_TREE" --out "$out/env-grid-comparison"
 fi
