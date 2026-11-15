@@ -553,7 +553,7 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             if (P->g[i].owner == vi + 1u)
                 mine += gr_run(P, &P->g[i], acc, n);
 
-        /* RATE slows the shared source head; grain playback pitch stays unchanged. */
+        /* STRETCH sets base scanning; CLOUD DRIFT scales it, never grain pitch. */
         if (P->head_zl[vi] == (uint8_t)zl) {
             const smp_zone_t *hz = gr_zone(P->src - 1u, (uint32_t)zl);
             int32_t hd16 = m->pitch16 - hz->root16 + p[P_E4] * 16;
@@ -562,6 +562,10 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             uint32_t move;
             if (hs > 65535u) hs = 65535u;
             move = ((hs >> 8) * (factor >> 8)) * n;
+            /* DRIFT/64: exact stop at 0, neutral at 64, 1.984375x at 127.
+             * move <= 255*256*CTL; with CTL=32, move*127 < 2^28. */
+            if ((uint32_t)p[P_GTYPE] == 0u)
+                move = (move * (uint32_t)p[P_GA]) >> 6;
             gr_head_advance(&P->head[vi], hz->n > 3u ? hz->n - 3u : 0u, move);
         }
 

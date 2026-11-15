@@ -12,7 +12,7 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
@@ -64,4 +64,22 @@ for type in 0 1 2 3; do
 done
 if [ -n "${GRAIN_TONE_BASE_TREE:-}" ]; then
     python3 tests/grain_tone_compare.py --base-tree "$GRAIN_TONE_BASE_TREE" --out "$out/tone-comparison"
+fi
+
+# CLOUD DRIFT: actual four-track audio; personality A remains isolated in other types.
+$cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_drift_audio_test.c -lm -o "$out/grain_drift_audio_test"
+for type in 0 1 2 3; do
+    for source in 0 2 3 13 14; do
+        for drift in 0 1 32 63 64 65 96 127; do
+            "$out/grain_drift_audio_test" "$type" "$source" "$drift" 0 static 4 "$out/drift.pcm"
+        done
+    done
+done
+for source in 0 2 3 13 14; do
+    for mode in pos shape drift type; do
+        "$out/grain_drift_audio_test" 0 "$source" 0 0 "$mode" 4 "$out/drift.pcm"
+    done
+done
+if [ -n "${GRAIN_DRIFT_BASE_TREE:-}" ]; then
+    python3 tests/grain_drift_compare.py --base-tree "$GRAIN_DRIFT_BASE_TREE" --out "$out/drift-comparison"
 fi

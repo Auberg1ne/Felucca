@@ -232,6 +232,8 @@ static int four_parts(void)
     printf("four parts: distinct factory/personality tracks sounding; channel-local retarget leaves other pools/RNG untouched\n");
     return 0;
 }
+/* Allow later source-head tests to reuse the guarded fixtures without a second main. */
+#ifndef GRAIN_POSITION_NO_MAIN
 int main(void)
 {
     REQUIRE(sizeof(gr_head_t)==8 && sizeof(gr_part_t)<=ENG_MEM_PART);
@@ -239,3 +241,5 @@ int main(void)
     printf("GRAIN position: %u checks passed; state=%zu / %u bytes, head=%zu bytes; F2/F3/F6\n",checks,sizeof(gr_part_t),ENG_MEM_PART,sizeof(gr_head_t));
     return 0;
 }
+
+#endif
