@@ -38,7 +38,7 @@ static void led_clear(uint8_t *nl, uint32_t id)
 static const uint8_t FAM_BTN[FAM_COUNT] = {B_HOME, B_ENV, B_LFO, B_FX, B_SCL, B_EDIT, B_GLO, B_SAVE,
                                            B_ARP, B_SEQ, B_HOME};   /* MIXER: HOME's (1.2); REC is transport */
 
-static uint32_t cur_fam(void) { return ui.home ? FAM_HOME : cur_page()->fam; }
+static uint32_t cur_fam(void) { return ui.home ? FAM_HOME : page_family(cur_page()); }
 
 static int layer_set_open(void);                       /* (ui_layer.c) */
 /* the OCT LEDs, bit 0 OCT- lit, bit 1 OCT+ lit, OCT_BREATH OCT+ breathing (can be pressed: dark .. ~60 %,
@@ -1477,6 +1477,7 @@ static void ui_input(void)
     uint32_t lay, combo = 0, lytap, lkeys, glo, kq = 0;
     int32_t s, sel = 0, ks[4] = {0, 0, 0, 0};
     static uint32_t lock_ms;                            /* BPM LOCK: the last locked SELECT turn (fm1_ms | 1; 0 none) */
+    page_normalize();
     midi_take();                                        /* (MIDI IN notes: lights, SCREEN WAKE, AUTO SELECT's) */
     midi_pc_poll();                                     /* MIDI Program Change (before fm6_poll: a bank voice) */
     fm6_poll();                                         /* FM6: PTCH turned -> its patch */
@@ -1691,6 +1692,8 @@ static void ui_input(void)
         case B_FX:                                      /* the layers' buttons: ui_layer.c */
         case B_GLO:
         case B_SCL:
+            if(FELUCCA_GRAIN_ONLY && b==B_SCL && !lay)ui.pg_down|=(uint16_t)(1u<<id);
+            break;
         case B_EDIT:
         case B_HOME:
             break;

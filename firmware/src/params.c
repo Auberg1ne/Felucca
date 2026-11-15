@@ -571,9 +571,24 @@ static int env_grid_page(const page_t *pg)
     return FELUCCA_GRAIN_ONLY && TSEL->eng_req%NENGINES==ENGI_GRAIN &&
         pg->fam==FAM_ENV && pg->id[0]==P_ATK;
 }
+static int lfo_grid_page(const page_t *pg)
+{
+    return FELUCCA_GRAIN_ONLY && pg->fam==FAM_LFO && pg->id[0]==P_LRATE;
+}
+/* Presentation family only: leave descriptor order, IDs and stored formats intact. */
+static uint32_t page_family(const page_t *pg)
+{
+    return FELUCCA_GRAIN_ONLY && pg->graph==GR_MOD?FAM_SCL:pg->fam;
+}
+static uint32_t lfo_grid_param(uint32_t row,uint32_t column)
+{
+    static const uint8_t ids[3][4]={{P_LRATE,P_LWAVE,P_LPHASE,P_LFADE},
+        {P_LSYNC,P_LTRIG,P_LPOL,255},{P_LD_PIT,P_LD_FLT,P_LD_SHP,P_LD_AMP}};
+    return row<3 && column<4?ids[row][column]:255u;
+}
 static uint32_t parameter_grid_rows(const page_t *pg)
 {
-    return env_grid_page(pg)?2u:grain_grid_page(pg)?3u:0u;
+    return env_grid_page(pg)?2u:(grain_grid_page(pg)||lfo_grid_page(pg))?3u:0u;
 }
 static uint32_t env_grid_param(uint32_t row,uint32_t column)
 {
@@ -583,7 +598,7 @@ static uint32_t env_grid_param(uint32_t row,uint32_t column)
 static uint32_t page_param_id(const page_t *pg,uint32_t column)
 {
     uint32_t page=grain_grid_page(pg);
-    return column>=4?255u:env_grid_page(pg)?env_grid_param(grain_edit_row,column):
+    return column>=4?255u:lfo_grid_page(pg)?lfo_grid_param(grain_edit_row,column):env_grid_page(pg)?env_grid_param(grain_edit_row,column):
         page?grain_grid_param(page-1,grain_edit_row,column):pg->id[column];
 }
 

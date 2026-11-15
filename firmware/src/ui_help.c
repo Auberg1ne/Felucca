@@ -76,6 +76,8 @@ static const char *help_page(void)
         return home_levels() ? H_LEVELS : H_HOME;
     if (grid_on() && !detail_on())
         return H_GRID;
+    if (lfo_grid_page(cur_page()))
+        return "[SELECT]ROW[K1-4]EDIT";
     if (env_grid_page(cur_page()))
         return "[SELECT]ROW[K1-4]EDIT";
     if (grain_grid_page(cur_page()))

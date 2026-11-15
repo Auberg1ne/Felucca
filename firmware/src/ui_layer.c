@@ -151,6 +151,7 @@ static void layer_arm(uint32_t pressed, uint32_t now)
         return;
     for (l = LAYER_FX; l < LAYER_N; l++)
         if (pressed & ly_bit(l)) {
+            if(FELUCCA_GRAIN_ONLY && l==LAYER_SCL)continue;
             ui.ly = (uint8_t)l;
             ui.ly_t0 = (now & ~15u) | 1u | (layer_allowed() ? 0u : LY_DEAD);
             lys.dtap = lys.dt_l == l && fm1_ms - lys.dt_ms <= LY_DTAP_MS;   /* (#83: the second tap of a double tap?) */
@@ -187,6 +188,7 @@ static void layer_let_go(uint32_t quiet)
 static uint32_t fx_key_held(void);
 static void layer_lock_input(uint32_t pressed)
 {
+    if(FELUCCA_GRAIN_ONLY && ui.ly==LAYER_SCL)layer_let_go(1);
     uint32_t keep = 1u << panel.btn[B_PLAY] | 1u << panel.btn[B_REC] | 1u << panel.btn[B_OCTDN] | 1u << panel.btn[B_OCTUP];
     if (ui.lock == LAYER_FX && fx_key_held())           /* (FX's lock, a key held: EDIT puts its default back) */
         keep |= 1u << panel.btn[B_EDIT];

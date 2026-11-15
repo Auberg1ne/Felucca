@@ -383,6 +383,7 @@ static const page_t *cur_page(void) { return page_over ? page_over : &PAGES[ui.p
 enum { LK_OFF, LK_LABEL, LK_TALL };
 static int grain_grid_active(void);
 static int parameter_grid_active(void);
+static int matrix_visuals_page(void);
 static int mixer_visuals_page(void);
 static int clock_visuals_page(void);
 static uint32_t large_kind(void)
@@ -430,6 +431,10 @@ static uint32_t layer_btn(void);
  * track's (its patch's operators, ui_fm6op.c) */
 static int page_visible(uint32_t i)
 {
+    if(FELUCCA_GRAIN_ONLY) {
+        if(PAGES[i].fam==FAM_SCL)return 0;
+        if(PAGES[i].fam==FAM_LFO && PAGES[i].graph!=GR_MOD)return lfo_grid_page(&PAGES[i]);
+    }
     if(FELUCCA_GRAIN_ONLY && TSEL->eng_req%NENGINES==ENGI_GRAIN && PAGES[i].fam==FAM_ENV)
         return env_grid_page(&PAGES[i]);
     if(TSEL->eng_req%NENGINES==ENGI_GRAIN && PAGES[i].fam==FAM_EDIT)
@@ -459,7 +464,7 @@ static uint32_t page_first(uint32_t fam)
 {
     uint32_t i;
     for (i = 0; i < NPAGES; i++)
-        if (PAGES[i].fam == fam)
+        if (page_family(&PAGES[i]) == fam && page_visible(i))
             return i;
     return 0;
 }
@@ -524,7 +529,7 @@ static int lock_page_ok(uint32_t i)
 }
 static uint32_t lock_id(uint32_t k)
 {
-    uint32_t id = ui.plk_src && lock_page_ok(ui.plk_src - 1u) ? page_param_id(&PAGES[ui.plk_src - 1u],k & 3u)
+    uint32_t id = ui.plk_src && ui.plk_src<=NPAGES && (lock_page_ok(ui.plk_src - 1u) || lfo_grid_page(&PAGES[ui.plk_src-1u])) ? page_param_id(&PAGES[ui.plk_src - 1u],k & 3u)
                                                                : ENGINES[TSEL->eng_req % NENGINES]->knob[k & 3u];
     return id < P_COUNT && motion_param(id) ? id : 0xFFu;
 }
@@ -778,11 +783,11 @@ static void note_name(char *b, uint32_t n)
  * and SYSTEM in 1.2), or not shown for this track, gives the family's first */
 static void open_family(uint32_t fam)
 {
-    if (!ui.home && cur_page()->fam == fam) {          /* same button again: next page */
+    if (!ui.home && page_family(cur_page()) == fam) {          /* same button again: next page */
         uint32_t n, i = ui.page;
         for (n = 0; n < NPAGES; n++) {
             i = (i + 1u) % NPAGES;
-            if (PAGES[i].fam == fam && page_visible(i)) break;
+            if (page_family(&PAGES[i]) == fam && page_visible(i)) break;
         }
         ui.page = (uint8_t)i;
     } else if (fam == FAM_SAVE) {
@@ -792,7 +797,7 @@ static void open_family(uint32_t fam)
         ui.page = (uint8_t)i;                         /* SAVE enters the sound save screen directly */
     } else {
         uint32_t i = ui.fam_last[fam];
-        ui.page = (uint8_t)(i && i < NPAGES && PAGES[i].fam == fam && page_visible(i) ? i : page_first(fam));
+        ui.page = (uint8_t)(i && i < NPAGES && page_family(&PAGES[i]) == fam && page_visible(i) ? i : page_first(fam));
     }
     ui.fam_last[fam] = ui.page;
     ui.home = 0;
@@ -831,12 +836,12 @@ static void home_tap(void)
  * HOME, MIXER and CLOCK are one round, as HOME's taps go. A family of one page (GLO's SONG) stays */
 static void page_turn(int32_t dir)
 {
-    uint32_t fam = ui.home ? (uint32_t)FAM_TRK : cur_page()->fam, i, m = 0, at = 0;
+    uint32_t fam = ui.home ? (uint32_t)FAM_TRK : page_family(cur_page()), i, m = 0, at = 0;
     uint8_t ring[NPAGES + 1u];                          /* the round: page indices, 0xFF HOME */
     if (fam == FAM_TRK)
         ring[m++] = 0xFFu;
     for (i = 0; i < NPAGES; i++)
-        if (PAGES[i].fam == fam && page_visible(i)) {
+        if (page_family(&PAGES[i]) == fam && page_visible(i)) {
             if (!ui.home && i == ui.page)
                 at = m;
             ring[m++] = (uint8_t)i;
@@ -1790,6 +1795,15 @@ static uint32_t preset_visible(uint32_t cur, uint32_t total, uint32_t row)
     last = total > 7u ? total - 7u : 0u;
     if (first > last) first = last;
     return first + row < total ? first + row : total;
+}
+
+/* Recover hidden shipping pages before either input or rendering can use them. */
+static void page_normalize(void)
+{
+    if(!FELUCCA_GRAIN_ONLY || ui.home || ui.page>=NPAGES || page_visible(ui.page))return;
+    uint32_t family=page_family(cur_page());
+    ui.page=(uint8_t)page_first(family==FAM_ENV?FAM_ENV:family==FAM_LFO?FAM_LFO:family==FAM_SCL?FAM_SCL:FAM_EDIT);
+    page_entered();ui.force=1;
 }
 
 /* HOME: the track KNOB k edits (MENU > HOME LEVELS, 1.5: track k; else the selected one) and what: the engine's four

@@ -12,7 +12,7 @@ if [ "${SANITIZE:-1}" != 0 ]; then
     # Same intentional DSP/XIP exclusions as the existing host sanitizer suite.
     flags="$flags -fsanitize=address,undefined -fno-sanitize=signed-integer-overflow,shift,bounds,object-size,pointer-overflow -fno-sanitize-recover=undefined"
 fi
-for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test grain_dtune_test long_edit_test env_grid_test; do
+for test in grain_only_test grain_only_editor_test grain_only_persistence_test grain_only_audio_test grain_cutoff_zero_test grain_position_test grain_tone_test grain_drift_test grain_dtune_test long_edit_test env_grid_test lfo_mod_ui_test; do
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
@@ -145,4 +145,8 @@ fi
 
 if [ -n "${GRID_HINTS_BASE_TREE:-}" ]; then
     python3 tests/grid_hints_compare.py --base-tree "$GRID_HINTS_BASE_TREE" --out "$out/grid-hints-comparison"
+fi
+
+if [ -n "${LFO_MOD_BASE_TREE:-}" ]; then
+    python3 tests/lfo_mod_compare.py --base-tree "$LFO_MOD_BASE_TREE" --out "$out/lfo-mod-comparison"
 fi

@@ -1152,7 +1152,7 @@ static void page_title(char *ti)
     const char *pt = pg->scope == SC_ENGINE ? e->page_title[pg->id[0] != P_E0] : 0;   /* EDIT: the engine's */
     if(grain_grid_page(pg))pt=grain_grid_page(pg)==1?"GRAINS":"CHAR";
     for (i = 0; i < NPAGES; i++)
-        if (PAGES[i].fam == pg->fam && page_visible(i)) {
+        if (page_family(&PAGES[i]) == page_family(pg) && page_visible(i)) {
             n++;
             if (i == ui.page)
                 k = n;
