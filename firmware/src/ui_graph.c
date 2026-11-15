@@ -161,11 +161,12 @@ static void pr_split(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c, uin
 {
     int32_t k, pw = (w - (int32_t)hits + 1) / (int32_t)hits;
     if (hits < 2u) {
-        cv_rect(x, y, w, h, c);
+        if(FELUCCA_GRAIN_ONLY)cv_rrect(x,y,w,h,-1,c,T_SURF);else cv_rect(x,y,w,h,c);
         return;
     }
     for (k = 0; k < (int32_t)hits; k++)
-        cv_rect(x + k * (pw + 1), y, pw, h, c);
+        if(FELUCCA_GRAIN_ONLY)cv_rrect(x + k * (pw + 1),y,pw,h,-1,c,T_SURF);
+        else cv_rect(x + k * (pw + 1), y, pw, h, c);
 }
 /* the bars of step s in column x (in its RATCH parts, hits; a TIE's carried bars: 1): a 1 px edge mark for a note
  * out of view; first: row y of the step's first note */
@@ -187,7 +188,7 @@ static void pr_bars(const step_t *st, int32_t x, int32_t w, uint16_t c, int acc_
         else if (y >= ybot)
             pr_split(x, ybot - 1, w, 1, c, hits);
         else if (acc)
-            pr_split(x, y, w, PR_RH, c == T_ACCENT ? c : T_TEXT, hits);
+            pr_split(x, y, w, PR_RH, FELUCCA_GRAIN_ONLY?0xfce0:(c == T_ACCENT ? c : T_TEXT), hits);
         else
             pr_split(x, y + 1, w, PR_RH - 2, c, hits);
     }
@@ -198,14 +199,15 @@ static void graph_roll(const track_t *t, uint16_t c)
     uint64_t locks = motion_lock_steps(trk_index(t));
     int32_t r, ybot = PR_Y0 + PR_ROWS * PR_RH, gw;
     char nb[8];
+    if(FELUCCA_GRAIN_ONLY)c=GRAIN_ACCENT[song.sel%NTRK];
     ncol = base < len ? (len - base < 16u ? len - base : 16u) : 0u;
     gw = (int32_t)ncol * PR_CW + 1;
     for (r = 0; r < PR_ROWS; r++) {                 /* rows: the lane, the key, the C names */
         int32_t n = (int32_t)proll.lo + PR_ROWS - 1 - r, y = PR_Y0 + r * PR_RH;
         uint32_t pc = (uint32_t)n % 12u;
         int in = mask == 0xFFFu ? !KEY_BLACK[pc] : (int)((mask >> ((uint32_t)(n - t->p[P_ROOT] + 120) % 12u)) & 1u);
-        if (in)
-            cv_rect(PR_X0, y, gw, PR_RH, T_LANE);
+        if(FELUCCA_GRAIN_ONLY)cv_rect(PR_X0,y,gw,PR_RH,in?(r&1?0x18c3:0x1082):(r&1?0x1082:0x0841));
+        else if (in)cv_rect(PR_X0,y,gw,PR_RH,T_LANE);
         if ((held >> r) & 1u)
             cv_rect(PR_KX, y, 9, PR_RH - 1, T_ACCENT);
         else
@@ -223,14 +225,14 @@ static void graph_roll(const track_t *t, uint16_t c)
         }
     }
     for (i = 0; i <= ncol; i++)                       /* step lines, the beats brighter */
-        cv_rect(PR_X0 + (int32_t)i * PR_CW, PR_Y0, 1, ybot - PR_Y0, i % 4u ? T_GRID : T_RAISE);
+        cv_rect(PR_X0 + (int32_t)i * PR_CW, PR_Y0, 1, ybot - PR_Y0, FELUCCA_GRAIN_ONLY?(i%4u?GRAIN_COFFEE:0x632c):(i % 4u ? T_GRID : T_RAISE));
     for (i = 0; i < ncol; i++) {
         uint32_t si = base + i;
         int32_t x = PR_X0 + (int32_t)i * PR_CW;
         if (si == ui.cursor)
-            cv_frame(x, PR_Y0 - 2, PR_CW + 1, ybot - PR_Y0 + 4, T_TEXT);
+            cv_frame(x,PR_Y0-2,PR_CW+1,ybot-PR_Y0+4,FELUCCA_GRAIN_ONLY?c:T_TEXT);
         if (song.playing && si == t->seq_idx)
-            cv_rect(x + 6, PR_Y0, 1, ybot - PR_Y0, T_ACCENT);
+            cv_rect(x+6,PR_Y0,1,ybot-PR_Y0,FELUCCA_GRAIN_ONLY?0xfce0:T_ACCENT);
         if ((locks >> si) & 1u)                       /* a parameter lock: a mark under the step */
             cv_rect(x + 3, ybot + 3, 7, 2, T_ACCENT);
         if (step_detailed(&seq_steps(t)[si]))         /* 1.5.1: CHANCE / RATCH / NUDGE set: a mark over it (DETAIL) */
@@ -244,7 +246,7 @@ static void graph_roll(const track_t *t, uint16_t c)
         if (s == NSTEP)
             continue;                                 /* a REST, empty, or a TIE after one */
         st = &seq_steps(t)[s];
-        col = s == ui.cursor || si == ui.cursor ? T_ACCENT : c;
+        col = FELUCCA_GRAIN_ONLY?(s==ui.cursor || si==ui.cursor?c:(uint16_t)((c>>1)&0x7bef)):(s == ui.cursor || si == ui.cursor ? T_ACCENT : c);
         if (s == si)
             pr_bars(st, x + 2, 9, col, (st->flags & SF_ACCENT) != 0u, &y, step_ratchet(st));
         else                                          /* a TIE: the bars on through the gap before */
@@ -316,21 +318,26 @@ static void graph_detail(const track_t *t, uint16_t c)
     static const char *const NAME[4] = {"CHN", "RAT", "NDG", "VEL"};
     static const uint8_t LY[4] = {4, 38, 62, 86}, LH[4] = {28, 18, 18, 28};
     uint32_t i, l, len = (uint32_t)t->p[P_SLEN], base = ui.bank * 16u, ncol;
+    if(FELUCCA_GRAIN_ONLY)c=GRAIN_ACCENT[song.sel%NTRK];
     ncol = base < len ? (len - base < 16u ? len - base : 16u) : 0u;
     for (l = 0; l < 4u; l++) {
         int32_t yb = LY[l] + LH[l];
+        if(FELUCCA_GRAIN_ONLY){
+            cv_rrect(5,LY[l]-1,229,LH[l]+2,-3,ui.hot_t&&ui.hot_col==l?0x18c4:0x0841,T_SURF);
+            cv_rect(5,LY[l],2,LH[l],c);
+        }
         cv_rect(SD_X0, yb, (int32_t)ncol * 12 + 1, 1, T_GRID);   /* the lane's floor */
-        cv_text_on(8, LY[l] + LH[l] / 2 - 8, &AF_S, NAME[l], ui.hot_t && ui.hot_col == l ? T_ACCENT : T_MID, T_SURF);
+        cv_text_on(8, LY[l] + LH[l] / 2 - 8, &AF_S, NAME[l], FELUCCA_GRAIN_ONLY?0xffff:(ui.hot_t && ui.hot_col == l ? T_ACCENT : T_MID), T_SURF);
     }
     for (i = 0; i < ncol; i++) {
         uint32_t si = base + i;
         const step_t *st = &seq_steps(t)[si];
         int32_t x = SD_X0 + (int32_t)i * 12;
-        uint16_t hi = si == ui.cursor ? T_ACCENT : c;
+        uint16_t hi = FELUCCA_GRAIN_ONLY?(si==ui.cursor?c:(uint16_t)((c>>1)&0x7bef)):(si == ui.cursor ? T_ACCENT : c);
         if (si == ui.cursor)
-            cv_frame(x, 1, 13, 116, T_TEXT);
+            cv_frame(x,1,13,116,FELUCCA_GRAIN_ONLY?c:T_TEXT);
         if (song.playing && si == t->seq_idx)
-            cv_rect(x + 6, 2, 1, 114, T_ACCENT);
+            cv_rect(x+6,2,1,114,FELUCCA_GRAIN_ONLY?0xfce0:T_ACCENT);
         for (l = 0; l < 4u; l++) {
             uint32_t k = SD_KIND[l];
             int32_t v = ev_sval(st, k), y = LY[l], h = LH[l], set = v != ev_sdefv(k), bh;
@@ -339,7 +346,7 @@ static void graph_detail(const track_t *t, uint16_t c)
                 cv_rect(x + 5, y + h - 3, 2, 2, T_DIM);
                 continue;
             }
-            col = !sd_takes(st, k) ? T_DIM : set ? hi : T_RAISE;
+            col = !sd_takes(st, k) ? T_DIM : set ? hi : (FELUCCA_GRAIN_ONLY?GRAIN_COFFEE:T_RAISE);
             if (k == EVK_CHANCE && v > 100) {         /* 1.5.5: a condition: a:b as b cells up the lane, the a-th lit; */
                 int32_t c = v - 100, j, nb = c < 10 ? COND_B[c - 1] : 0;   /* FILL a frame, !FILL a frame crossed */
                 for (j = 0; j < nb; j++)
@@ -1468,15 +1475,20 @@ static void graph_events(void)
         k = (uint32_t)(first + row);
         c = rw[k];
         sel = k == cur;
-        bg = sel ? T_THEME : T_SURF;
-        if (sel)
-            cv_rrect(6, y, 228, 16, 4, T_THEME, T_SURF);
+        bg = FELUCCA_GRAIN_ONLY?(sel?0x18c4:0x0841):(sel?T_THEME:T_SURF);
+        uint16_t selected_ink=FELUCCA_GRAIN_ONLY?0xffff:T_INK;
+        if(FELUCCA_GRAIN_ONLY){
+            uint16_t edge=sel?GRAIN_ACCENT[song.sel%NTRK]:GRAIN_COFFEE;
+            cv_rrect(6,y,228,16,-4,edge,T_SURF);cv_rrect(7,y+1,226,14,-3,bg,edge);
+            int active=(c>>8==EVK_TOP)?motion_enabled(t):(c>>8==EVK_QNT)?t->p[P_SQNT]:1;
+            cv_rect(9,y+6,2,4,active?GRAIN_ACCENT[song.sel%NTRK]:GRAIN_COFFEE);
+        }else if(sel)cv_rrect(6,y,228,16,4,T_THEME,T_SURF);
         if (c >> 8 == EVK_ADD) {
             ev_fix();
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
             cv_text_on(14, y + LIST_TY, &AF_M, ui.ev_id == EV_CHANCE ? "+ ADD CHANCE" : ui.ev_id == EV_RATCH ?
                        "+ ADD RATCH" : ui.ev_id == EV_NUDGE ? "+ ADD NUDGE" : ui.ev_id == EV_VEL ?
-                       (ui.ev_vel ? "+ HIDE VEL" : "+ SHOW VEL") : "+ ADD LOCK", sel ? T_INK : T_DIM, bg);
+                       (ui.ev_vel ? "+ HIDE VEL" : "+ SHOW VEL") : "+ ADD LOCK", sel ? selected_ink : T_DIM, bg);
             break;
         }
         if (c >> 8 == EVK_TOP) {                     /* PLAY ON / OFF, the counts: "EVENT 3  LOCK 2" */
@@ -1486,12 +1498,12 @@ static void graph_events(void)
             str_cpy(b + str_len(b), "  LOCK ", sizeof b - str_len(b));
             fmt_int(b + str_len(b), (int32_t)motion_lock_count(t));
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(14, y + LIST_TY, &AF_M, "PLAY", sel ? T_INK : T_MID, bg);
+            cv_text_on(14, y + LIST_TY, &AF_M, "PLAY", sel ? selected_ink : T_MID, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
             cv_text_on(EV_SX, y + LIST_TY, &AF_M, motion_enabled(t) ? "ON" : "OFF",
-                       sel ? T_INK : motion_enabled(t) ? T_TEXT : T_DIM, bg);
+                       sel ? selected_ink : motion_enabled(t) ? T_TEXT : T_DIM, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_r(226, y + LIST_TY, &AF_M, b, sel ? T_INK : T_MID, bg);
+            cv_text_r(226, y + LIST_TY, &AF_M, b, sel ? selected_ink : T_MID, bg);
             continue;
         }
         if (c >> 8 == EVK_QNT) {                     /* QUANTIZE ON / OFF (1.2), the steps nudged: "NUDGED 3" */
@@ -1499,11 +1511,11 @@ static void graph_events(void)
             str_cpy(b, "NUDGED ", sizeof b);
             fmt_int(b + str_len(b), (int32_t)ev_nudged(t));
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(14, y + LIST_TY, &AF_M, "QUANTIZE", sel ? T_INK : T_MID, bg);
+            cv_text_on(14, y + LIST_TY, &AF_M, "QUANTIZE", sel ? selected_ink : T_MID, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(EV_NX, y + LIST_TY, &AF_M, t->p[P_SQNT] ? "ON" : "OFF", sel ? T_INK : T_TEXT, bg);
+            cv_text_on(EV_NX, y + LIST_TY, &AF_M, t->p[P_SQNT] ? "ON" : "OFF", sel ? selected_ink : T_TEXT, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_r(226, y + LIST_TY, &AF_M, b, sel ? T_INK : T_MID, bg);
+            cv_text_r(226, y + LIST_TY, &AF_M, b, sel ? selected_ink : T_MID, bg);
             continue;
         }
         if (c >> 8 != EVK_REC) {                     /* a step's CHANCE / RATCH / NUDGE: "STEP 05 CHANCE  50%" */
@@ -1516,14 +1528,14 @@ static void graph_events(void)
             b[1] = (char)('0' + (s + 1u) % 10u);
             b[2] = 0;
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(14, y + LIST_TY, &AF_M, "STEP", sel ? T_INK : T_MID, bg);
+            cv_text_on(14, y + LIST_TY, &AF_M, "STEP", sel ? selected_ink : T_MID, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(EV_SX, y + LIST_TY, &AF_M, b, sel ? T_INK : T_MID, bg);
+            cv_text_on(EV_SX, y + LIST_TY, &AF_M, b, sel ? selected_ink : T_MID, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
             cv_text_on(EV_NX, y + LIST_TY, &AF_M, kd == EVK_CHANCE ? (v > 100 ? "COND" : "CHANCE") : kd == EVK_RATCH ? "RATCH" :
-                       kd == EVK_VEL ? "VEL" : "NUDGE", sel ? T_INK : vc, bg);
+                       kd == EVK_VEL ? "VEL" : "NUDGE", sel ? selected_ink : vc, bg);
             if (kd == EVK_CHANCE) {                  /* (1.5.5: "STEP 05 COND  1:4") */
-                ev_value(y, b, ev_chance_fmt(b, v), sel ? T_INK : vc, bg);
+                ev_value(y, b, ev_chance_fmt(b, v), sel ? selected_ink : vc, bg);
                 continue;
             } else if (kd == EVK_VEL) {
                 fmt_int(b, v);
@@ -1534,7 +1546,7 @@ static void graph_events(void)
             } else {                                 /* "+3" "/16" */
                 ev_nudge_fmt(b, v);
             }
-            ev_value(y, b, kd == EVK_CHANCE ? "%" : kd == EVK_NUDGE ? "/16" : "", sel ? T_INK : vc, bg);
+            ev_value(y, b, kd == EVK_CHANCE ? "%" : kd == EVK_NUDGE ? "/16" : "", sel ? selected_ink : vc, bg);
             continue;
         }
         {
@@ -1548,14 +1560,14 @@ static void graph_events(void)
             b[1] = (char)('0' + ((e->place & 63u) + 1u) % 10u);
             b[2] = 0;
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(14, y + LIST_TY, &AF_M, lock ? "LOCK" : "AUTO", sel ? T_INK : lock ? T_ACCENT : T_MID, bg);
+            cv_text_on(14, y + LIST_TY, &AF_M, lock ? "LOCK" : "AUTO", sel ? selected_ink : lock ? T_ACCENT : T_MID, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_text_on(EV_SX, y + LIST_TY, &AF_M, b, sel ? T_INK : T_MID, bg);
+            cv_text_on(EV_SX, y + LIST_TY, &AF_M, b, sel ? selected_ink : T_MID, bg);
             param_format(d, e->value, b, &unit);
             ev_name(t, id, nm);
-            x = ev_value(y, b, unit, sel ? T_INK : T_TEXT, bg);
+            x = ev_value(y, b, unit, sel ? selected_ink : T_TEXT, bg);
             GFX_HOOK_ALIGN(0, y, 0, y + 16, AL_V, "list row text centred up/down");
-            cv_free_text(EV_NX, y + LIST_TY, &AF_M, nm, sel ? T_INK : T_TEXT, bg, x - 8 - EV_NX);
+            cv_free_text(EV_NX, y + LIST_TY, &AF_M, nm, sel ? selected_ink : T_TEXT, bg, x - 8 - EV_NX);
         }
     }
 }

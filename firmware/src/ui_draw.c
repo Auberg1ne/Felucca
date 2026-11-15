@@ -645,10 +645,10 @@ static void draw_column_tall(uint32_t c, const char *label, const char *val, con
  * the motion icon in place of its own, in the theme colour; a long label moves it left, up to the card's edge;
  * a label with no room for it at all (or FELUCCA_ICONS=0): the label in the theme colour.
  * vc: the value's colour (T_THEME, T_DIM inactive, T_ACCENT the knob just turned) */
-/* GLO presentation only. Reuse existing card cache/coordinates and formatter output. */
+/* COFFEE GRAINS cards. Reuse existing cache, coordinates and formatter output. */
 static void glo_card(uint32_t c,const char *label,const char *val,const char *unit,uint16_t vc,int32_t ratio,int hot)
 {
-    char key[48],text[24];unsigned track=ui.layer==LAYER_GLO?c:ui.song_trk%NTRK;
+    char key[48],text[24];unsigned track=ui.layer==LAYER_GLO?c:(!ui.layer && cur_page()->graph==GR_SONG)?ui.song_trk%NTRK:song.sel%NTRK;
     unsigned dim=vc==T_DIM;uint16_t accent=GRAIN_ACCENT[track],bg=hot?0x18c4:0x0841;
     str_cpy(key,"COFFEE|",sizeof key);str_cpy(key+str_len(key),label,12);str_cpy(key+str_len(key),"|",2);
     str_cpy(key+str_len(key),val,14);str_cpy(key+str_len(key),unit,8);str_cpy(key+str_len(key),"|",2);
@@ -686,7 +686,7 @@ static void draw_column(uint32_t c, const char *label, const char *val, const ch
     fmt_named = 0;                                      /* (params.c: a name, for this card only) */
     card_mot_next = 0;                                  /* (the same: MOTION, this card only) */
     card_mot = (uint8_t)((card_mot & ~(1u << c)) | (uint32_t)mot << c);
-    if(FELUCCA_GRAIN_ONLY && (ui.layer==LAYER_GLO || (!ui.home && !ui.layer && cur_page()->graph==GR_SONG))){
+    if(FELUCCA_GRAIN_ONLY && (ui.layer==LAYER_GLO || ui.layer==LAYER_SEQ || (!ui.home && !ui.layer && (cur_page()->graph==GR_SONG || cur_page()->fam==FAM_SEQ)))){
         glo_card(c,label,val,unit,vc,ratio,hot);return;
     }
     if (str_eq(unit, label))

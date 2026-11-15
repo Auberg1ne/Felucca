@@ -949,7 +949,12 @@ static void lcell(int32_t x, int32_t y, int32_t h, const char *note, uint32_t ic
                   uint32_t st, int tri)
 {
     uint16_t ink, fill = lc_fill(st, &ink), idle = fill == T_RAISE || ((st & LS_ALT) && fill == lc_alt());
-    fill = lc_box(x, y, LC_W, h, fill);
+    if(FELUCCA_GRAIN_ONLY && ui.layer==LAYER_SEQ){
+        unsigned state=st&~LS_ALT;int active=state==LS_HELD || state==LS_SEL || state==LS_WAIT || state==LS_MUTE;
+        uint16_t edge=icon==ICON_CLEAR?0xf986:active?GRAIN_ACCENT[song.sel%NTRK]:GRAIN_COFFEE;
+        fill=active?0x18c4:0x0841;ink=state==LS_DIM?0x8410:0xffff;idle=0;
+        cv_rrect(x,y,LC_W,h,-5,edge,T_SURF);cv_rrect(x+1,y+1,LC_W-2,h-2,-4,fill,edge);
+    }else     fill = lc_box(x, y, LC_W, h, fill);
     if (note)
         cv_text_on(x + 5, y + 3, &AF_S, note, idle ? T_MID : ink, fill);
     if (h > 30) {                                   /* the icon's cell over the name, 6 px between, centred */
@@ -1119,18 +1124,30 @@ static const char *const TL_NAME[TL_N] = {"CLEAR", "REVERSE", "SHIFT", "SHIFT", 
     "CLR", "REV", "FILL", "RND", "DOUBLE", "HALF"};
 /* EUCLID open (1.5.5): its cycle as cells, 16 a row (up to 4 rows), the hits filled; past it, inside LEN, the cells
  * of its repeats faint (DRUM: the lanes' row under them as always) */
+/* Render-only held feedback for the existing tools/key positions. */
+static uint32_t seq_tool_held(void)
+{
+    uint32_t held=0;
+    if(chain_busy())return 0;
+    for(unsigned k=0;k<27;k++)if(((fm1_in.notes>>k)&1u) && !key_black(k)){
+        unsigned p=key_place(k);if(p<TL_N && tl_cell(TSEL,p))held|=1u<<p;
+    }
+    return held;
+}
 static void layer_euclid(void)
 {
     uint32_t len = tl_len(TSEL), i, rows = (len + 15u) / 16u, h = rows > 3u ? 16u : 22u;
     for (i = 0; i < len; i++) {
         int32_t x = 8 + 14 * (int32_t)(i % 16u), y = 6 + (int32_t)(h + 2u) * (int32_t)(i / 16u);
         uint16_t c = eu_hit(i) ? (i < eu.steps ? T_THEME : T_MID) : T_RAISE;
-        cv_rrect(x, y, 12, (int32_t)h, 2, c, T_SURF);
+        if(FELUCCA_GRAIN_ONLY)c=eu_hit(i)?(i<eu.steps?GRAIN_ACCENT[song.sel%NTRK]:(uint16_t)((GRAIN_ACCENT[song.sel%NTRK]>>1)&0x7bef)):0x18c4;
+        cv_rrect(x,y,12,(int32_t)h,FELUCCA_GRAIN_ONLY?-2:2,c,T_SURF);
     }
 }
 static void layer_seq(void)
 {
     uint32_t p, st = chain_busy() ? LS_DIM : LS_OFF, drum = (uint32_t)drum_track(TSEL);
+    uint32_t held=FELUCCA_GRAIN_ONLY?seq_tool_held():0;
     char n[3] = {0, 0, 0}, nm[8];
     if (eu.on)
         layer_euclid();
@@ -1143,7 +1160,7 @@ static void layer_seq(void)
             str_cpy(nm + str_len(nm), " ", 2);
             str_cpy(nm + str_len(nm), drum_lane_abbr(TSEL, ui.lane), sizeof nm - str_len(nm));
         }
-        lcell(LC_X(p % 4u), 4 + 32 * (int32_t)(p / 4u), 28, n, TL_ICON[p], 0, nm, st, 0);
+        lcell(LC_X(p % 4u), 4 + 32 * (int32_t)(p / 4u), 28, n, TL_ICON[p], 0, nm, (held&(1u<<p))?LS_HELD:st, 0);
     }
     for (p = 0; drum && p < NLANE; p++) {               /* the lanes (black keys 1..8): 8 cells of 18 px, 2 px apart */
         int32_t x = 6 + 20 * (int32_t)p;
@@ -1153,7 +1170,12 @@ static void layer_seq(void)
     }
     for (p = TL_DOUBLE; !eu.on && p < TL_N; p++) {     /* 1.5.5: D5 DOUBLE (x2), E5 HALF (/2) at the row's end, */
         int32_t x = 168 + 35 * (int32_t)(p - TL_DOUBLE);   /* 31 px each (the lanes' row: no room for their names) */
-        uint16_t ink, fill = lc_box(x, 100, 31, 18, lc_fill(st, &ink));
+        uint16_t ink,fill=lc_fill((held&(1u<<p))?LS_HELD:st,&ink);
+        if(FELUCCA_GRAIN_ONLY){
+            uint16_t edge=(held&(1u<<p))?GRAIN_ACCENT[song.sel%NTRK]:GRAIN_COFFEE;
+            fill=(held&(1u<<p))?0x18c4:0x0841;ink=st==LS_DIM?0x8410:0xffff;
+            cv_rrect(x,100,31,18,-4,edge,T_SURF);cv_rrect(x+1,101,29,16,-3,fill,edge);
+        }else fill=lc_box(x,100,31,18,fill);
         n[0] = W_NOTE[p];
         GFX_HOOK_ALIGN(0, 100, 0, 118, AL_V, "tools resize cell on its middle");
         cv_text_on(x + 5, 100 + CAP_IN(S, 18), &AF_S, n, fill == T_RAISE || fill == T_SURF ? T_MID : ink, fill);
@@ -1289,7 +1311,7 @@ static void draw_layer(void)
     else if (l == LAYER_REC)
         sig += (uint32_t)ui_rec_prefs * 31u + (uint32_t)chain_busy() * 3u + (uint32_t)rec_clearable() * 5u + song.sel * 977u;
     else if (l == LAYER_SEQ)
-        sig += (uint32_t)drum_track(TSEL) * 31u + ui.lane * 5u + (uint32_t)chain_busy() * 3u + (uint32_t)TSEL->p[P_E0] * 131u + song.sel * 977u +
+        sig += (FELUCCA_GRAIN_ONLY?seq_tool_held()*2654435761u:0u) + (uint32_t)drum_track(TSEL) * 31u + ui.lane * 5u + (uint32_t)chain_busy() * 3u + (uint32_t)TSEL->p[P_E0] * 131u + song.sel * 977u +
                (eu.on ? 7u + eu.hits * 13u + eu.steps * 1031u + eu.rot * 65537u + (uint32_t)TSEL->p[P_SLEN] * 257u : 0u);
     else
         sig += snd_id() * 31u + (uint32_t)preset_favorite() * 5u + (uint32_t)chain_busy() * 3u + up_gen * 101u +
