@@ -40,6 +40,11 @@
  * over notes and engine switches); per voice s[0] the zone, s[1] the countdown to the next grain,
  * s[2] filter output, s[3..4] resonant filter state, s[5] TONE sample state,
  * s[6] TONE coefficient Q14. ph[0] is fallback sine phase, ph[1] STUTTER phase. */
+/* Experimental build only: no UI, protocol or persisted selector. */
+#if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
+#include "grain_tukey.h"
+static uint8_t gr_test_window; /* tests set 0=legacy Hann, 1=Tukey before spawning */
+#endif
 #define GR_POLY 3                /* voices per part */
 #define GR_NG 12                 /* grains per part */
 #define GR_SEG_LOG2 8
@@ -88,6 +93,9 @@ typedef struct {
     uint8_t owner;               /* voice index + 1, 0 = free */
     uint8_t rev;
     uint8_t zl;                  /* its zone in the set */
+#if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
+    uint8_t window;              /* latched at spawn; uses existing structure padding */
+#endif
 } gr_grain_t;
 
 /* A bounded sample index and Q16 fraction, not a 16-bit integer packed into Q16. */
@@ -353,6 +361,9 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     g->step = step;
     g->frac = 0;
     g->wph = 0;
+#if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
+    g->window = gr_test_window == 1u;
+#endif
     g->winc = 0xFFFFFFFFu / len;
     g->left = len;
     g->rev = (uint8_t)rev;
@@ -391,6 +402,16 @@ static inline int32_t gr_win(uint32_t wph)         /* the Hann window, Q15 */
     return GR_HANN[wi] + (((GR_HANN[wi + 1u] - GR_HANN[wi]) * (int32_t)((wph >> 9) & 0x7FFFu)) >> 15);
 }
 
+#if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
+static inline int32_t gr_experiment_win(const gr_grain_t *g, uint32_t phase)
+{
+    return g->window ? gr_tukey_win(phase) : gr_win(phase);
+}
+#define GR_RENDER_WIN(g, phase) gr_experiment_win((g), (phase))
+#else
+#define GR_RENDER_WIN(g, phase) gr_win(phase)
+#endif
+
 /* one grain into acc; returns 0 when it ended. The window (times the grain's level) is a
  * linear ramp over the block between its exact values at the block's ends. */
 static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
@@ -398,10 +419,10 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     uint32_t i, m = n < g->left ? n : g->left, step = g->step, pos = g->pos;
     int32_t a = g->a, b = g->b, frac = g->frac, w0, w1, wq, dq;
     const smp_zone_t *z = g->z;
-    w0 = mulq15(gr_win(g->wph), g->gain);
+    w0 = mulq15(GR_RENDER_WIN(g, g->wph), g->gain);
     g->wph += g->winc * m;
     g->left -= m;
-    w1 = g->left ? mulq15(gr_win(g->wph), g->gain) : 0;
+    w1 = g->left ? mulq15(GR_RENDER_WIN(g, g->wph), g->gain) : 0;
     wq = w0 * 1024;
     dq = m == CTL ? ((w1 - w0) * 1024) >> CTL_LOG2 : m ? (w1 - w0) * 1024 / (int32_t)m : 0;
     if (!g->rev) {
