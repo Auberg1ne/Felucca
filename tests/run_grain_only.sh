@@ -150,3 +150,7 @@ fi
 if [ -n "${LFO_MOD_BASE_TREE:-}" ]; then
     python3 tests/lfo_mod_compare.py --base-tree "$LFO_MOD_BASE_TREE" --out "$out/lfo-mod-comparison"
 fi
+
+if [ -n "${MOD_LABEL_BASE_TREE:-}" ]; then
+    python3 tests/mod_label_compare.py --base-tree "$MOD_LABEL_BASE_TREE" --out "$out/mod-label-comparison"
+fi

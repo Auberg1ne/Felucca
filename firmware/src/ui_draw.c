@@ -861,6 +861,7 @@ static void draw_foot(void)
         str_cpy(ti, "HOME", sizeof ti);
     else                                               /* page title + number in its family: "ENV DEST 2/2" */
         page_title(ti);
+    if(matrix_visuals_page())str_cpy(ti,"MOD MATRIX",sizeof ti);
     str_cpy(s, ename, sizeof s);
     s[str_len(s) + 1u] = 0;
     s[str_len(s)] = (char)('1' + song.sel);
