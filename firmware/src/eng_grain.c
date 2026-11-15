@@ -309,6 +309,11 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     amt = p[P_E6] * p[P_E6] * 192 / (127 * 127);
     d16 = m->pitch16 - z->root16 + p[P_E4] * 16 + pitch_offset + (((int32_t)(r1 & 0xFFFFu) - 32768) * amt >> 15);
     step = (pow2_q16(clamp(d16, -1536, 576)) >> 8) * (z->rate >> 8);
+    /* Allocator UNISON fine is a rate factor in 1/4096, not a semitone offset.
+     * Use only its voice term: m->fine also includes unrelated TUNE/bend residuals.
+     * Wide multiplication retains low-rate precision; apply before the existing cap. */
+    if (t->v[vi].fine)
+        step = (uint32_t)(((uint64_t)step * (uint32_t)(4096 + t->v[vi].fine)) >> 12);
     step = step > GR_STEP_MAX ? GR_STEP_MAX : step < 256u ? 256u : step;
     rev = ((r1 >> 16) & 255u) < (uint32_t)p[P_E6];  /* RAND 127: half of them */
     /* Reverse's negative fractional accumulator advances by ceil, forward by floor. */
