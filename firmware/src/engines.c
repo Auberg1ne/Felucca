@@ -29,7 +29,22 @@ static uint8_t eng_mem_owner[NPART];       /* engine index + 1 whose state is in
 #include "../engines/src/eng_trio.c"
 #include "../engines/src/eng_wheel.c"
 #include "eng_grain.c"
-#include "eng_phys.c"           /* PHYS: DaisySP physical models (phys_dsp.c, MIT) */
+#if FELUCCA_GRAIN_ONLY
+/* Preserve historical engine ID 9 without compiling PHYS DSP. */
+static const engine_t ENG_PHYS = {
+    .name = "PHYS",
+};
+/* Preserve the pre-1.0 DUST -> MODAL preset conversion. */
+static void phys_legacy(int16_t *e)
+{
+    if (e[0] == 2) {
+        e[0] = 0; /* PM_MODAL */
+        e[6] = 64;
+    }
+}
+#else
+#include "eng_phys.c"
+#endif           /* PHYS: DaisySP physical models (phys_dsp.c, MIT) */
 #include "eng_drum.c"           /* DRUM: the 8-lane kit (drum_voice.c) */
 #include "../engines/src/eng_noise.c"
 #include "eng_fm6.c"            /* FM6: 6-operator FM, msfa ported (fm6_core.c, Apache-2.0) */

@@ -181,6 +181,7 @@ static void step_to_grid(step_t *s)
     }
 }
 
+#if !FELUCCA_GRAIN_ONLY
 static drum_lane_t *drum_kit_of(const track_t *t)
 {
     return t >= &trk[0] && t < &trk[NPART] ? (drum_lane_t *)ENG_MEM(t - trk) : 0;
@@ -348,3 +349,10 @@ static const engine_t ENG_DRUM = {
     .keys = drum_keys,
     .mem = sizeof(drum_lane_t) * DV_NLANE,
 };
+#endif /* !FELUCCA_GRAIN_ONLY */
+
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_DRUM = {
+    .name = "DRUM",
+};
+#endif
