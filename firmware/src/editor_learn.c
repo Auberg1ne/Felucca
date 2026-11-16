@@ -13,7 +13,7 @@ static void ed_learn_list(void)
     for (i = 0; i < ML_N; i++) {
         e = ml_get(i);
         id = ml_id(e >> 9);
-        if (!(e >> 9) || id >= P_COUNT) {
+        if (!(e >> 9) || id >= P_COUNT || id == P_GWIN) {
             ed_b(0); ed_b(0); ed_b(0); ed_b(0);
             continue;
         }

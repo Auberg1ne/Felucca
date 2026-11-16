@@ -66,7 +66,7 @@ int main(void)
                                       up_valid(&r) && !memcmp(r.name, "Bass One", 8) && !r.name[8]);
     ok = 1;
     for (i = 0; i < P_COUNT; i++)
-        ok &= up_value(&r, i) == (int16_t)(-40 + (int32_t)i);
+        ok &= up_value(&r, i) == (i == P_GWIN ? 0 : (int16_t)(-40 + (int32_t)i));
     bad += check("UP_PUT values (negative v14 too)", ok);
     bad += check("pattern: rest drops flags, tie has no note",
                  r.note[0] == 0 && r.flags[0] == 0 && r.note[1] == 41 && r.flags[1] == 1 && r.note[3] == 0 &&
@@ -136,7 +136,7 @@ int main(void)
     *up_rec(17) = r;
     up_rec(17)->ver = UP_VER_GRID + 1u;
     bad += check("record with another version -> empty", !up_used(17));
-    up_rec(17)->ver = UP_VER_GRID;
+    up_rec(17)->ver = UP_LEGACY_GRID;
     bad += check("a version 3 record (a drum grid) is used", up_used(17));
 
     /* a drum grid by UP_PUT: kind 1, then bit 7 of each step's hits (bit 0) and accents (bit 1) */
@@ -150,13 +150,13 @@ int main(void)
         g[m++] = 1;
         for (k = 0; k < 16u; k++)
             g[m++] = (uint8_t)(k == 2u ? 3u : k == 5u ? 2u : 0u);  /* step 3: BELL hit + accent; 6: an accent alone */
-        ok = up_parse(g, m, &got, &slot) == 0 && slot == 9u && got.ver == UP_VER_GRID && up_valid(&got) &&
+        ok = up_parse(g, m, &got, &slot) == 0 && slot == 9u && got.ver == UP_LEGACY_GRID && up_valid(&got) &&
              got.note[0] == 0x09u && got.flags[0] == 0x09u && got.note[1] == 0x08u && !got.flags[1] &&
              got.note[2] == 0x88u && got.flags[2] == 0x80u && got.note[5] == 0x08u && !got.flags[5] &&
              got.engine == ENGI_DRUM && !up_pat_empty(&got);
         bad += check("UP_PUT kind 1: a grid record, accents only on hits", ok);
         g[m - 17u] = 0;                                     /* kind 0: the notes and flags as before */
-        ok = up_parse(g, m, &got, &slot) == 0 && got.ver == UP_VER && got.note[2] == 0x08u && got.flags[0] == 4u;   /* (flags 0x7F: a tie) */
+        ok = up_parse(g, m, &got, &slot) == 0 && got.ver == UP_LEGACY_PACKED && got.note[2] == 0x08u && got.flags[0] == 4u;   /* (flags 0x7F: a tie) */
         bad += check("UP_PUT kind 0: a note pattern (version 2)", ok);
         g[m - 17u] = 1;
         {
@@ -203,7 +203,7 @@ int main(void)
         up_bank_check(1, st_load(OBJ_UPRESET0 + 1, &up_bank[1], sizeof up_bank[1]));
         ok = up_used(16) && up_rec(16)->engine == ENGI_DRUM && up_used(17) && up_rec(17)->engine == ENGI_PHYS &&
              !memcmp(up_rec(17)->p, m.p, sizeof m.p) && up_used(18) && up_rec(18)->engine == ENGI_DRUM &&
-             up_rec(16)->ver == UP_VER;
+             up_rec(16)->ver == UP_LEGACY_PACKED;
         for (k = 0; k < 8u; k++)
             ok &= up_value(up_rec(16), P_E0 + k) == NEW[k] && up_value(up_rec(18), o.np - 8u + k) == NEW[k];
         bad += check("bank load: PHYS DRUM -> DRUM engine, MEMB kept", ok);
@@ -270,7 +270,7 @@ int main(void)
     up_params(&r, v, def);
     ok = 1;
     for (i = 0; i < P_E0; i++)
-        ok &= v[i] == (i < P_E0 - 2u ? (int16_t)i : def[i]);
+        ok &= v[i] == (i == P_GWIN ? params_win_default(r.engine) : i < P_E0 - 2u ? (int16_t)i : def[i]);
     for (i = 0; i < 8u; i++)
         ok &= v[P_E0 + i] == (int16_t)(P_E0 - 2u + i);
     bad += check("np < P_COUNT: mapped by count", ok);
@@ -291,7 +291,7 @@ int main(void)
     for (i = 0; i < 45u; i++)
         ok &= v[i] == (int16_t)(2000 + i);
     for (i = P_SLCR; i < P_E0; i++)
-        ok &= v[i] == def[i];
+        ok &= v[i] == (i == P_GWIN ? params_win_default(r.engine) : def[i]);
     for (i = 0; i < 8u; i++)
         ok &= v[P_E0 + i] == (int16_t)(2000 + 45 + i);
     bad += check("old record (np 53): SLICER and matrix defaults, E0..E7 kept", ok);
@@ -305,7 +305,7 @@ int main(void)
     for (i = 0; i < 49u; i++)
         ok &= v[i] == (int16_t)(3000 + i);
     for (i = P_M1SRC; i <= P_M4AMT; i++)
-        ok &= v[i] == def[i];
+        ok &= v[i] == (i == P_GWIN ? params_win_default(r.engine) : def[i]);
     for (i = 0; i < 8u; i++)
         ok &= v[P_E0 + i] == (int16_t)(3000 + 49 + i);
     bad += check("old record (np 57): SLICER kept, matrix defaults, E0..E7 kept", ok);
@@ -314,7 +314,7 @@ int main(void)
      * values land on today's E0..E7 (91..98), the lane levels (100 %) and the chord keys their defaults (OFF, CLOSE), the
      * operator parameters too for 69 */
     {
-        static const uint8_t VERS[2] = {UP_VER, UP_VER_GRID}, NPS[3] = {91, 89, 69};
+        static const uint8_t VERS[2] = {UP_LEGACY_PACKED, UP_LEGACY_GRID}, NPS[3] = {91, 89, 69};
         uint32_t a, b;
         ok = 1;
         for (a = 0; a < 2u; a++)
@@ -331,20 +331,20 @@ int main(void)
                 for (i = 0; i < np - 8u; i++)
                     ok &= v[i] == (int16_t)(i % 100u - 30);
                 for (i = np - 8u; i < P_E0; i++)
-                    ok &= v[i] == def[i];
+                    ok &= v[i] == (i == P_GWIN ? params_win_default(r.engine) : def[i]);
                 for (i = 0; i < 8u; i++)
                     ok &= v[P_E0 + i] == (int16_t)((np - 8u + i) % 100u - 30);
             }
         bad += check("v4 / v5 records of 91, 89 and 69 parameters: E0..E7 at P_E0, lane levels and chord keys defaults", ok);
     }
-    r.ver = UP_VER;
+    r.ver = UP_LEGACY_PACKED;
     r.np = P_COUNT;
     for (i = 0; i < P_COUNT; i++)
         up_set_value(&r, i, (int16_t)i);
     up_params(&r, v, def);
     ok = 1;
     for (i = 0; i < P_COUNT; i++)
-        ok &= v[i] == (int16_t)i;
+        ok &= v[i] == (i == P_GWIN ? params_win_default(r.engine) : (int16_t)i);
     bad += check("np == P_COUNT: as stored", ok);
 
     {   /* steps -> pattern (UP_STORE) */
@@ -389,7 +389,7 @@ int main(void)
         r.note[0] = 0x81; r.flags[0] = 0x80;
         got = r;
         up_set_cat(&got, CAT_FX);
-        ok = got.ver == UP_VER_GRID && up_cat_of(&got) == CAT_FX && got.note[0] == 0x81 && up_valid(&got);
+        ok = got.ver == UP_LEGACY_GRID && up_cat_of(&got) == CAT_FX && got.note[0] == 0x81 && up_valid(&got);
         for (i = 0; i < 60u; i++) ok &= up_value(&got, i) == r.p[i];
         r.p[7] = 200;                                   /* a value a byte cannot hold: stays version 3, no category */
         got = r;

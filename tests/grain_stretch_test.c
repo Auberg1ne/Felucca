@@ -11,6 +11,7 @@ int main(void)
  for(unsigned e=0;e<NENGINES;e++)for(unsigned id=0;id<P_COUNT;id++) {
   const param_desc_t *d=param_desc_of(e,id);
   if(e==ENGI_GRAIN && id==108)REQUIRE(d->min==0 && d->max==127 && d->def==0 && d->fmt==F_INT && str_eq(d->label,"STRETCH"));
+  else if(e==ENGI_GRAIN && id==109)REQUIRE(d->min==0 && d->max==127 && d->def==64 && str_eq(d->label,"WIN"));
   else REQUIRE(d==(id>=P_E0?&ENGINES[e]->edit[id-P_E0]:&TP[id]));
  }
  for(unsigned n=0;n<NELEM(values);n++) {

@@ -251,6 +251,7 @@ int main(void)
     /* a FUN6 round trip: stored as is (a matrix slot set; an engine added since: SLICE, 8; a DRUM track with
      * notes on its lanes stays so: only an older format is converted) */
     q.t[1].engine = 8;
+    q.t[1].p[P_GWIN] = 64; /* engine 8 is GRAIN; a current-schema value */
     q.t[2].p[P_M2SRC] = 6;
     q.t[2].p[P_M2DST] = 11;
     q.t[2].p[P_M2AMT] = -17;
@@ -379,6 +380,7 @@ int main(void)
             q.t[2].p[P_E0 + i] = OLD_KIT[i];
             q.t[3].p[P_E0 + i] = (int16_t)(i ? 30 : PM_SYMP);
         }
+        for (i = 0; i < NTRK; i++) q.t[i].p[P_GWIN] = 0; /* these four are now PHYS */
         q.phys = 1;
         for (i = 1; i < NSTEP; i++)                     /* (the other steps rests) */
             q.t[0].step[i] = (step_t){{50, 0, 0, 0}, 1, ST_REST, 0, 0, 0, 0};
@@ -469,7 +471,7 @@ int main(void)
         }
         memcpy(a.name, "FM SONG", 7);
         a.sum = proj_sum(&a);
-        ok = proj_pack(&st, &a) && ((uint32_t *)st.raw)[0] == PROJ_MAGIC_V11 && proj_import(&c, &st, sizeof st);
+        ok = proj_pack(&st, &a) && ((uint32_t *)st.raw)[0] == PROJ_MAGIC_V12 && proj_import(&c, &st, sizeof st);
         for (k = 0; k < NTRK; k++)
             ok &= !memcmp(c.fm6[k], FM6_FACTORY[k * 2u], FM6_PACKED) && c.t[k].engine == ENGI_FM6;
         bad += check("FUN10: the four FM6 patches round trip (bytes at PROJ_FM6_OFF)", ok && !memcmp(c.name, "FM SONG", 7));

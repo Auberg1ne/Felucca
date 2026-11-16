@@ -381,7 +381,7 @@ int main(int argc, char **argv)
         proj_scratch.t[2].p[P_LN3] = 127;              /* (FUN8 had no lane levels) */
         bad += check("a FUN8 project (1.0.x) restores as FUN10 into slot 2, E0 at P_E0, lane levels 100 %",
                      old_pack(v8, &proj_scratch, OLD_FUN8, 91u) == sizeof v8 &&
-                     put_all(3, v8, sizeof v8, st_crc32(v8, sizeof v8)) == 0 && ((uint32_t *)proj_slot[1].raw)[0] == PROJ_MAGIC_V11 &&
+                     put_all(3, v8, sizeof v8, st_crc32(v8, sizeof v8)) == 0 && ((uint32_t *)proj_slot[1].raw)[0] == PROJ_MAGIC_V12 &&
                      proj_import(&proj_scratch, &proj_slot[1], sizeof st) && proj_scratch.t[2].p[P_E0] == 2 &&
                      proj_scratch.t[2].p[P_LN3] == 127 && proj_scratch.t[1].step[3].note[0] == 64u);
         project_capture(&proj_scratch);
@@ -390,7 +390,7 @@ int main(int argc, char **argv)
         proj_scratch.motion.count = 64;
         proj_scratch.motion.on = 2;
         ok = old_pack(v9, &proj_scratch, OLD_FUN9, 99u) == sizeof v9 &&
-             put_all(4, v9, sizeof v9, st_crc32(v9, sizeof v9)) == 0 && ((uint32_t *)proj_slot[2].raw)[0] == PROJ_MAGIC_V11 &&
+             put_all(4, v9, sizeof v9, st_crc32(v9, sizeof v9)) == 0 && ((uint32_t *)proj_slot[2].raw)[0] == PROJ_MAGIC_V12 &&
              proj_import(&proj_scratch, &proj_slot[2], sizeof st) && proj_scratch.t[2].p[P_E0] == 2 &&
              proj_scratch.t[2].p[P_LN3] == 90 && proj_scratch.motion.count == 64u && proj_scratch.motion.event[63].value == 63 &&
              proj_scratch.t[0].p[P_LSYNC] == 0 && proj_scratch.t[0].p[P_LTRIG] == 0 && proj_scratch.t[0].p[P_LPOL] == 0 &&
@@ -409,7 +409,7 @@ int main(int argc, char **argv)
     memset(&v6.chain, 0, sizeof v6.chain);
     v6.sum = proj_hash(&v6, sizeof v6 - 4u);
     bad += check("a FUN6 project restores as FUN10, bounded, its E0 at P_E0",
-                 put_all(5, &v6, sizeof v6, st_crc32(&v6, sizeof v6)) == 0 && ((uint32_t *)proj_slot[3].raw)[0] == PROJ_MAGIC_V11 &&
+                 put_all(5, &v6, sizeof v6, st_crc32(&v6, sizeof v6)) == 0 && ((uint32_t *)proj_slot[3].raw)[0] == PROJ_MAGIC_V12 &&
                  proj_import(&proj_scratch, &proj_slot[3], sizeof st) && proj_scratch.t[0].step[0].n == 4u &&
                  proj_scratch.t[0].step[0].note[0] == 127u && proj_scratch.t[0].p[P_E0] ==
                  clamp(3, param_desc_of(trk[0].engine, P_E0)->min, param_desc_of(trk[0].engine, P_E0)->max));
@@ -492,7 +492,7 @@ int main(int argc, char **argv)
                  put_all(0, &st, sizeof st, st_crc32(&st, sizeof st)) == 0 && trk[2].step[5].note[0] == 67u &&
                  trk[2].p[P_LEVEL] == 77);
 
-    /* user preset banks: unknown record versions are kept as bytes */
+    /* An incoming opaque bank cannot grant ownership; existing opaque records are preserved. */
     reset();
     {
         static up_bank_t b;
@@ -504,10 +504,13 @@ int main(int argc, char **argv)
         b.r[4].ver = 99;                                 /* a future record */
         memcpy(b.r[4].name, "Future", 7);
         b.r[4].p[0] = 55;
-        bad += check("a bank with a future record version restores byte for byte",
-                     put_all(6, &b, sizeof b, st_crc32(&b, sizeof b)) == 0 &&
-                     st_load(OBJ_UPRESET0, &proj_wire, sizeof proj_wire) == (int)sizeof b &&
-                     !memcmp(&proj_wire, &b, sizeof b));
+        static uint8_t before_nor[sizeof nor];
+        up_bank_t before_bank = up_bank[0];
+        memcpy(before_nor, nor, sizeof nor); unsigned before_erases = erases;
+        bad += check("a bank with a future record is refused atomically (no ownership)",
+                     put_all(6, &b, sizeof b, st_crc32(&b, sizeof b)) == 2u &&
+                     erases == before_erases && !memcmp(before_nor, nor, sizeof nor) &&
+                     !memcmp(&before_bank, &up_bank[0], sizeof before_bank));
         b.nslot = 3;
         bad += check("a bank with the wrong slot count is refused", put_all(7, &b, sizeof b, st_crc32(&b, sizeof b)) == 2u);
     }

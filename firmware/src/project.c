@@ -100,9 +100,11 @@
  *
  * Built on the Mac too (tests/project_test.c, -DPROJ_HOST): the part above the #ifndef
  * PROJ_HOST needs core.h, params.c (TP) and engines.c. */
+#define PROJ_MAGIC_V12 0x46554E43u             /* FUNC: explicit WIN provenance, same 3840-byte layout */
 #define PROJ_MAGIC_V11 0x46554E42u             /* FUNB: seven-bit FM6 storage, 3840 bytes */
 #define PROJ_MAGIC_V10 0x46554E41u
-#define PROJ_MAGIC PROJ_MAGIC_V10             /* retain the internal/cache schema magic */
+#define PROJ_MAGIC PROJ_MAGIC_V12             /* WIN-aware internal schema, unchanged size */
+#define PROJ_MAGIC_LEGACY PROJ_MAGIC_V10      /* frozen pre-WIN retained schema */
 #define PROJ_MAGIC_V9 0x46554E39u              /* "FUN9": FUN8, 64 bytes longer (the DRUM lane levels, 99 parameters) */
 #define PROJ_MAGIC_V8 0x46554E38u              /* "FUN8": FUN7 + the tracks' FM6 patches */
 #define PROJ_MAGIC_V7 0x46554E37u              /* "FUN7": serialized (byte params, packed steps), chain, motion */
@@ -241,8 +243,14 @@ static uint32_t proj_hash(const void *p, uint32_t n)   /* FNV-1a over n bytes */
     return s;
 }
 static uint32_t proj_sum(const project_t *p) { return proj_hash(p, sizeof *p - 4u); }
+static int proj_win_valid(const project_t *q)
+{
+    for (uint32_t t = 0; t < NTRK; t++)
+        if (!params_win_valid(q->t[t].p, q->t[t].engine)) return 0;
+    return 1;
+}
 static int proj_ok(const project_t *q) { return q->magic == PROJ_MAGIC && q->size == sizeof *q &&
-    q->sum == proj_sum(q) && chain_valid(&q->chain) && motion_valid(&q->motion); }
+    q->sum == proj_sum(q) && chain_valid(&q->chain) && motion_valid(&q->motion) && proj_win_valid(q); }
 
 /* G_RTYPE (id 24) was G_DRCH, the GM drum part's MIDI channel (0..16, 10 by default) until 1.0: a project of a
  * format before FUN7 may hold any channel there. FUN7 came after it was inert (always 0), so only those imports
@@ -515,15 +523,21 @@ static int proj_engines_ok(const project_t *q)
  * project */
 static int proj_import(project_t *q, const void *b, int n)
 {
+    uint32_t magic = 0;
+    if (n >= 4) memcpy(&magic, b, 4);
+    int win_aware = magic == PROJ_MAGIC_V12 && (n == PROJ_STORE_SIZE || n == (int)sizeof *q);
     if (!proj_import_any(q, b, n) || !proj_engines_ok(q))
         return 0;
     proj_fm4(q);
     proj_perc(q);
+    if (!win_aware) for (uint32_t t = 0; t < NTRK; t++) params_win_legacy(q->t[t].p, q->t[t].engine);
+    if (!proj_win_valid(q)) return 0;
+    q->sum = proj_sum(q);
     return 1;
 }
 static int proj_import_any(project_t *q, const void *b, int n)
 {
-    if (n == PROJ_STORE_SIZE && (((const uint32_t *)b)[0] == PROJ_MAGIC_V11 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V10))
+    if (n == PROJ_STORE_SIZE && (((const uint32_t *)b)[0] == PROJ_MAGIC_V12 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V11 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V10))
         return proj_unpack(q, b, PROJ_STORE_SIZE);
     if (n == PROJ_STORE_SIZE && ((const uint32_t *)b)[1] >= 8u && ((const uint32_t *)b)[1] < PROJ_STORE_SIZE)
         n = (int)((const uint32_t *)b)[1];      /* a retained slot holding an older, shorter record: its own size
@@ -534,8 +548,12 @@ static int proj_import_any(project_t *q, const void *b, int n)
         return proj_unpack(q, b, PROJ_STORE_V8);
     if (n == (int)PROJ_STORE_V7 && ((const uint32_t *)b)[0] == PROJ_MAGIC_V7)
         return proj_unpack(q, b, PROJ_STORE_V7);
-    if (n == (int)sizeof *q && proj_ok((const project_t *)b)) {
+    if (n == (int)sizeof *q && (proj_ok((const project_t *)b) ||
+        (((const project_t *)b)->magic == PROJ_MAGIC_LEGACY && ((const project_t *)b)->size == sizeof *q &&
+         ((const project_t *)b)->sum == proj_sum((const project_t *)b) &&
+         chain_valid(&((const project_t *)b)->chain) && motion_valid(&((const project_t *)b)->motion)))) {
         memcpy(q, b, sizeof *q);
+        q->magic = PROJ_MAGIC;
         proj_drums_to_part(q);
         proj_phys(q);
         return 1;
@@ -658,7 +676,8 @@ static void proj_fm6_unpack(uint8_t *out, const uint8_t *in)
  * np, format flags, then four byte-param tracks and nine-byte steps; FUN8: the patches at PROJ_FM6_OFF. */
 static int proj_pack(project_store_t *out, const project_t *q)
 {
-    uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC_V11, size = PROJ_STORE_SIZE, sum;
+    uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC_V12, size = PROJ_STORE_SIZE, sum;
+    if (q->magic != PROJ_MAGIC || q->size != sizeof *q || !proj_win_valid(q)) return 0;
     if (68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) +
         sizeof q->chain + sizeof q->motion > PROJ_MIDI_OFF || !proj_engines_ok(q)) return 0;
     for (t = 0; t < NTRK; t++)
@@ -748,13 +767,15 @@ static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
         return 0;
     uint32_t pos = 68u, t, i, magic, size, sum, np = b[66], v7 = st == PROJ_STORE_V7, v10 = st == PROJ_STORE_SIZE;
     memcpy(&magic, b, 4);
-    uint32_t v11 = v10 && magic == PROJ_MAGIC_V11;
+    uint32_t v12 = v10 && magic == PROJ_MAGIC_V12;
+    uint32_t v11 = v10 && (magic == PROJ_MAGIC_V11 || v12);
+    if (v12 && np != P_COUNT) return 0;
     uint32_t name_off = st - 4u - PROJ_NAME_LEN;
     uint32_t fm6_off = v7 ? name_off : name_off - NTRK * (v11 ? PROJ_FM6_STORE : FM6_PACKED);
     uint32_t end = fm6_off - (v10 ? 3u : 0u);
     uint32_t mot = v10 ? sizeof q->motion : PROJ_MOTION_V9, chn = v10 ? sizeof q->chain : sizeof(chain_v9_t);
     memcpy(&magic, b, 4); memcpy(&size, b + 4, 4); memcpy(&sum, b + st - 4u, 4);
-    if (magic != (v7 ? PROJ_MAGIC_V7 : st == PROJ_STORE_V8 ? PROJ_MAGIC_V8 : st == PROJ_STORE_V9 ? PROJ_MAGIC_V9 : (v11 ? PROJ_MAGIC_V11 : PROJ_MAGIC_V10)) ||
+    if (magic != (v7 ? PROJ_MAGIC_V7 : st == PROJ_STORE_V8 ? PROJ_MAGIC_V8 : st == PROJ_STORE_V9 ? PROJ_MAGIC_V9 : (v12 ? PROJ_MAGIC_V12 : v11 ? PROJ_MAGIC_V11 : PROJ_MAGIC_V10)) ||
         size != st || sum != proj_hash(b, st - 4u) ||
         np < 8u || np > P_COUNT || 68u + NTRK * (np + 2u + NSTEP * 9u) + chn + mot > end)
         return 0;
@@ -904,7 +925,7 @@ static int project_raw_state(const void *raw, uint32_t n)
     }
     uint32_t magic = 0;
     if (n >= 4u) memcpy(&magic, raw, 4);
-    return ((magic >= PROJ_MAGIC_V1 && magic <= PROJ_MAGIC_V9) || magic == PROJ_MAGIC_V10 || magic == PROJ_MAGIC_V11) ? PS_CORRUPT : PS_UNSUPPORTED;
+    return ((magic >= PROJ_MAGIC_V1 && magic <= PROJ_MAGIC_V9) || magic == PROJ_MAGIC_V10 || magic == PROJ_MAGIC_V11 || magic == PROJ_MAGIC_V12) ? PS_CORRUPT : PS_UNSUPPORTED;
 }
 #if FELUCCA_FLASH
 static int project_object_state(uint32_t obj)
@@ -1227,7 +1248,11 @@ static int project_restore_runtime(const project_t *input)
 {
     project_t *p = &proj_scratch;
     uint32_t i, k;
-    if (!proj_ok(input) || !proj_engines_ok(input)) return 1;
+    if (!proj_ok(input)) {
+        if (!proj_import(p, input, sizeof *input)) return 1;
+        input = p;
+    }
+    if (!proj_engines_ok(input)) return 1;
     if (!grain_project_ok(input)) {
         ui_message("GRAIN ONLY: LEGACY PROJECT");
         return 2;

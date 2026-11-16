@@ -6,10 +6,10 @@
  * reads flash. A record: engine, name, the instrument parameters, a 16-step
  * pattern (factory PATTERNS[] format). An FM6 sound's patch is kept beside the record (up_fm6.c, since 1.0.3:
  * the record itself is unchanged). Loading one loads the sound only; its pattern
- * is offered by SAVE > PHRASES ("U07", up_pat_load). The format is unchanged.
+ * is offered by SAVE > PHRASES ("U07", up_pat_load). The bank and record sizes are unchanged.
  *
  * Versions: a bank whose magic, record size or slot count differ reads as
- * empty; so does a record with another layout version. A record keeps np =
+ * empty; unsupported used records retain their bytes and are read-only. A record keeps np =
  * the P_COUNT it was stored with; when that differs from today's it is
  * mapped by count: its last 8 values are P_E0..P_E7, the first np - 8 are
  * P_LEVEL.. in order, and parameters it does not have take their defaults.
@@ -48,8 +48,10 @@
 #define UP_PER_BANK 16u
 #define UP_PMAX 72u                              /* room for P_COUNT to grow */
 #define UP_USED 0xA5u
-#define UP_VER 4u                                /* 2 since 1.0; 1 is read too (PHYS MODEL 2 was DUST) */
-#define UP_VER_GRID 5u                           /* 2 with a drum grid as the pattern (see the top) */
+#define UP_VER 6u                                /* explicit WIN provenance; legacy 1..5 remain readable */
+#define UP_VER_GRID 7u                           /* WIN-aware grid; legacy grids were 3 and 5 */
+#define UP_LEGACY_PACKED 4u
+#define UP_LEGACY_GRID 5u
 #define UP_BANK_MAGIC 0x31425055u                /* "UPB1" */
 typedef struct {
     uint8_t used, ver, engine, np;               /* UP_USED, UP_VER, engine, P_COUNT when stored */
@@ -94,7 +96,7 @@ static int up_to_v4(up_rec_t *r)                 /* 1 = r is version 4 / 5 (now)
         if ((v[i] = r->p[i]) < -64 || v[i] > 127)
             return 0;
     memset(r->packed, 0, sizeof r->packed);
-    r->ver = r->ver == 3u ? UP_VER_GRID : UP_VER;
+    r->ver = r->ver == 3u ? UP_LEGACY_GRID : UP_LEGACY_PACKED;
     for (i = 0; i < r->np; i++)
         r->packed[i] = (uint8_t)(v[i] + 64);
     return 1;
@@ -110,6 +112,8 @@ static int up_valid(const up_rec_t *r)
     if (!(r->used == UP_USED && r->ver >= 1u && r->ver <= UP_VER_GRID && r->engine < NENGINES &&
           r->np >= 8u && r->np <= (r->ver >= 4u ? UP_PMAX * 2u : UP_PMAX) && r->name[0])) return 0;
     if (r->ver >= 4u) for (uint32_t i = 0; i < r->np; i++) if (r->packed[i] > 191u) return 0;
+    if (r->ver >= UP_VER && (r->np != P_COUNT ||
+        (r->engine == ENGI_GRAIN ? r->packed[P_GWIN] < 64u : r->packed[P_GWIN] != 64u))) return 0;
     return 1;
 }
 
@@ -118,13 +122,12 @@ static int up_used(uint32_t k) { return k < UP_SLOTS && up_valid(up_rec(k)); }
 #ifndef UP_HOST
 static int grain_bank_readonly(const up_bank_t *b)
 {
-    if(!FELUCCA_GRAIN_ONLY)return 0;
     for(uint32_t i=0;i<UP_PER_BANK;i++)if(b->r[i].used==UP_USED &&
-        (!up_valid(&b->r[i]) || !grain_engine_allowed(b->r[i].engine)))return 1;
+        (!up_valid(&b->r[i]) || (FELUCCA_GRAIN_ONLY && !grain_engine_allowed(b->r[i].engine))))return 1;
     return 0;
 }
 #endif
-static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_VER_GRID; }
+static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_LEGACY_GRID || r->ver == UP_VER_GRID; }
 static int16_t up_value(const up_rec_t *r, uint32_t k) { return r->ver >= 4u ? (int16_t)r->packed[k] - 64 : r->p[k]; }
 static void up_set_value(up_rec_t *r, uint32_t k, int16_t v)
 {
@@ -174,6 +177,7 @@ static void up_params(const up_rec_t *r, int16_t *out, const int16_t *def)
     int16_t values[UP_PMAX * 2u];
     for (uint32_t i = 0; i < r->np && i < NELEM(values); i++) values[i] = up_value(r, i);
     params_by_count(out, values, r->np, def);
+    if (r->ver < UP_VER) params_win_legacy(out, r->engine);
 }
 
 static int up_name_ok(const uint8_t *s, uint32_t n)   /* 1..12 printable ASCII */
@@ -247,7 +251,7 @@ static int up_parse(const uint8_t *a, uint32_t na, up_rec_t *r, uint32_t *slot)
     r = &staged;
     memset(r, 0, sizeof *r);
     r->used = UP_USED;
-    r->ver = UP_VER;
+    r->ver = UP_LEGACY_PACKED; /* unchanged bulk wire arrays have no WIN provenance */
     r->engine = a[1];
     r->np = P_COUNT;
     for (i = 0; i < n; i++)
@@ -258,8 +262,9 @@ static int up_parse(const uint8_t *a, uint32_t na, up_rec_t *r, uint32_t *slot)
             if (value < -64 || value > 127) return 1;
             up_set_value(r, i, (int16_t)value);
         }
+    up_set_value(r, P_GWIN, params_win_default(r->engine));
     if (na >= k + 33u + 16u && a[k + 32u] == 1u) {    /* a drum grid */
-        r->ver = UP_VER_GRID;
+        r->ver = UP_LEGACY_GRID;
         for (i = 0; i < 16u; i++) {
             uint32_t hi = a[k + 33u + i];
             r->note[i] = (uint8_t)((a[k + 2u * i] & 127u) | (hi & 1u) << 7);
@@ -326,8 +331,13 @@ static int up_put(uint32_t k, const up_rec_t *r)
 #endif
     if (k >= UP_SLOTS)
         return 1;
-    if(FELUCCA_GRAIN_ONLY && ((up_rec(k)->used==UP_USED && (!up_valid(up_rec(k)) || !grain_engine_allowed(up_rec(k)->engine))) ||
-       (r && !grain_engine_allowed(r->engine)))){ui_message("GRAIN ONLY: PRESET READ ONLY");return 1;}
+    if((up_rec(k)->used==UP_USED && !up_valid(up_rec(k))) ||
+       (FELUCCA_GRAIN_ONLY && ((up_rec(k)->used==UP_USED && !grain_engine_allowed(up_rec(k)->engine)) ||
+       (r && !grain_engine_allowed(r->engine))))){ui_message("GRAIN ONLY: PRESET READ ONLY");return 1;}
+    /* Unmarked bulk replacement cannot silently discard an explicit window.
+     * Native STORE has a WIN-aware version and captures canonical live state. */
+    if (r && r->ver < UP_VER && up_valid(up_rec(k)) && up_rec(k)->ver >= UP_VER &&
+        up_rec(k)->engine == ENGI_GRAIN && up_value(up_rec(k), P_GWIN) != 64) return 1;
     if (transport_busy()) {                            /* no flash erase while playing (project_save) */
         ui_message("STOP TO SAVE");
         return 2;

@@ -55,8 +55,13 @@ static void historical_funa(project_store_t *out)
  memcpy(out->raw+3312,q.fm6,sizeof q.fm6);uint32_t h=proj_hash(out->raw,3836);memcpy(out->raw+3836,&h,4);
  CHECK(proj_import(&q,out,sizeof *out));
 }
+
+#ifndef BRIDGE_TEST_NO_MAIN
 int main(void){
  fixture("tests/fixtures/grain-win-i1/fun11-base.bin",&valid);fixture("tests/fixtures/grain-win-i1/proposed-func.bin",&future);
+ #ifdef PROJ_MAGIC_V12
+ uint32_t next_magic=0x46554e44u;memcpy(future.raw,&next_magic,4);uint32_t next_sum=proj_hash(future.raw,3836);memcpy(future.raw+3836,&next_sum,4);
+#endif
  for(unsigned slot=0;slot<4;slot++){
   boot();CHECK(st_save(OBJ_PROJECT0+slot,&future,sizeof future)==0);blocked(slot,PS_UNSUPPORTED);
   CHECK(project_save((slot+1)%4)==0);CHECK(project_slot_state(slot)==PS_UNSUPPORTED);CHECK(!memcmp(nor+st_sector(OBJ_PROJECT0+slot,0),frozen_nor+st_sector(OBJ_PROJECT0+slot,0),2u*ST_SECTOR));
@@ -98,7 +103,7 @@ int main(void){
   * verified fallback. FUNA patch high bits instead have a documented mask. */
  boot();historical_funa(&funa);funa.raw[68+111+2+4]=7;uint32_t corrupt_sum=proj_hash(funa.raw,3836);memcpy(funa.raw+3836,&corrupt_sum,4);CHECK(!proj_import(&proj_scratch,&funa,sizeof funa));CHECK(!st_save(OBJ_AUTOSAVE,&funa,sizeof funa));freeze();unsigned bad_erases=erases,bad_programs=bridge_programs;CHECK(!autosave_boot(1));CHECK(grain_autosave_protected);unchanged(bad_erases,bad_programs);
  /* A decoded non-GRAIN object is distinct from unknown physical ownership. */
- boot();project_t legacy;CHECK(proj_import(&legacy,&valid,sizeof valid));legacy.t[0].engine=ENGI_FM6;project_store_t foreign;CHECK(proj_pack(&foreign,&legacy));CHECK(!st_save(OBJ_PROJECT0,&foreign,sizeof foreign));CHECK(project_slot_state(0)==(FELUCCA_GRAIN_ONLY?PS_INCOMPATIBLE:PS_VALID));CHECK(grain_slot_readonly(0)==!!FELUCCA_GRAIN_ONLY);
+ boot();project_t legacy;CHECK(proj_import(&legacy,&valid,sizeof valid));legacy.t[0].engine=ENGI_FM6;legacy.t[0].p[109]=0;project_store_t foreign;CHECK(proj_pack(&foreign,&legacy));CHECK(!st_save(OBJ_PROJECT0,&foreign,sizeof foreign));CHECK(project_slot_state(0)==(FELUCCA_GRAIN_ONLY?PS_INCOMPATIBLE:PS_VALID));CHECK(grain_slot_readonly(0)==!!FELUCCA_GRAIN_ONLY);
  /* Runtime restore/init cannot grant permission over an unrelated protected slot. */
  boot();CHECK(!st_save(OBJ_PROJECT0,&future,sizeof future));project_t current;CHECK(proj_import(&current,&valid,sizeof valid));CHECK(!project_restore_runtime(&current));apply_preset_to(&trk[0],0);freeze();unsigned er=erases,pr=bridge_programs;CHECK(project_save_as(0,"INIT COPY")!=0);unchanged(er,pr);
  /* Healthy autosaves continue across both copies without a false ownership latch. */
@@ -123,3 +128,5 @@ int main(void){
  CHECK(P_COUNT==118 && P_E0==110 && sizeof(project_store_t)==3840 && sizeof(up_rec_t)==192);
  printf("project downgrade bridge: %u checks passed; physical NOR/retained atomicity, all slot writers and backup guards\n",checks);return 0;
 }
+
+#endif

@@ -1141,7 +1141,15 @@ function cleanPatch(pt) {
 }
 
 /* ctx: {keys, engines, firmware, pe0} of the library (the device's when connected) */
+/* I1 is headless. Existing unversioned library payloads cannot carry WIN
+   provenance; do not export/upload a known non-Hann live window through them. */
+function assertWinLibraryTransfer(patches, ctx) {
+  if (ctx.pe0 !== 110 || ctx.keys?.length !== 118 || ctx.keys[109] !== "WIN") return;
+  if (patches.some(p => (p.engineName || ctx.engines?.[p.engine]) === "GRAIN" && p.p?.[109] != null && p.p[109] !== 64))
+    throw new Error("WIN library transfer unavailable; use a versioned backup or native LOAD/STORE.");
+}
 function libraryFile(kind, patches, ctx) {
+  assertWinLibraryTransfer(patches, ctx);
   return {
     format: LIB.FORMAT, version: LIB.VERSION, kind, firmware: ctx.firmware || "",
     pCount: ctx.keys ? ctx.keys.length : 0, pE0: ctx.pe0 ?? null, paramLabels: ctx.keys || [], engines: ctx.engines || [],
@@ -1279,6 +1287,7 @@ async function auditionPatch(rq, info, pt, opt = {}) {
   for (let i = 0; i < n; i++) {
     const v = pt.p[i];
     if (opt.progress) opt.progress(i, n);
+    if (i === 109 && info.pcount === 118 && info.pe0 === 110) continue; // unmarked bulk input stays legacy Hann
     if (v == null || v === dump.p[i] || trackOwn(i, info.pe0)) continue;
     await rq(req.set(0, i, v));
   }
@@ -3074,6 +3083,7 @@ async function rereadEngineDesc(d = dev) {
   // Discover it by the existing wire labels, without shifting any parameter IDs.
   const stretch = d.pdesc.findIndex((desc, id) => id < pe0 && desc && (desc.label === "STRETCH" || desc.label === "G-F RSV1"));
   if (stretch >= 0) ids.push(stretch);
+  if (d.info.pcount === 118 && pe0 === 110) ids.push(109); // headless engine-aware WIN metadata
   for (let i = 0; i < 8 && pe0 + i < d.info.pcount; i++) ids.push(pe0 + i);
   const before = JSON.stringify(ids.map((id) => d.pdesc[id]));
   for (const id of ids) d.pdesc[id] = await getDescOrNull(0, id, d);
@@ -3209,6 +3219,8 @@ function buildGroups() {
 function paramRow(s, id) {
   const d = s ? dev.gdesc[id] : dev.pdesc[id];
   if (!visible(d) || (s === 1 && G_SKIP.has(d.label))) return null;
+  if (s === 0 && id === 109 && dev.info.pcount === 118 && dev.info.pe0 === 110) return null; // WIN I1: no browser control
+
   const k = key(s, id);
   let input;
   if (d.fmt === F.ENUM || d.fmt === F.NOTE || d.fmt === F.ONOFF) {
@@ -4504,6 +4516,7 @@ setInterval(() => {
 $("savefile").addEventListener("click", () => {
   if (!dev) return;
   const engine = dev.dump.engine, preset = dev.dump.preset;
+  try { assertWinLibraryTransfer([{ engine, p: dev.dump.p }], libCtx()); } catch (err) { report(err); return; }
   const data = { format: "felucca-patch", version: 1, firmware: dev.info.version,
     engineName: dev.info.engines[engine], presetName: (dev.names[engine] || [])[preset],
     engine, preset, p: dev.dump.p.slice(), g: dev.dump.g.slice(),
@@ -4531,6 +4544,7 @@ $("file").addEventListener("change", async () => {
     const n = Math.min(data.p.length, dev.info.pcount);
     for (let i = 0; i < n; i++) {
       const d = dev.pdesc[i];
+      if (i === 109 && dev.info.pcount === 118 && dev.info.pe0 === 110) continue; // legacy file: no WIN intent
       if (!visible(d) || !Number.isFinite(data.p[i])) continue;
       if (i % 8 === 0) sayK("applying", `${i}/${n}`);
       await rq(req.set(0, i, data.p[i]));
@@ -4791,6 +4805,7 @@ function libAudition(id) {
   if (!p || !dev || libBusy) return;
   libOp(async (d, rqf) => {
     if (!engineOk(p)) throw new Error(t("badEngine") + (p.engineName || p.engine));
+    assertWinLibraryTransfer([p], libCtx());
     sayK("auditioning", p.name);
     selfLoad(true);
     await auditionPatch(rqf, dev.info, p, { gEng: gEng(), track: dev.sel ?? 0,
@@ -4835,6 +4850,7 @@ function libPut(id, slot) {
   libOp(async (d, rqf) => {
     const keep4 = p.fm4 && dev.info.engines[1] === "-" && p.fm4.length === dev.info.pcount;   /* a converted DIGITAL sound:
                                                      its DIGITAL values as engine 1 (the device converts them on load) */
+    assertWinLibraryTransfer([p], libCtx());
     checkRc(await bank.put(rqf, slot, keep4 ? { ...p, engine: 1, name: upName(p.name), p: fullParams({ ...p, p: p.fm4 }) }
       : { ...p, name: upName(p.name), p: fullParams(p) }, dev.info));
     await refreshSlot(slot, d);
@@ -4884,9 +4900,9 @@ const fileSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").repl
 const today = () => new Date().toISOString().slice(0, 10);
 $("libexp1").addEventListener("click", () => {
   const p = lib.find((x) => x.id === libSel);
-  if (p) download(`felucca-patch-${fileSlug(p.name)}.json`, libraryFile("patch", [p], libCtx()));
+  try { if (p) download(`felucca-patch-${fileSlug(p.name)}.json`, libraryFile("patch", [p], libCtx())); } catch (err) { report(err); }
 });
-$("libexport").addEventListener("click", () => download(`felucca-library-${today()}.json`, libraryFile("library", lib, libCtx())));
+$("libexport").addEventListener("click", () => { try { download(`felucca-library-${today()}.json`, libraryFile("library", lib, libCtx())); } catch (err) { report(err); } });
 $("libimport").addEventListener("click", () => { $("libfile").value = ""; $("libfile").click(); });
 $("libfile").addEventListener("change", async () => {
   let n = 0, skipped = 0;

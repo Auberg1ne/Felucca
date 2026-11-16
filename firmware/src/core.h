@@ -114,6 +114,14 @@ static void params_by_count(int16_t *out, const int16_t *in, uint32_t np, const 
 #define ENGI_GRAIN 8u
 #define ENGI_PHYS 9u
 #define ENGI_DRUM 10u
+/* WIN I1: stable reserved-slot alias, never an enum insertion. */
+#define P_GWIN P_GFILTER_RSVD2
+static inline int16_t params_win_default(uint32_t engine) { return engine == ENGI_GRAIN ? 64 : 0; }
+static inline void params_win_legacy(int16_t *p, uint32_t engine) { p[P_GWIN] = params_win_default(engine); }
+static inline int params_win_valid(const int16_t *p, uint32_t engine)
+{
+    return engine == ENGI_GRAIN ? p[P_GWIN] >= 0 && p[P_GWIN] <= 127 : p[P_GWIN] == 0;
+}
 /* PHYS MODEL DRUM (MODEL 4, before 1.0) -> the DRUM engine, its E values in place: {MODEL, TUNE, TONE, DECY,
  * SNAP, ACC, KICK 0..127, PERC 0..127} -> {KIT, TUNE, TONE, DECY, SNAP, ACC, KICK 0..1, DRV 0}. 1 = it was one
  * (its engine is ENGI_DRUM now); projects (project.c) and user presets (upreset.c) */

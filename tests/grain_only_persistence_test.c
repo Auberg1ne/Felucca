@@ -6,7 +6,7 @@ static unsigned checks;
 static void grain_boot(void){reset();grain_autosave_protected=0;memset(&as,0,sizeof as);for(unsigned t=0;t<NTRK;t++){set_engine_of(&trk[t],ENGI_GRAIN);trk[t].engine=ENGI_GRAIN;}}
 int main(void){
  static project_t p;static project_store_t foreign,read;static uint8_t stored[sizeof nor];
- grain_boot();project_capture(&p);p.t[2].engine=ENGI_SAMPLE;p.t[2].p[P_E0]=13;p.sum=proj_sum(&p);REQUIRE(proj_pack(&foreign,&p));
+ grain_boot();project_capture(&p);p.t[2].engine=ENGI_SAMPLE;p.t[2].p[109]=0;p.t[2].p[P_E0]=13;p.sum=proj_sum(&p);REQUIRE(proj_pack(&foreign,&p));
  for(unsigned off=0;off<2;off++){
   grain_boot();REQUIRE(!st_save(OBJ_AUTOSAVE,&foreign,sizeof foreign));if(off)ui_prefs|=PREF_RESTORE_OFF;else ui_prefs&=~PREF_RESTORE_OFF;
   memcpy(stored,nor,sizeof stored);REQUIRE(!autosave_boot(1) && grain_autosave_protected);unsigned writes=erases;

@@ -19,6 +19,7 @@ static void fixture(project_t *q)
     for (unsigned t = 0; t < NTRK; t++) {
         q->t[t].engine = ENGI_GRAIN;
         for (unsigned p = 0; p < P_COUNT; p++) q->t[t].p[p] = (p * 19 + t * 31) % 192 - 64;
+        q->t[t].p[P_GWIN] = (t * 31) % 128; /* new schema requires a legal WIN */
         for (unsigned i = 0; i < FM6_PACKED; i++) q->fm6[t][i] = (i * 17 + t * 29) & 127;
         for (unsigned i = 0; i < NSTEP; i++) {
             step_t *s = &q->t[t].step[i]; s->n = 4; s->time = i % 3; s->vel = 127;
@@ -73,12 +74,13 @@ int main(void)
     static project_t q, got; static project_store_t s, bad;
     REQUIRE(P_COUNT == 118 && sizeof s == 3840 && PROJ_FM6_STORE == 112);
     fixture(&q);
-    REQUIRE(proj_pack(&s, &q)); REQUIRE(*(uint32_t *)s.raw == PROJ_MAGIC_V11); REQUIRE(proj_import(&got, &s, sizeof s));
+    REQUIRE(proj_pack(&s, &q)); REQUIRE(*(uint32_t *)s.raw == PROJ_MAGIC_V12); REQUIRE(proj_import(&got, &s, sizeof s));
     REQUIRE(!memcmp(&q, &got, sizeof q));
     for (unsigned t = 0; t < NTRK; t++) for (unsigned p = 0; p < P_COUNT; p++) REQUIRE(q.t[t].p[p] == got.t[t].p[p]);
     for (unsigned k = 5; k <= 12; k++) {
         for (unsigned t = 0; t < NTRK; t++) {
             q.t[t].engine = t & 1 ? ENGI_SAMPLE : ENGI_GRAIN; q.t[t].p[P_E0] = k;
+            q.t[t].p[P_GWIN] = params_win_default(q.t[t].engine);
         }
         q.sum = proj_sum(&q); REQUIRE(proj_pack(&s,&q) && proj_import(&got,&s,sizeof s));
         REQUIRE(!memcmp(&q,&got,sizeof q));
@@ -117,7 +119,7 @@ int main(void)
     }
     /* A former overlapping FUN10 is never interpreted as compact FM6. */
     fun10(&s,&q,118); REQUIRE(!proj_import(&got,&s,sizeof s));
-    q.t[0].engine=ENGI_SAMPLE;q.t[0].p[P_E0]=4;
+    q.t[0].engine=ENGI_SAMPLE;q.t[0].p[P_GWIN]=0;q.t[0].p[P_E0]=4;
     fun10(&s,&q,111);REQUIRE(proj_import(&got,&s,sizeof s));REQUIRE(got.t[0].engine==ENGI_DRUM);
     REQUIRE(proj_pack(&s,&q)&&proj_import(&got,&s,sizeof s));REQUIRE(got.t[0].engine==ENGI_DRUM);
     printf("project format: %u checks passed (FUN11 + FUN10)\n",checks);

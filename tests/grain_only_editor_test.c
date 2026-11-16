@@ -13,9 +13,9 @@ int main(void){
   uint8_t b[]={e,0};REQUIRE(!request(ED_PRESET,b,2));REQUIRE(TSEL->eng_req==ENGI_GRAIN && !memcmp(before,TSEL->p,sizeof before));
  }
  uint8_t a[]={0,P_GFILTER_RSVD1,64,64};request(ED_SET,a,4);REQUIRE(TSEL->p[108]==64);
- static project_t p;static project_store_t foreign,read;project_capture(&p);p.t[1].engine=ENGI_SAMPLE;p.t[1].p[P_E0]=13;p.sum=proj_sum(&p);REQUIRE(proj_pack(&foreign,&p));
+ static project_t p;static project_store_t foreign,read;project_capture(&p);p.t[1].engine=ENGI_SAMPLE;p.t[1].p[P_GWIN]=0;p.t[1].p[P_E0]=13;p.sum=proj_sum(&p);REQUIRE(proj_pack(&foreign,&p));
  proj_slot[0]=foreign;uint8_t load[]={0,0};request(ED_PROJECT,load,2);REQUIRE(trk[1].eng_req==ENGI_GRAIN && !memcmp(&foreign,&proj_slot[0],sizeof foreign));
- boot_grain();flash_ok=1;unsigned rc=up_store(0,"KEEP");REQUIRE(rc==0 || rc==3);up_rec(0)->engine=ENGI_SAMPLE;
+ boot_grain();flash_ok=1;unsigned rc=up_store(0,"KEEP");REQUIRE(rc==0 || rc==3);up_rec(0)->engine=ENGI_SAMPLE;up_set_value(up_rec(0),109,0);
  static up_bank_t bank;bank=up_bank[0];up_bank_check(0,sizeof bank);REQUIRE(!memcmp(&bank,&up_bank[0],sizeof bank));
  unsigned writes=host_writes;REQUIRE(up_load(0) && up_put(0,0) && up_rename(0,"NO"));REQUIRE(host_writes==writes && !memcmp(&bank,&up_bank[0],sizeof bank));
  /* Backend backup commit rejects incompatible content before any persistent write. */

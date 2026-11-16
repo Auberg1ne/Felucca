@@ -24,6 +24,7 @@ static void ml_put(uint32_t i, uint32_t e)       /* (the ISR reads the two bytes
 /* the CC of parameter id on track k, + 1; 0 none */
 static uint32_t ml_cc_of(uint32_t k, uint32_t id)
 {
+    if (id == P_GWIN) return 0; /* quarantined mappings remain raw settings bytes */
     uint32_t i, e;
     for (i = 0; i < ML_N; i++)
         if (((e = ml_get(i)) >> 9) == ml_code(id) && ((e >> 7) & 3u) == k)
@@ -56,7 +57,7 @@ static int ml_drop(uint32_t cc, uint32_t k, uint32_t id)
 static uint32_t ml_learn(uint32_t cc, uint32_t k, uint32_t id)
 {
     uint32_t i;
-    if (!ml_free_cc(cc) || k >= NTRK || id >= P_COUNT)
+    if (!ml_free_cc(cc) || k >= NTRK || id >= P_COUNT || id == P_GWIN)
         return 2;
     (void)ml_drop(cc, k, id);
     for (i = 0; i < ML_N; i++)
@@ -104,7 +105,7 @@ static void ml_toggle(void)
 /* a knob turned parameter id of track t (ui_input.c): picked while learning */
 static void ml_knob(const track_t *t, uint32_t id)
 {
-    if (!ui.ml.on || id >= P_COUNT)
+    if (!ui.ml.on || id >= P_COUNT || id == P_GWIN)
         return;
     ui.ml.trk = (uint8_t)trk_index(t);
     ui.ml.id = (uint8_t)id;

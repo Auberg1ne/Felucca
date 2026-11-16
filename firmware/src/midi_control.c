@@ -275,7 +275,7 @@ static int __attribute__((noinline)) midi_learned(uint32_t cc, uint32_t value)
     for (i = 0; i < ML_N; i++) {
         e = ml_tab[2u * i] | (uint32_t)ml_tab[2u * i + 1u] << 8;
         if ((e >> 9) && (e & 127u) == cc) {
-            if ((id = ml_id(e >> 9)) < P_COUNT)
+            if ((id = ml_id(e >> 9)) < P_COUNT && id != P_GWIN)
                 midi_cc_set(&trk[(e >> 7) & 3u], id, value);
             hit = 1;
         }

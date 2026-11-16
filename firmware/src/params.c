@@ -241,6 +241,10 @@ static const param_desc_t GP[G_COUNT] = {
  * here too: editor SET, MIDI, motion and runtime loads use this path. */
 static const param_desc_t *param_desc_of(uint32_t e, uint32_t id)
 {
+    if (e == ENGI_GRAIN && id == P_GWIN) {
+        static const param_desc_t grain_win = PD("WIN", F_INT, 0, 127, 64);
+        return &grain_win;
+    }
     if (e == ENGI_GRAIN && id == P_GFILTER_RSVD1) {
         static const param_desc_t grain_stretch = PD("STRETCH", F_INT, 0, 127, 0);
         return &grain_stretch;
@@ -254,7 +258,7 @@ static const param_desc_t *track_desc(const track_t *t, uint32_t id)
         static const param_desc_t grain_dens = PD("DENS", F_PCT, 0, 127, 80);
         return &grain_dens;
     }
-    if (id == P_GFILTER_RSVD1 && t->eng_req % NENGINES == ENGI_GRAIN) {
+    if ((id == P_GFILTER_RSVD1 || id == P_GWIN) && t->eng_req % NENGINES == ENGI_GRAIN) {
         return param_desc_of(ENGI_GRAIN, id);
     }
     if (id == P_GA || id == P_GB) {

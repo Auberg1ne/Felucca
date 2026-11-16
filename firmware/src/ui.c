@@ -1363,7 +1363,7 @@ static void fm4_load_preset(track_t *t, uint32_t k)
     memcpy(p, t->p, sizeof p);
     for (i = 0; i < P_E0; i++)
         if (!param_kept(i))
-            p[i] = TP[i].def;
+            p[i] = i == P_GWIN ? 0 : TP[i].def;
     fm4_preset_values(p, k);
     fm4_apply(t, p);
     load_end(t);
@@ -1403,7 +1403,7 @@ static void apply_preset_to(track_t *t, uint32_t pi)
     t->preset = (uint8_t)pi;
     for (i = 0; i < P_E0; i++)                        /* the rest of the sound to its defaults: a preset */
         if (!param_kept(i))                           /* sounds the same after any edit */
-            t->p[i] = TP[i].def;
+            t->p[i] = i == P_GWIN ? params_win_default(t->eng_req % NENGINES) : TP[i].def;
     for (i = 0; i < 8u; i++)
         t->p[P_E0 + i] = (int16_t)e->presets[pi].e[i];
     t->p[P_ATK] = e->presets[pi].env[0];
@@ -1477,7 +1477,7 @@ static void clean_engine_of(track_t *t)
     fm1_irq_off();
     for (i = 0; i < P_E0; i++)
         if (!param_kept(i))
-            t->p[i] = TP[i].def;
+            t->p[i] = i == P_GWIN ? params_win_default(t->eng_req % NENGINES) : TP[i].def;
     for (i = 0; i < 8u; i++)
         t->p[P_E0 + i] = e->edit[i].def;
     if (ei == ENGI_DRUM && e->npresets) {
@@ -1547,7 +1547,7 @@ static void track_defaults(track_t *t)
 {
     uint32_t i;
     for (i = 0; i < P_E0; i++)
-        t->p[i] = TP[i].def;
+        t->p[i] = i == P_GWIN ? params_win_default(t->eng_req % NENGINES) : TP[i].def;
     track_defaults_steps(t);
 }
 

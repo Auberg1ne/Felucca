@@ -77,7 +77,7 @@ static void host_tracks_init(void)                /* as felucca_init: defaults, 
                                                    * before, ROOM bit for bit; HALL, the default since: reverb_test.c */
     for (k = 0; k < NTRK; k++) {
         for (i = 0; i < P_E0; i++)
-            trk[k].p[i] = TP[i].def;
+            trk[k].p[i] = i == P_GWIN ? params_win_default(trk[k].eng_req) : TP[i].def;
         for (i = 0; i < NSTEP; i++)
             trk[k].step[i].time = ST_REST;
     }
@@ -92,6 +92,7 @@ static void host_preset_values(track_t *t, uint32_t e, uint32_t pi, const preset
     static const uint8_t FX_DEF[4] = {0, 24, 28, 36};
     uint32_t i;
     t->eng_req = (uint8_t)e;
+    t->p[P_GWIN] = params_win_default(e);
     t->preset = (uint8_t)pi;
     for (i = 0; i < 8u; i++)
         t->p[P_E0 + i] = p->e[i];
