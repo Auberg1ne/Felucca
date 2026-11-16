@@ -31,6 +31,14 @@ FACTORY_RATE = 22050 if os.environ.get("FELUCCA_FACTORY_22K", "0") == "1" else 4
 # The legacy aliases occupy indices 1 and 4; new factories append at 5 and 6.
 CC0_SETS = [("CELLO", "sus"), ("CELLO", "alias"), ("FLUTE", "oneshot"), ("GUITAR", "oneshot"), ("CELLO", "alias"), ("SYNTH", "oneshot"), ("VOX", "oneshot")]
 PREVIEW = SRC / "assets" / "factory-preview"
+COFFEE_FACTORY = SRC / "assets" / "coffee-grains-factory"
+COFFEE_FACTORY_FILES = {
+    "CELLO": ("DRONE", "DRONE.wav"),
+    "FLUTE": ("HIT", "HIT.wav"),
+    "GUITAR": ("LUTE", "LUTE.wav"),
+    "SYNTH": ("PIANO", "PIANO.wav"),
+    "VOX": ("VOICE", "VOICE.wav"),
+}
 PERC_SLOT = 4                                # core.h SMP_SET_PERC: hidden historical preset, never repurposed
 MEASURED_TUNING = ()                         # sets whose recordings are not at A440 (was TRANH, ~+35 ct)
 
@@ -292,14 +300,19 @@ class Builder:
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != record["sha256"]:
             raise ValueError(f"factory source checksum mismatch: {path}")
+        if name in COFFEE_FACTORY_FILES:
+            _, filename = COFFEE_FACTORY_FILES[name]
+            path = COFFEE_FACTORY / filename
+            raw = path.read_bytes()
         with wave.open(str(path)) as w:
-            if (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) != (1, 2, 44100, record["frames"]):
+            expected_frames = None if name in COFFEE_FACTORY_FILES else record["frames"]
+            if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (1, 2, 44100) or (expected_frames is not None and w.getnframes() != expected_frames):
                 raise ValueError(f"unexpected factory PCM format: {path}")
             n = w.getnframes()
             samples = struct.unpack(f"<{n}h", w.readframes(n))
         # Unknown pitch uses a documented MIDI-60 audition anchor, not a measured root.
         root, ls, le, looped = 60, n, n, False
-        if name == "CELLO":
+        if name == "CELLO" and name not in COFFEE_FACTORY_FILES:
             chunks = sio.wav_chunks(raw)
             o, size = chunks[b"smpl"]
             if size != 60:
@@ -317,7 +330,8 @@ class Builder:
             if not looped:
                 ls = n
         off, state = self.add(samples, ls)
-        self.add_set(name, kind, [dict(off=off, n=n, ls=ls, le=le, looped=looped,
+        display_name = COFFEE_FACTORY_FILES[name][0] if name in COFFEE_FACTORY_FILES else name
+        self.add_set(display_name, kind, [dict(off=off, n=n, ls=ls, le=le, looped=looped,
             sr=FACTORY_RATE, root16=root*16, pred=state[0], idx=state[1], key=None)])
 
     def header(self):
@@ -425,7 +439,7 @@ def input_key(have_cc0):
     for p in (here / "gen_samples.py", here / "sampleio.py"):
         h.update(p.read_bytes())
     h.update(repr((sys.version_info[:2], have_cc0, slice_on(), FACTORY_RATE)).encode())   # sum() differs across versions
-    files = sorted(GENDIR.glob("*.wav")) + sorted(PREVIEW.glob("*"))
+    files = sorted(GENDIR.glob("*.wav")) + sorted(PREVIEW.glob("*")) + sorted(COFFEE_FACTORY.glob("*.wav"))
     if have_cc0:
         files += sorted(CC0.glob("*/*.wav"))
     for p in files:
@@ -452,7 +466,8 @@ def main(out):
     if have_cc0:
         for name, kind in CC0_SETS:
             if kind == "alias":
-                b.alias_set(name)
+                alias_name = COFFEE_FACTORY_FILES.get(name, (name,))[0]
+                b.alias_set(alias_name)
             else:
                 b.preview_set(name, kind)
     if slice_on():                                  # SLICE's BREAK: only when that engine is built
