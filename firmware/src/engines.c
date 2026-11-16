@@ -251,5 +251,5 @@ static const struct {
 #define NPATTERNS (sizeof PATTERNS / sizeof PATTERNS[0])
 
 /* the parts at power-on (engine, preset, PATTERNS[n - 1], 0 = empty) */
-static const uint8_t TRK_DEF[NPART][3] = {{8, 4, 0}, {8, 4, 0}, {8, 4, 0}, {8, 4, 0}}; /* four GRAIN CLOUD PAD tracks, empty sequences */
+static const uint8_t TRK_DEF[NPART][3] = {{8, 0, 0}, {8, 1, 0}, {8, 2, 0}, {8, 3, 0}}; /* four GRAIN CLOUD PAD tracks, empty sequences */
 static uint32_t trk_def_engine(uint32_t i) { return TRK_DEF[i % NPART][0]; }

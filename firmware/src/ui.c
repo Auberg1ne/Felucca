@@ -1404,6 +1404,12 @@ static void apply_preset_to(track_t *t, uint32_t pi)
     for (i = 0; i < P_E0; i++)                        /* the rest of the sound to its defaults: a preset */
         if (!param_kept(i))                           /* sounds the same after any edit */
             t->p[i] = i == P_GWIN ? params_win_default(t->eng_req % NENGINES) : TP[i].def;
+    /* COFFEE GRAINS: personality associated with each factory GRAIN preset. */
+    if (t->eng_req % NENGINES == ENGI_GRAIN) {
+        static const uint8_t GRAIN_PRESET_TYPE[4] = {0, 2, 1, 3};
+        if (pi < 4u)
+            t->p[P_GTYPE] = GRAIN_PRESET_TYPE[pi];
+    }
     for (i = 0; i < 8u; i++)
         t->p[P_E0 + i] = (int16_t)e->presets[pi].e[i];
     t->p[P_ATK] = e->presets[pi].env[0];
