@@ -40,7 +40,10 @@
  * over notes and engine switches); per voice s[0] the zone, s[1] the countdown to the next grain,
  * s[2] filter output, s[3..4] resonant filter state, s[5] TONE sample state,
  * s[6] TONE coefficient Q14. ph[0] is fallback sine phase, ph[1] STUTTER phase. */
-/* Experimental build only: no UI, protocol or persisted selector. */
+/* Production WIN uses the validated tables/morph and original endpoint ramp.
+ * Test selectors/fidelity remain separate opt-in experiments. */
+#include "grain_tukey.h"
+#include "grain_gauss.h"
 #if defined(FELUCCA_GRAIN_HYBRID_EXPERIMENT) && FELUCCA_GRAIN_HYBRID_EXPERIMENT && !FELUCCA_GRAIN_FIDELITY_EXPERIMENT
 #error "GRAIN hybrid experiment requires fidelity experiment"
 #endif
@@ -48,8 +51,6 @@
 #error "GRAIN morph experiment requires the window experiment"
 #endif
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
-#include "grain_tukey.h"
-#include "grain_gauss.h"
 static uint8_t gr_test_window; /* tests set 0=legacy Hann, 1=Tukey, 2=Gaussian before spawning */
 #if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
 static uint8_t gr_test_morph_mode[NPART]; /* 0 off, 1 morph; invalid modes select Hann */
@@ -104,9 +105,7 @@ typedef struct {
     uint8_t owner;               /* voice index + 1, 0 = free */
     uint8_t rev;
     uint8_t zl;                  /* its zone in the set */
-#if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
-    uint8_t window;              /* latched at spawn; uses existing structure padding */
-#endif
+    uint8_t window;              /* spawn-latched 128+WIN, in existing padding */
 } gr_grain_t;
 
 /* A bounded sample index and Q16 fraction, not a 16-bit integer packed into Q16. */
@@ -128,7 +127,10 @@ typedef struct {
     uint8_t nz;
     gr_head_t head[GR_POLY];     /* shared source position per voice */
     uint8_t head_zl[GR_POLY];    /* zone associated with each source head */
+    uint8_t win_snapshot;        /* audio-owned block snapshot; existing tail padding */
 } gr_part_t;
+_Static_assert(sizeof(gr_grain_t) == (sizeof(void *) == 8u ? 64u : 56u), "GRAIN latch must not grow record");
+_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7296u : 7200u), "GRAIN snapshot must not grow part");
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
 static int32_t gr_rng[NPART];
 
@@ -372,6 +374,7 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     g->step = step;
     g->frac = 0;
     g->wph = 0;
+    g->window = (uint8_t)(128u + (P->win_snapshot <= 127u ? P->win_snapshot : 64u));
 #if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
     g->window = gr_test_window <= 2u ? gr_test_window : 0u;
 #if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
@@ -419,7 +422,6 @@ static inline int32_t gr_win(uint32_t wph)         /* the Hann window, Q15 */
     return GR_HANN[wi] + (((GR_HANN[wi + 1u] - GR_HANN[wi]) * (int32_t)((wph >> 9) & 0x7FFFu)) >> 15);
 }
 
-#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
 #include "grain_morph.h"
 static inline int32_t gr_morph_win(uint32_t morph, uint32_t phase)
 {
@@ -429,19 +431,14 @@ static inline int32_t gr_morph_win(uint32_t morph, uint32_t phase)
     return morph < 64u ? gr_morph_mix(morph, gr_gauss_win(phase), gr_win(phase))
                        : gr_morph_mix(morph, gr_win(phase), gr_tukey_win(phase));
 }
-#endif
-#if defined(FELUCCA_GRAIN_WINDOW_EXPERIMENT) && FELUCCA_GRAIN_WINDOW_EXPERIMENT
+/* Shared production evaluator; retain the historical helper name for probes.
+ * Low tags 0/1/2 also preserve the existing explicit experimental selectors. */
 static inline int32_t gr_experiment_win(const gr_grain_t *g, uint32_t phase)
 {
-#if defined(FELUCCA_GRAIN_MORPH_EXPERIMENT) && FELUCCA_GRAIN_MORPH_EXPERIMENT
     if (g->window & 128u) return gr_morph_win(g->window & 127u, phase);
-#endif
     return g->window == 1u ? gr_tukey_win(phase) : g->window == 2u ? gr_gauss_win(phase) : gr_win(phase);
 }
 #define GR_RENDER_WIN(g, phase) gr_experiment_win((g), (phase))
-#else
-#define GR_RENDER_WIN(g, phase) gr_win(phase)
-#endif
 
 /* one grain into acc; returns 0 when it ended. The window (times the grain's level) is a
  * linear ramp over the block between its exact values at the block's ends. */
@@ -577,6 +574,14 @@ static void grain_block(track_t *t)
         if (P->g[i].owner && !t->v[(P->g[i].owner - 1u) % NVOICE].active)
             P->g[i].owner = 0;
     gr_build(P, t);
+    /* track_render calls this once after mod_begin, before all voices. Main
+     * control writers cannot run during the audio ISR/C1 job; TIMER5 defers
+     * MIDI/USB polling while in_audio. C1 job barriers publish track parameters.
+     * No writer touches this snapshot or grain latches except the owning part.
+     * Read one aligned int16, then use the same sanitized byte for every spawn
+     * in this block (including both SHIMMER grains). No volatile-as-lock. */
+    uint32_t win = (uint32_t)t->p[P_GWIN];
+    P->win_snapshot = (uint8_t)(t->eng_req % NENGINES == ENGI_GRAIN && win <= 127u ? win : 64u);
 }
 
 /* Preserve voice_amp's two Q15 roundings without resonant signed overflow.
