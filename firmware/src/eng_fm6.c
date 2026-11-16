@@ -330,6 +330,7 @@ static fm6_note_t *fm6_note_of(track_t *t, voice_t *v)
     return i < FM6_POLY ? (fm6_note_t *)ENG_MEM(t - trk) + i : 0;
 }
 
+#if !FELUCCA_GRAIN_ONLY
 static void fm6_note_on(track_t *t, voice_t *v)
 {
     fm6_note_t *n = fm6_note_of(t, v);
@@ -395,6 +396,7 @@ static void fm6_render(track_t *t, voice_t *v, int32_t *out, uint32_t len, const
     }
 }
 
+#endif /* !FELUCCA_GRAIN_ONLY */
 /* --------------------------------------------------------- the engine --- */
 static const char *const N_FM6_ALG[] = {"PAT", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
                                         "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25",
@@ -432,12 +434,18 @@ static const engine_t ENG_FM6 = {
     },
     .presets = FM6_PRESETS,
     .npresets = NELEM(FM6_PRESETS),
+#if !FELUCCA_GRAIN_ONLY
     .note_on = fm6_note_on,
     .render = fm6_render,
+#endif
     .knob = {P_E2, P_E3, P_E4, P_E7},
     .poly = FM6_POLY,
+#if !FELUCCA_GRAIN_ONLY
     .block = fm6_block,
+#endif
     .ownenv = 1,
+#if !FELUCCA_GRAIN_ONLY
     .done = fm6_done,
+#endif
     .mem = sizeof(fm6_note_t) * FM6_POLY,
 };

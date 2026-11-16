@@ -24,6 +24,8 @@ GENDIR = SRC / "build" / "genwav"
 CACHE = SRC / "build" / "gen_samples.cache"
 CC0 = SRC / "assets" / "samples-cc0"
 TR = 22050                                   # stored sample rate
+FACTORY_RATE = 22050 if os.environ.get("FELUCCA_FACTORY_22K", "0") == "1" else 44100
+
 
 # Factory table order is stable and distinct from persisted source IDs.
 # The legacy aliases occupy indices 1 and 4; new factories append at 5 and 6.
@@ -307,9 +309,16 @@ class Builder:
             if header[3:5] != (60, 0) or header[7] != 1 or typ != 0 or fraction or count or not 0 <= ls <= le < n:
                 raise ValueError("unsupported CELLO sampler metadata")
             root, looped = header[3], True
+        if FACTORY_RATE != 44100:
+            samples = [int(round(v)) for v in resample(samples, 44100, FACTORY_RATE)]
+            ls = min(len(samples), round(ls * FACTORY_RATE / 44100))
+            le = min(len(samples) - 1, round(le * FACTORY_RATE / 44100)) if looped else len(samples)
+            n = len(samples)
+            if not looped:
+                ls = n
         off, state = self.add(samples, ls)
         self.add_set(name, kind, [dict(off=off, n=n, ls=ls, le=le, looped=looped,
-            sr=44100, root16=root*16, pred=state[0], idx=state[1], key=None)])
+            sr=FACTORY_RATE, root16=root*16, pred=state[0], idx=state[1], key=None)])
 
     def header(self):
         zones, sets, blob = self.zones, self.sets, self.blob
@@ -415,7 +424,7 @@ def input_key(have_cc0):
     here = Path(__file__).resolve().parent
     for p in (here / "gen_samples.py", here / "sampleio.py"):
         h.update(p.read_bytes())
-    h.update(repr((sys.version_info[:2], have_cc0, slice_on())).encode())   # sum() differs across versions
+    h.update(repr((sys.version_info[:2], have_cc0, slice_on(), FACTORY_RATE)).encode())   # sum() differs across versions
     files = sorted(GENDIR.glob("*.wav")) + sorted(PREVIEW.glob("*"))
     if have_cc0:
         files += sorted(CC0.glob("*/*.wav"))

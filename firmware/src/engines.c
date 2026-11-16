@@ -21,13 +21,49 @@ static uint8_t eng_mem_owner[NPART];       /* engine index + 1 whose state is in
 #define ENG_MEM(p) ((void *)eng_mem[p].b)  /* part p's region (p < NPART) */
 #define ENG_MEM_FITS(name, size) _Static_assert((size) <= ENG_MEM_PART, name " state over ENG_MEM_PART")
 
-#include "../engines/src/eng_analog.c"   /* Felucca-Engines (MIT): ANALOG LOFI TRIO WHEEL NOISE */
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_ANALOG = {
+    .name = "ANALOG",
+};
+#else
+#include "../engines/src/eng_analog.c"
+#endif   /* Felucca-Engines (MIT): ANALOG LOFI TRIO WHEEL NOISE */
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_PHASE = {
+    .name = "PHASE",
+};
+#else
 #include "eng_phase.c"
+#endif
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_LOFI = {
+    .name = "LOFI",
+};
+#else
 #include "../engines/src/eng_lofi.c"
+#endif
 #include "eng_sample.c"
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_FORMANT = {
+    .name = "FORMANT",
+};
+#else
 #include "eng_formant.c"
+#endif
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_TRIO = {
+    .name = "TRIO",
+};
+#else
 #include "../engines/src/eng_trio.c"
+#endif
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_WHEEL = {
+    .name = "WHEEL",
+};
+#else
 #include "../engines/src/eng_wheel.c"
+#endif
 #include "eng_grain.c"
 #if FELUCCA_GRAIN_ONLY
 /* Preserve historical engine ID 9 without compiling PHYS DSP. */
@@ -46,7 +82,13 @@ static void phys_legacy(int16_t *e)
 #include "eng_phys.c"
 #endif           /* PHYS: DaisySP physical models (phys_dsp.c, MIT) */
 #include "eng_drum.c"           /* DRUM: the 8-lane kit (drum_voice.c) */
+#if FELUCCA_GRAIN_ONLY
+static const engine_t ENG_NOISE = {
+    .name = "NOISE",
+};
+#else
 #include "../engines/src/eng_noise.c"
+#endif
 #include "eng_fm6.c"            /* FM6: 6-operator FM, msfa ported (fm6_core.c, Apache-2.0) */
 #include "fm4_convert.c"        /* DIGITAL's tables, and its sounds -> FM6 */
 #if FELUCCA_FM4

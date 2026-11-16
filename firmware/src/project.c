@@ -843,6 +843,7 @@ static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
 #ifndef PROJ_HOST
 /* the GM drum part of a project of before 1.0 (proj_drums_to_part): DRUM's first kit, as a preset load sets it
  * (until 1.0.2 the SAMPLE engine's PERC set, retired since) */
+#if !FELUCCA_GRAIN_ONLY
 static void proj_legacy_drums(track_t *t)
 {
     static const uint8_t FX_DEF[4] = {0, 24, 28, 36};
@@ -865,6 +866,7 @@ static void proj_legacy_drums(track_t *t)
         t->p[P_DIST + i] = (int16_t)(pr->fx[i] ? pr->fx[i] - 1 : FX_DEF[i]);
 }
 
+#endif /* !FELUCCA_GRAIN_ONLY */
 static project_t proj_scratch               /* decoded main-loop work, never audio ISR */
     __attribute__((section(".pool")));
 static char proj_name[PROJ_NAME_LEN + 1u]    /* the name of the music as it is now (loaded, saved, the editor's */
@@ -1316,7 +1318,9 @@ static int project_restore_runtime(const project_t *input)
         } else if (p->t[k].preset == PROJ_DEF_KEEP) {   /* the steps, LEVEL PAN MUTE, LEN DIV SWING GATE kept */
             memcpy(keep, t->p, sizeof keep);
             fm1_irq_off();                           /* publish the legacy sound as one bounded parameter batch */
-            proj_legacy_drums(t);                     /* (keeps the SLICER: param_kept) */
+#if !FELUCCA_GRAIN_ONLY
+            proj_legacy_drums(t);
+#endif                     /* (keeps the SLICER: param_kept) */
             t->p[P_REV] = keep[P_REV];                  /* and the drums' reverb send */
             for (i = P_AMODE; i <= P_TRANS; i++)        /* the drum part had no arp or scale */
                 t->p[i] = TP[i].def;
