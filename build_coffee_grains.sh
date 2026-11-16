@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+FELUCCA_SLICE=0 \
+FELUCCA_ICONS=0 \
+FELUCCA_CDC=0 \
+FELUCCA_UAC=0 \
+FELUCCA_CPU2=1 \
+FELUCCA_OTA=0 \
+FELUCCA_FLASH=1 \
+FELUCCA_FACTORY_22K=1 \
+FELUCCA_BOOT_ART=1 \
+FELUCCA_HOME_ART=1 \
+./build.sh
