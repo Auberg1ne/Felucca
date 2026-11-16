@@ -50,6 +50,7 @@ static void draw_grain_grid(void)
                 cv_rect(7,16,43,1,selected?accent:GRAIN_COFFEE);
             }
             param_format(d,value,text,&unit);
+            if(!env && !lfo && id==P_GWIN)unit=value==0?"GAUSS":value==64?"HANN":value==127?"TUKEY":"";
             const aafont_t *font=text_w(&AF_M,text)<=51?&AF_M:&AF_S;
             if(lfo) {
                 str_cpy(text+str_len(text),unit,sizeof text-str_len(text));

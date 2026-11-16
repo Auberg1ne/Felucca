@@ -11,6 +11,6 @@ const info={pcount:118,pe0:110};const calls=[];E.parse[E.CMD.DUMP]=()=>({p:Array
 await E.auditionPatch(async bytes=>{calls.push(Array.from(bytes));return [];},info,{engine:8,p:Array(118).fill(0)});
 assert(calls.some(x=>JSON.stringify(x)===JSON.stringify(Array.from(E.req.set(1,20,8)))));checks++;
 assert(!calls.some(x=>JSON.stringify(x)===JSON.stringify(Array.from(E.req.set(0,109,0)))));checks++;
-assert.match(html,/id === 109 && dev\.info\.pcount === 118 && dev\.info\.pe0 === 110/);checks++;
+assert.match(html,/winSlot\(dev.info, s, id\) && !winControlAvailable/);checks++;
 assert.match(html,/i === 109 && dev\.info\.pcount === 118 && dev\.info\.pe0 === 110/);checks++;
-console.log(`WIN browser provenance: ${checks} checks passed; headless metadata, no ambiguous non-Hann export or SET109 bulk audition`);
+console.log(`WIN browser provenance: ${checks} checks passed; descriptor gating, no ambiguous non-Hann export or SET109 bulk audition`);

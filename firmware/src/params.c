@@ -557,7 +557,7 @@ static uint8_t mod_ui_slot;      /* the MOD page: the matrix slot (0..3) KNOB 2.
 /* Shared row selection for GRAIN EDIT / GRAIN-only ENV; never stored in sounds. */
 static uint8_t grain_edit_row;
 static const uint8_t GRAIN_GRID[2][3][4]={
-    {{P_E0,P_E1,P_E2,P_E3},{P_E4,P_E5,P_E6,P_E7},{P_GFILTER_RSVD1,255,255,255}},
+    {{P_E0,P_E1,P_E2,P_E3},{P_E4,P_E5,P_E6,P_E7},{P_GFILTER_RSVD1,P_GWIN,255,255}},
     {{P_GTYPE,P_GA,P_GB,255},{P_GCUT,P_GRES,255,255},{P_VOICE,P_DETUNE,P_SPRD,255}}
 };
 static uint32_t grain_grid_page(const page_t *pg)

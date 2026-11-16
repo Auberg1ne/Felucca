@@ -790,7 +790,14 @@ function parseNotes(s) {
 }
 
 /* close to the device's param_format (params.c), tables from tools/gen_tables.py */
+/* Descriptor discovery, never a firmware-version guess or reserved-byte heuristic. */
+function winDescriptor(d) { return !!d && d.label === "WIN" && d.fmt === F.INT && d.min === 0 && d.max === 127 && d.def === 64 && !d.unit && !d.names?.length; }
+function winControlAvailable(info, engine, d) {
+  return info?.pcount === 118 && info.pe0 === 110 && info.engines?.[engine] === "GRAIN" && winDescriptor(d);
+}
+function winSlot(info, s, id) { return s === 0 && id === 109 && info?.pcount === 118 && info.pe0 === 110; }
 function fmtValue(d, v) {
+  if (winDescriptor(d)) return [String(v), v === 0 ? "GAUSS" : v === 64 ? "HANN" : v === 127 ? "TUKEY" : ""];
   const sign = (x) => (x > 0 ? "+" + x : String(x));
   switch (d.fmt) {
     case F.PCT: return [String(d.max === 100 ? v : Math.trunc((v * 100 + 63) / 127)), "%"];   /* 0..100 (SWG): the value */
@@ -1141,11 +1148,12 @@ function cleanPatch(pt) {
 }
 
 /* ctx: {keys, engines, firmware, pe0} of the library (the device's when connected) */
-/* I1 is headless. Existing unversioned library payloads cannot carry WIN
-   provenance; do not export/upload a known non-Hann live window through them. */
+/* Preserve I1 provenance rules: unversioned library payloads cannot carry WIN.
+   Check layout, not a cached engine-dependent key label; a reserved label from
+   another track must never permit non-Hann export/upload/audition. */
 function assertWinLibraryTransfer(patches, ctx) {
-  if (ctx.pe0 !== 110 || ctx.keys?.length !== 118 || ctx.keys[109] !== "WIN") return;
-  if (patches.some(p => (p.engineName || ctx.engines?.[p.engine]) === "GRAIN" && p.p?.[109] != null && p.p[109] !== 64))
+  if (ctx.pe0 !== 110 || ctx.keys?.length !== 118) return;
+  if (patches.some(p => (p.engineName === "GRAIN" || ctx.engines?.[p.engine] === "GRAIN") && p.p?.[109] != null && p.p[109] !== 64))
     throw new Error("WIN library transfer unavailable; use a versioned backup or native LOAD/STORE.");
 }
 function libraryFile(kind, patches, ctx) {
@@ -3083,7 +3091,7 @@ async function rereadEngineDesc(d = dev) {
   // Discover it by the existing wire labels, without shifting any parameter IDs.
   const stretch = d.pdesc.findIndex((desc, id) => id < pe0 && desc && (desc.label === "STRETCH" || desc.label === "G-F RSV1"));
   if (stretch >= 0) ids.push(stretch);
-  if (d.info.pcount === 118 && pe0 === 110) ids.push(109); // headless engine-aware WIN metadata
+  if (d.info.pcount === 118 && pe0 === 110) ids.push(109); // engine-aware WIN metadata, refreshed on engine/track changes
   for (let i = 0; i < 8 && pe0 + i < d.info.pcount; i++) ids.push(pe0 + i);
   const before = JSON.stringify(ids.map((id) => d.pdesc[id]));
   for (const id of ids) d.pdesc[id] = await getDescOrNull(0, id, d);
@@ -3219,7 +3227,7 @@ function buildGroups() {
 function paramRow(s, id) {
   const d = s ? dev.gdesc[id] : dev.pdesc[id];
   if (!visible(d) || (s === 1 && G_SKIP.has(d.label))) return null;
-  if (s === 0 && id === 109 && dev.info.pcount === 118 && dev.info.pe0 === 110) return null; // WIN I1: no browser control
+  if (winSlot(dev.info, s, id) && !winControlAvailable(dev.info, dev.dump.engine, d)) return null;
 
   const k = key(s, id);
   let input;
@@ -3279,10 +3287,13 @@ function showValue(k, v, force) {
 /* the user is working on this control: polling and pushes must not move it */
 function touched(k) {
   const c = ctl.get(k), st = sets.get(k);
+  const win = !!dev && c && winSlot(dev.info, c.scope, c.id);
+  if (win && st && st.track !== dev.sel) return false;
+  const queueKey = win && dev.info.ntrk ? `${k}:${dev.sel}` : k;
   if (dragging === k) return true;
   if (c && c.input.tagName === "SELECT" && document.activeElement === c.input) return true;
   if (st && performance.now() - st.last < 600) return true;
-  return !!dev && (dev.link.hasQueued(k) || (!!dev.link.cur && dev.link.cur.key === k));
+  return !!dev && (dev.link.hasQueued(queueKey) || (!!dev.link.cur && dev.link.cur.key === queueKey));
 }
 
 window.addEventListener("pointerup", () => { if (dragging) { const k = dragging; dragging = null; const c = ctl.get(k); if (c) userSet(c.scope, c.id, +c.input.value, true); } });
@@ -3292,24 +3303,33 @@ window.addEventListener("pointercancel", () => { dragging = null; });
    always carries the latest value (Link coalesces by key), so a drag never builds a backlog */
 function userSet(s, id, v, final) {
   if (!dev) return;
-  const k = key(s, id);
+  const win = winSlot(dev.info, s, id);
+  if (win && !winControlAvailable(dev.info, dev.dump.engine, dev.pdesc[id])) return;
+  const k = key(s, id), previous = (s ? dev.dump.g : dev.dump.p)[id];
   (s ? dev.dump.g : dev.dump.p)[id] = v;
   showValue(k, v, false);
   mixFromDump();
   let st = sets.get(k);
   if (!st) sets.set(k, (st = { last: 0, sent: null }));
   st.last = performance.now();
-  if (v === st.sent) return;                        /* the last request already carries it */
+  if (v === st.sent && (!win || (st.track === dev.sel && previous === v))) return;                        /* the last request already carries it */
   sendSet(s, id, k);
 }
 async function sendSet(s, id, k) {
   if (!dev) return;
+  const d = dev, track = d.sel, win = winSlot(d.info, s, id);
+  if (win && !winControlAvailable(d.info, d.dump.engine, d.pdesc[id])) return;
   const st = sets.get(k);
   const v = (s ? dev.dump.g : dev.dump.p)[id];
   st.sent = v;
+  if (win) st.track = track;
+  const targeted = win && d.info.ntrk && Number.isInteger(track);
+  const command = targeted ? CMD.TRACK_PARAM : CMD.SET;
+  const message = targeted ? req.trackParam(track, id, v) : req.set(s, id, v);
+  const queueKey = targeted ? `${k}:${track}` : k;
   try {
-    const r = parse[CMD.SET](await rq(req.set(s, id, v), { key: k }));
-    if (dev && dragging !== k && st.sent === v && !dev.link.hasQueued(k)) {   /* the device's value after clamping */
+    const r = parse[command](await rq(message, { key: queueKey }));
+    if (dev === d && (!win || d.sel === track) && dragging !== k && st.sent === v && !d.link.hasQueued(queueKey)) {   /* the device's value after clamping */
       (s ? dev.dump.g : dev.dump.p)[id] = r.value;
       showValue(k, r.value, false);
       mixFromDump();

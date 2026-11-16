@@ -32,7 +32,7 @@ static void picture(const char*dir,unsigned page){char p[512];snprintf(p,sizeof 
  fprintf(f,"P6\n240 240\n255\n");for(unsigned i=0;i<240*240;i++){unsigned v=swap16(web_fb[i]);unsigned char rgb[]={((v>>11)&31)*255/31,((v>>5)&63)*255/63,(v&31)*255/31};fwrite(rgb,3,1,f);}fclose(f);}
 int main(int argc,char**argv){
  web_nor_erase();web_boot();while(fm1_ms<3500)web_ms();open_family(FAM_EDIT);
- static const char*labels[2][12]={{"SRC","POS","SIZE","DENS","PTCH","G-SPRD","RAND","TONE","STRETCH","--","--","--"},{"TYPE","DRIFT","WIDTH","--","CUTOFF","RESON","--","--","VCE","DTUNE","V-SPRD","--"}};
+ static const char*labels[2][12]={{"SRC","POS","SIZE","DENS","PTCH","G-SPRD","RAND","TONE","STRETCH","WIN","--","--"},{"TYPE","DRIFT","WIDTH","--","CUTOFF","RESON","--","--","VCE","DTUNE","V-SPRD","--"}};
  static const char*personality[4][2]={{"DRIFT","WIDTH"},{"HOLD","MOTION"},{"RATE","GATE"},{"INTERVAL","HARMONICS"}};
  for(unsigned page=0;page<2;page++) {
   TSEL->p[P_GTYPE]=0;draw();for(unsigned i=0;i<12;i++)REQUIRE(seen(labels[page][i]));
@@ -45,7 +45,7 @@ int main(int argc,char**argv){
     unsigned id=grain_grid_param(page,row,col);if(id>=P_COUNT)continue;
     const param_desc_t*d=track_desc(TSEL,id);int old=TSEL->p[id];
     for(int value=d->min;value<=d->max;value++) {TSEL->p[id]=value;draw();char b[16];const char*u;param_format(track_desc(TSEL,id),value,b,&u);if(id==P_GB && TSEL->p[P_GTYPE]==3){strcat(b,u);}
-    REQUIRE(seen(b));}
+    REQUIRE(seen(b));if(id==P_GWIN){const char*anchor=value==0?"GAUSS":value==64?"HANN":value==127?"TUKEY":0;REQUIRE(anchor?seen(anchor):(!seen("GAUSS")&&!seen("HANN")&&!seen("TUKEY")));}}
     TSEL->p[id]=old;
    }
   }
