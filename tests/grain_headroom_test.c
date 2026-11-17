@@ -54,7 +54,7 @@ static int filter_bounds(void)
 {
     int64_t max1=0,max2=0,maxlp=0,maxhp=0;
     for(int cut=-50;cut<=50;cut++)if(cut)for(int res=0;res<=127;res++) {
-        int q=cut<0?(50+cut)*(127<<8)/50:cut*(127<<8)/50,k=8192-res*7600/127;tsvf_t c;tsvf_coef(&c,q,res);
+        int q=cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,k=8192-res*7600/127;tsvf_t c;tsvf_coef(&c,q,res);
         int64_t t1=(int64_t)c.a1*150000+(int64_t)c.a2*215535,t2=(int64_t)c.a2*150000+(int64_t)c.a3*215535;
         REQUIRE(t1<=INT32_MAX && t2<=INT32_MAX);if(t1>max1)max1=t1;if(t2>max2)max2=t2;
         int64_t boundlp=150000+floorq(t2,13)+1,boundv1=floorq(t1,13)+1;
@@ -90,7 +90,7 @@ static int render(void)
         int32_t out[CTL+4],expected[CTL+4];int32_t initial=cases%3==0?INT32_MAX-123:cases%3==1?INT32_MIN+123:1000;
         for(unsigned i=0;i<NELEM(out);i++)out[i]=expected[i]=initial;
         int32_t a=states[st][0],b=states[st][1],y=321;tsvf_t c;
-        if(cut)tsvf_coef(&c,cut<0?(50+cut)*(127<<8)/50:cut*(127<<8)/50,r?127:0);
+        if(cut)tsvf_coef(&c,cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,r?127:0);
         for(unsigned i=0;i<n;i++) {
             y=cut?ref_filter(&c,sign?65535:-65535,8192-(r?127:0)*7600/127,&a,&b,cut<0):(sign?65535:-65535);
             expected[i+1]=ref_output(initial,y,&m,i);
@@ -105,7 +105,7 @@ static int render(void)
         int cut=(int)(b%101)-50,res=(b&1)?127:0;t->p[P_GCUT]=cut;t->p[P_GRES]=res;
         v->s[1]=100000;for(unsigned g=0;g<GR_NG;g++){p->g[g].owner=1;p->g[g].left=CTL*2;p->g[g].a=p->g[g].b=b&1?30000:-30000;p->g[g].frac=0;}
         int32_t a=v->s[3],d=v->s[4],y=v->s[2],out[CTL]={0},expected[CTL];tsvf_t c;vmod_t m={0};m.amp0=65527;m.amp1=0;
-        if(cut)tsvf_coef(&c,cut<0?(50+cut)*(127<<8)/50:cut*(127<<8)/50,res);
+        if(cut)tsvf_coef(&c,cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,res);
         for(unsigned i=0;i<CTL;i++){y=cut?ref_filter(&c,b&1?65535:-65535,8192-res*7600/127,&a,&d,cut<0):(b&1?65535:-65535);expected[i]=ref_output(0,y,&m,i);}
         grain_render(t,v,out,CTL,&m);REQUIRE(!memcmp(out,expected,sizeof out));REQUIRE(abs(v->s[3])<=150000 && abs(v->s[4])<=150000);
     }

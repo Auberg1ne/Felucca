@@ -16,6 +16,9 @@ for test in grain_only_test grain_only_editor_test grain_only_persistence_test g
     $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 "tests/$test.c" -lm -o "$out/$test"
     "$out/$test"
 done
+# Independent bipolar filter frequency-response regression.
+$cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_filter_response_test.c -lm -o "$out/grain_filter_response_test"
+"$out/grain_filter_response_test"
 $cc $flags -UFELUCCA_GRAIN_ONLY -DFELUCCA_GRAIN_ONLY=1 tests/grain_cutoff_audio_test.c -lm -o "$out/grain_cutoff_audio_test"
 for type in 0 1 2 3; do
     for cut in -25 0 25 switch; do

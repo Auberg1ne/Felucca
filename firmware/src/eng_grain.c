@@ -551,6 +551,8 @@ static void grain_note_on(track_t *t, voice_t *v)
             if (P->g[i].owner == vi + 1u)
                 P->g[i].owner = 0;
         v->s[2] = 0;
+        v->s[3] = 0;  /* reset SVF integrators for a fresh voice */
+        v->s[4] = 0;
         v->s[5] = 0;
         v->s[6] = gr_tone_coef(t->p[P_E7]);
     }
@@ -600,7 +602,9 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
     uint32_t vi = (uint32_t)(v - t->v) % NVOICE, i, mine = 0, nact = 0, iv;
     int32_t zl = v->s[0], acc[CTL];
     int32_t ic1 = v->s[3], ic2 = v->s[4], y = v->s[2];
-    int32_t cutoff = p[P_GCUT], cut, k;
+    /* Combine the saved/step-locked bipolar cutoff with per-voice
+     * LFO, envelope and modulation-matrix filter destinations. */
+    int32_t cutoff = clamp((int32_t)p[P_GCUT] + m->cutoff / 256, -50, 50), cut, k;
     uint32_t fallback = (zl == GR_SINE);
     tsvf_t fc;
 
@@ -699,7 +703,9 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
         return;
     }
 
-    cut = cutoff < 0 ? ((50 + cutoff) * (127 << 8) / 50) : (cutoff * (127 << 8) / 50);
+    cut = cutoff < 0
+        ? (40 << 8) + ((-cutoff) * (60 << 8) / 50)
+        : (46 << 8) + ((50 - cutoff) * (54 << 8) / 50);
     tsvf_coef(&fc, cut, p[P_GRES]);
     k = 8192 - p[P_GRES] * 7600 / 127;
 

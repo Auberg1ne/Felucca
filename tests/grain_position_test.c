@@ -19,9 +19,14 @@ static void source_guard(const smp_zone_t *z,int enable)
 #ifdef __SANITIZE_ADDRESS__
     __asan_unpoison_memory_region(SMP_DATA,sizeof SMP_DATA);
     if (enable) {
-        __asan_poison_memory_region(SMP_DATA,z->off);
-        uint32_t end=z->off+(z->n+1u)/2u;
-        __asan_poison_memory_region(SMP_DATA+end,sizeof SMP_DATA-end);
+        /* Only factory zones reside in SMP_DATA. User zones use
+         * separate storage and must not poison beyond this array. */
+        uint64_t end = (uint64_t)z->off + ((uint64_t)z->n + 1u)/2u;
+        if (end <= sizeof SMP_DATA) {
+            __asan_poison_memory_region(SMP_DATA,z->off);
+            __asan_poison_memory_region(SMP_DATA+(size_t)end,
+                                        sizeof SMP_DATA-(size_t)end);
+        }
     }
 #else
     (void)z;(void)enable;
@@ -105,7 +110,11 @@ static int live_position(void)
         for (unsigned j=0;j<NELEM(positions);j++) {
             t->p[P_E1]=(int16_t)positions[j];v->s[1]=100000;
             unsigned left=p->g[0].left;gr_head_t old=p->head[0];
-            uint32_t move=((65535u>>8)*(pow2_q16(-(int32_t)stretch[st]*10)>>8))*CTL;
+            int32_t hd16 = m.pitch16 - z->root16 + t->p[P_E4] * 16;
+            uint32_t hs = (pow2_q16(clamp(hd16, -1536, 576)) >> 8) * (z->rate >> 8);
+            if (hs > 65535u) hs = 65535u;
+            uint32_t move = ((hs >> 8) * (pow2_q16(-(int32_t)stretch[st]*10) >> 8)) * CTL;
+            if (type == 0u) move = (move * (uint32_t)t->p[P_GA]) >> 6;
             uint64_t next=(head_q16(&old)+move)%((uint64_t)domain<<16);
             int64_t expect=(int64_t)(next>>16)+ref_anchor(z->n,positions[j]<<8)-ref_anchor(z->n,old.target);
             if (expect<0)expect=0;if ((uint64_t)expect>=domain)expect=domain-1;
@@ -126,7 +135,11 @@ static int live_position(void)
         /* The identical effective target supplied through SHP follows identical rules. */
         for (int d=-3;d<=3;d++) {
             gr_head_t old=p->head[0];m.shape=(64<<8)+d;v->s[1]=100000;
-            uint32_t move=((65535u>>8)*(pow2_q16(-(int32_t)stretch[st]*10)>>8))*CTL;
+            int32_t hd16 = m.pitch16 - z->root16 + t->p[P_E4] * 16;
+            uint32_t hs = (pow2_q16(clamp(hd16, -1536, 576)) >> 8) * (z->rate >> 8);
+            if (hs > 65535u) hs = 65535u;
+            uint32_t move = ((hs >> 8) * (pow2_q16(-(int32_t)stretch[st]*10) >> 8)) * CTL;
+            if (type == 0u) move = (move * (uint32_t)t->p[P_GA]) >> 6;
             uint64_t next=(head_q16(&old)+move)%((uint64_t)domain<<16);
             uint32_t target=(64u<<8)+d;
             int64_t expect=(int64_t)(next>>16)+ref_anchor(z->n,target)-ref_anchor(z->n,old.target);
