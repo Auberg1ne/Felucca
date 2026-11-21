@@ -5,34 +5,20 @@
 
 static double response(int cut, int res, double hz)
 {
-    tsvf_t c;
-    int32_t ic1 = 0, ic2 = 0;
+    voice_t v = {0}; v.s[7] = -1;
+    vmod_t m = {0}; m.amp0 = m.amp1 = 32767;
     double input_energy = 0.0, output_energy = 0.0;
     const unsigned count = 44100;
-
-    if (cut) {
-        int q = cut < 0
-            ? 40 * 256 + (-cut) * (60 * 256) / 50
-            : 46 * 256 + (50 - cut) * (54 * 256) / 50;
-        tsvf_coef(&c, q, res);
-    }
 
     for (unsigned i = 0; i < count; i++) {
         int32_t x = (int32_t)lrint(12000.0 *
                       sin(2.0 * 3.14159265358979323846 * hz * i / FS));
-        int32_t y = x;
-
-        if (cut) {
-            int32_t old = ic1;
-            int32_t lp = tsvf_lp(&c, x, &ic1, &ic2);
-            int32_t bp = (ic1 + old) >> 1;
-            int32_t k = 8192 - res * 7600 / 127;
-            int32_t hp = x - ((k * bp) >> 12) - lp;
-            y = cut < 0 ? hp : lp;
-        }
+        int32_t y = 0;
+        gr_filter(&v, &x, &y, 1, &m, cut, res); /* actual production selector */
+        int32_t dry = gr_output(0, x, &m, 0);
 
         if (i >= count / 2) {
-            input_energy += (double)x * x;
+            input_energy += (double)dry * dry;
             output_energy += (double)y * y;
         }
     }
@@ -48,23 +34,20 @@ int main(void)
                cut, response(cut, 0, 100),
                response(cut, 0, 1000), response(cut, 0, 5000));
 
-    double hp25bass = response(-25, 0, 100);
-    double hp50bass = response(-50, 0, 100);
-    double hp50treble = response(-50, 0, 5000);
-    double lp25treble = response(25, 0, 5000);
-    double lp50treble = response(50, 0, 5000);
-    double lp50bass = response(50, 0, 100);
+    double hp25bass = response(25, 0, 100);
+    double hp50bass = response(50, 0, 100);
+    double hp25treble = response(25, 0, 5000);
+    double lp25treble = response(-25, 0, 5000);
+    double lp50treble = response(-50, 0, 5000);
+    double lp25bass = response(-25, 0, 100);
 
-    printf("HP bass: -25=%.4f -50=%.4f; HP treble -50=%.4f\n",
-           hp25bass, hp50bass, hp50treble);
-    printf("LP treble: +25=%.4f +50=%.4f; LP bass +50=%.4f\n",
-           lp25treble, lp50treble, lp50bass);
-
-    if (!(hp50bass < hp25bass && hp50bass < 0.5 &&
-          hp50treble > hp50bass &&
-          lp50treble < lp25treble && lp50treble < 0.5 &&
-          lp50bass > lp50treble)) {
-        fprintf(stderr, "FAIL: bipolar frequency-response expectations\n");
+    /* Only output polarity reverses: the original frequency curves stay.
+     * Thus increasing magnitude opens these new LP/HP selections. */
+    if (!(hp50bass > hp25bass && hp25bass < 0.5 &&
+          hp25treble > hp25bass &&
+          lp50treble > lp25treble && lp25treble < 0.5 &&
+          lp25bass > lp25treble)) {
+        fprintf(stderr, "FAIL: negative LP / positive HP with unchanged frequency curves\n");
         return 1;
     }
 

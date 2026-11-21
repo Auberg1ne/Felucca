@@ -637,7 +637,7 @@ static void gr_filter(voice_t *v, const int32_t *acc, int32_t *out, uint32_t n,
         int32_t lp = tsvf_lp(&fc, x, &ic1, &ic2);
         int32_t bp = (ic1 + old_ic1) >> 1;
         int32_t hp = x - ((k * bp) >> 12) - lp;
-        y = running > 0 ? lp : hp;
+        y = running < 0 ? lp : hp; /* negative LP, positive HP; frequency curves unchanged */
         /* Wide intermediate: filter excursions may exceed the dry accumulator.
          * Division by constant preserves exact dry/wet endpoints and bounds. */
         int32_t mixed = wet == GR_FILTER_FADE ? y :

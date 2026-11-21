@@ -19,7 +19,7 @@ static void constant(track_t*t,voice_t*v,int cut,int mod,int res,int32_t*out)
 /* Independent steady-state filter oracle: unchanged coefficients and integer path. */
 static void wet_reference(int cut,int res,int32_t*acc,int32_t*out,unsigned n,const vmod_t*m,int32_t*s1,int32_t*s2){
  int q=cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50;tsvf_t c;tsvf_coef(&c,q,res);
- for(unsigned i=0;i<n;i++){int32_t old=*s1,lp=tsvf_lp(&c,acc[i],s1,s2),bp=(*s1+old)>>1;int32_t y=cut>0?lp:acc[i]-(((8192-res*7600/127)*bp)>>12)-lp;out[i]=gr_output(out[i],y,m,i);}
+ for(unsigned i=0;i<n;i++){int32_t old=*s1,lp=tsvf_lp(&c,acc[i],s1,s2),bp=(*s1+old)>>1;int32_t y=cut<0?lp:acc[i]-(((8192-res*7600/127)*bp)>>12)-lp;out[i]=gr_output(out[i],y,m,i);}
 }
 static int kernel(void){
  for(int cut=-50;cut<=50;cut++)for(int res=0;res<=127;res+=127){
@@ -56,6 +56,31 @@ static int kernel(void){
  }
  return 0;
 }
+/* A sign reversal must finish fading the old polarity to dry before the
+ * opposite filter starts. Check the bridge with partial and full blocks. */
+static int polarity_bridge(void)
+{
+ for(int sign=-1;sign<=1;sign+=2)for(int res=0;res<=127;res+=127)
+ for(unsigned n=1;n<=CTL;n++){
+  voice_t v={0};v.s[7]=-1;vmod_t m={0};m.amp0=m.amp1=32767;
+  int32_t input[CTL],out[CTL];for(unsigned i=0;i<CTL;i++)input[i]=16000;
+  memset(out,0,sizeof out);gr_filter(&v,input,out,n,&m,sign,res);
+  unsigned left=256;
+  while(left){
+   memset(out,0,sizeof out);gr_filter(&v,input,out,n,&m,-sign,res);
+   left=left>n?left-n:0;
+   CHECK(((unsigned)v.s[7]&511)==left);
+   CHECK((int)((unsigned)v.s[7]>>9)-50==sign);
+  }
+  CHECK(v.s[2]==0 && v.s[3]==0 && v.s[4]==0);
+  memset(out,0,sizeof out);gr_filter(&v,input,out,n,&m,-sign,res);
+  CHECK(out[0]==gr_output(0,input[0],&m,0));
+  CHECK(((unsigned)v.s[7]&511)==n);
+  CHECK((int)((unsigned)v.s[7]>>9)-50==-sign);
+ }
+ return 0;
+}
+
 /* Bypass ramps count samples, not blocks. Compare every entry offset and
  * fragment size to a one-sample reference, including interrupted fades. */
 static int block_boundaries(void)
@@ -135,7 +160,7 @@ int main(void){
 
  }
 #ifndef TRANSITION_MEASURE_BASE
- if(kernel() || block_boundaries() || routing())return 1;
+ if(kernel() || polarity_bridge() || block_boundaries() || routing())return 1;
 #endif
  printf("GRAIN zero transition: %u checks; worst first edge=%u\n",checks,worst);return 0;
 }

@@ -92,7 +92,7 @@ static int render(void)
         int32_t a=states[st][0],b=states[st][1],y=321;tsvf_t c;
         if(cut)tsvf_coef(&c,cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,r?127:0);
         for(unsigned i=0;i<n;i++) {
-            y=cut?ref_filter(&c,sign?65535:-65535,8192-(r?127:0)*7600/127,&a,&b,cut<0):(sign?65535:-65535);
+            y=cut?ref_filter(&c,sign?65535:-65535,8192-(r?127:0)*7600/127,&a,&b,cut>0):(sign?65535:-65535);
             expected[i+1]=ref_output(initial,y,&m,i);
         }
         grain_render(t,v,out+1,count,&m);REQUIRE(!memcmp(out,expected,sizeof out));
@@ -115,7 +115,7 @@ static int render(void)
         if(running)tsvf_coef(&c,running<0?(40<<8)+(-running)*(60<<8)/50:(46<<8)+(50-running)*(54<<8)/50,res);
         for(unsigned i=0;i<CTL;i++){
             int32_t x=b&1?65535:-65535;
-            y=running?ref_filter(&c,x,8192-res*7600/127,&a,&d,running<0):x;
+            y=running?ref_filter(&c,x,8192-res*7600/127,&a,&d,running>0):x;
             int32_t mixed=(int32_t)((__int128)x+(((__int128)y-x)*wet)/256);
             expected[i]=ref_output(0,mixed,&m,i);
             if(toward){if(wet<256)wet++;}else if(wet)wet--;
