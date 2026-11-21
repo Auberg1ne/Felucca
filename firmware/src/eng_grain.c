@@ -624,9 +624,11 @@ static void gr_filter(voice_t *v, const int32_t *acc, int32_t *out, uint32_t n,
     }
     int toward = cutoff && ((cutoff < 0) == (running < 0));
     if (toward) running = cutoff;
+    /* Keep the established frequency bounds: increasing magnitude lowers
+     * the LP cutoff and raises the HP cutoff. Zero retains exact dry bypass. */
     int32_t cut = running < 0
-        ? (40 << 8) + ((-running) * (60 << 8) / 50)
-        : (46 << 8) + ((50 - running) * (54 << 8) / 50);
+        ? (46 << 8) + ((50 + running) * (54 << 8) / 50)
+        : (40 << 8) + (running * (60 << 8) / 50);
     int32_t ic1 = v->s[3], ic2 = v->s[4], y = v->s[2];
     int32_t k = 8192 - resonance * 7600 / 127;
     tsvf_t fc;
@@ -637,7 +639,7 @@ static void gr_filter(voice_t *v, const int32_t *acc, int32_t *out, uint32_t n,
         int32_t lp = tsvf_lp(&fc, x, &ic1, &ic2);
         int32_t bp = (ic1 + old_ic1) >> 1;
         int32_t hp = x - ((k * bp) >> 12) - lp;
-        y = running < 0 ? lp : hp; /* negative LP, positive HP; frequency curves unchanged */
+        y = running < 0 ? lp : hp; /* negative LP, positive HP; no cascaded LP in HP mode */
         /* Wide intermediate: filter excursions may exceed the dry accumulator.
          * Division by constant preserves exact dry/wet endpoints and bounds. */
         int32_t mixed = wet == GR_FILTER_FADE ? y :

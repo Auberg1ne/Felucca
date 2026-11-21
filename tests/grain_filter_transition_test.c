@@ -18,7 +18,7 @@ static void constant(track_t*t,voice_t*v,int cut,int mod,int res,int32_t*out)
 #ifndef TRANSITION_MEASURE_BASE
 /* Independent steady-state filter oracle: unchanged coefficients and integer path. */
 static void wet_reference(int cut,int res,int32_t*acc,int32_t*out,unsigned n,const vmod_t*m,int32_t*s1,int32_t*s2){
- int q=cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50;tsvf_t c;tsvf_coef(&c,q,res);
+ int q=cut<0?(46<<8)+(50+cut)*(54<<8)/50:(40<<8)+cut*(60<<8)/50;tsvf_t c;tsvf_coef(&c,q,res);
  for(unsigned i=0;i<n;i++){int32_t old=*s1,lp=tsvf_lp(&c,acc[i],s1,s2),bp=(*s1+old)>>1;int32_t y=cut<0?lp:acc[i]-(((8192-res*7600/127)*bp)>>12)-lp;out[i]=gr_output(out[i],y,m,i);}
 }
 static int kernel(void){
@@ -60,8 +60,10 @@ static int kernel(void){
  * opposite filter starts. Check the bridge with partial and full blocks. */
 static int polarity_bridge(void)
 {
- for(int sign=-1;sign<=1;sign+=2)for(int res=0;res<=127;res+=127)
+ const int mags[]={1,25,50};
+ for(unsigned mi=0;mi<NELEM(mags);mi++)for(int polarity=-1;polarity<=1;polarity+=2)for(int res=0;res<=127;res+=127)
  for(unsigned n=1;n<=CTL;n++){
+  int sign=polarity*mags[mi];
   voice_t v={0};v.s[7]=-1;vmod_t m={0};m.amp0=m.amp1=32767;
   int32_t input[CTL],out[CTL];for(unsigned i=0;i<CTL;i++)input[i]=16000;
   memset(out,0,sizeof out);gr_filter(&v,input,out,n,&m,sign,res);
@@ -85,8 +87,10 @@ static int polarity_bridge(void)
  * fragment size to a one-sample reference, including interrupted fades. */
 static int block_boundaries(void)
 {
- for(unsigned offset=0;offset<CTL;offset++)for(unsigned fragment=1;fragment<=CTL;fragment++)
- for(int sign=-1;sign<=1;sign+=2)for(int res=0;res<=127;res+=127){
+ const int mags[]={1,25,50};
+ for(unsigned mi=0;mi<NELEM(mags);mi++)for(unsigned offset=0;offset<CTL;offset++)for(unsigned fragment=1;fragment<=CTL;fragment++)
+ for(int polarity=-1;polarity<=1;polarity+=2)for(int res=0;res<=127;res+=127){
+  int sign=polarity*mags[mi];
   voice_t a={0},b={0};vmod_t m={0};m.amp0=m.amp1=32767;
   const unsigned lengths[]={offset+1,97,5,7,256,300};
   const int cuts[]={0,sign,0,sign,0,0};
@@ -135,7 +139,9 @@ static int routing(void){
 
 #endif
 int main(void){
- unsigned worst=0;for(unsigned type=0;type<4;type++)for(unsigned mod=0;mod<2;mod++)for(unsigned r=0;r<2;r++)for(int target=-1;target<=1;target+=2){
+ const int targets[]={-50,-25,-1,1,25,50};
+ unsigned worst=0;for(unsigned type=0;type<4;type++)for(unsigned mod=0;mod<2;mod++)for(unsigned r=0;r<2;r++)for(unsigned ti=0;ti<NELEM(targets);ti++){
+  int target=targets[ti];
   ui_power_on();track_t*t=&trk[0];host_preset(t,ENGI_GRAIN,0);t->p[P_E0]=3;t->p[P_E7]=127;t->p[P_GTYPE]=type;t->p[P_GB]=127;
   gr_part_t*p=gr_of(t);memset(p,0,sizeof*p);gr_reset(p,3,0);voice_t*v=&t->v[0];memset(v,0,sizeof*v);v->note=60;v->active=1;grain_note_on(t,v);v->s[0]=0;
   int32_t out[CTL],prior=0;constant(t,v,0,0,r?127:0,out);prior=out[CTL-1];

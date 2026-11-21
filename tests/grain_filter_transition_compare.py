@@ -14,7 +14,7 @@ for side,tree in [('base',a.base_tree),('new',root)]:
  subprocess.run([cc,*flags,*defines,f'-DGRAIN_TRANSITION_UI_SOURCE="{tree}/tests/ui_test.c"','tests/grain_filter_transition_test.c','-lm','-o',str(exe)],cwd=root,check=True)
  r=subprocess.run([str(exe)],cwd=root,check=True,text=True,capture_output=True);(a.out/f'transition-{side}.log').write_text(r.stdout+r.stderr)
  edges=list(map(int,re.findall(r'first-edge=(\d+)',r.stdout)));steps=list(map(int,re.findall(r'max-step=(\d+)',r.stdout)))
- assert len(edges)==len(steps)==32
+ assert len(edges)==len(steps)==96
  metrics[side]={'first_edge':max(edges),'adjacent_step':max(steps)}
 assert metrics['base']['first_edge']>1000 and metrics['new']['first_edge']==0
 assert metrics['new']['adjacent_step']<=1024 and metrics['new']['adjacent_step']<metrics['base']['adjacent_step']/10
@@ -24,7 +24,7 @@ for side,tree in [('base',a.base_tree),('new',root)]:
  subprocess.run([cc,*flags,f'-DFILTER_UI_SOURCE="{tree}/tests/ui_test.c"','tests/grain_headroom_audio_test.c','-lm','-o',str(a.out/f'audio-{side}')],cwd=root,check=True)
 for kind in range(4):
  for source in [0,2,3,13,14,'user','sine']:
-  for cut in [-50,-1,0,1,50]:
+  for cut in [-50,-25,-1,0,1,25,50]:
    for res in [0,127]:
     args=[kind,source,127,cut,res,'static',4];data=[]
     for side in ['base','new']:
@@ -36,4 +36,4 @@ for kind in range(4):
     else:
      assert data[0]!=data[1],('polarity reversal missing',args);changed+=1
  print(f'personality {kind}: bypass PCM identical; nonzero cutoff PCM intentionally changed',flush=True)
-result={'cases':count,'identical_bytes':total,'intentional_nonzero_changes':changed,'sources':7,'tracks':4,'cutoffs':[-50,-1,0,1,50],'resonance':[0,127]};(a.out/'identity.json').write_text(json.dumps(result,indent=2)+'\n');print(result)
+result={'cases':count,'identical_bytes':total,'intentional_nonzero_changes':changed,'sources':7,'tracks':4,'cutoffs':[-50,-25,-1,0,1,25,50],'resonance':[0,127]};(a.out/'identity.json').write_text(json.dumps(result,indent=2)+'\n');print(result)

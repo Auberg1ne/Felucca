@@ -54,7 +54,7 @@ static int filter_bounds(void)
 {
     int64_t max1=0,max2=0,maxlp=0,maxhp=0;
     for(int cut=-50;cut<=50;cut++)if(cut)for(int res=0;res<=127;res++) {
-        int q=cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,k=8192-res*7600/127;tsvf_t c;tsvf_coef(&c,q,res);
+        int q=cut<0?(46<<8)+(50+cut)*(54<<8)/50:(40<<8)+cut*(60<<8)/50,k=8192-res*7600/127;tsvf_t c;tsvf_coef(&c,q,res);
         int64_t t1=(int64_t)c.a1*150000+(int64_t)c.a2*215535,t2=(int64_t)c.a2*150000+(int64_t)c.a3*215535;
         REQUIRE(t1<=INT32_MAX && t2<=INT32_MAX);if(t1>max1)max1=t1;if(t2>max2)max2=t2;
         int64_t boundlp=150000+floorq(t2,13)+1,boundv1=floorq(t1,13)+1;
@@ -90,7 +90,7 @@ static int render(void)
         int32_t out[CTL+4],expected[CTL+4];int32_t initial=cases%3==0?INT32_MAX-123:cases%3==1?INT32_MIN+123:1000;
         for(unsigned i=0;i<NELEM(out);i++)out[i]=expected[i]=initial;
         int32_t a=states[st][0],b=states[st][1],y=321;tsvf_t c;
-        if(cut)tsvf_coef(&c,cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,r?127:0);
+        if(cut)tsvf_coef(&c,cut<0?(46<<8)+(50+cut)*(54<<8)/50:(40<<8)+cut*(60<<8)/50,r?127:0);
         for(unsigned i=0;i<n;i++) {
             y=cut?ref_filter(&c,sign?65535:-65535,8192-(r?127:0)*7600/127,&a,&b,cut>0):(sign?65535:-65535);
             expected[i+1]=ref_output(initial,y,&m,i);
@@ -112,7 +112,7 @@ static int render(void)
         if(v->s[7]<0 || wet>256 || running< -50 || running>50 || !running){running=cut;wet=v->s[7]<0&&cut?256:0;}
         if(!wet){a=d=0;running=cut;}
         int toward=cut && ((cut<0)==(running<0));if(toward)running=cut;
-        if(running)tsvf_coef(&c,running<0?(40<<8)+(-running)*(60<<8)/50:(46<<8)+(50-running)*(54<<8)/50,res);
+        if(running)tsvf_coef(&c,running<0?(46<<8)+(50+running)*(54<<8)/50:(40<<8)+running*(60<<8)/50,res);
         for(unsigned i=0;i<CTL;i++){
             int32_t x=b&1?65535:-65535;
             y=running?ref_filter(&c,x,8192-res*7600/127,&a,&d,running>0):x;

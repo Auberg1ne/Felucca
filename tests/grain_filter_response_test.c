@@ -26,39 +26,42 @@ static double response(int cut, int res, double hz)
     return sqrt(output_energy / input_energy);
 }
 
+static unsigned checks;
+#define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr,"response line %u: %s\n",__LINE__,#x); return 1; } } while(0)
+/* Independent linear SVF transfer: HP tends to unity at Nyquist; an
+ * accidentally cascaded LP would fail the high-frequency checks below. */
+static double hp_reference(int cut, int res, double hz)
+{
+    int q=(40<<8)+cut*(60<<8)/50,i=q>>8;
+    int gq=SVF_G[i];if(i<127)gq+=((SVF_G[i+1]-gq)*(q&255))>>8;
+    double g=gq/4096.0,w=tan(3.14159265358979323846*hz/FS);
+    double k=(8192-res*7600/127)/4096.0;
+    return w*w/hypot(g*g-w*w,k*g*w);
+}
 int main(void)
 {
-    puts("cutoff | 100 Hz | 1000 Hz | 5000 Hz");
-    for (int cut = -50; cut <= 50; cut += 10)
-        printf("%+6d | %6.4f | %7.4f | %7.4f\n",
-               cut, response(cut, 0, 100),
-               response(cut, 0, 1000), response(cut, 0, 5000));
-
-    double hp25bass = response(25, 0, 100);
-    double hp50bass = response(50, 0, 100);
-    double hp25treble = response(25, 0, 5000);
-    double lp25treble = response(-25, 0, 5000);
-    double lp50treble = response(-50, 0, 5000);
-    double lp25bass = response(-25, 0, 100);
-
-    /* Only output polarity reverses: the original frequency curves stay.
-     * Thus increasing magnitude opens these new LP/HP selections. */
-    if (!(hp50bass > hp25bass && hp25bass < 0.5 &&
-          hp25treble > hp25bass &&
-          lp50treble > lp25treble && lp25treble < 0.5 &&
-          lp25bass > lp25treble)) {
-        fprintf(stderr, "FAIL: negative LP / positive HP with unchanged frequency curves\n");
-        return 1;
-    }
-
-    for (int res = 0; res <= 127; res += 127) {
-        if (fabs(response(0, res, 100) - 1.0) > 0.000001 ||
-            fabs(response(0, res, 5000) - 1.0) > 0.000001) {
-            fprintf(stderr, "FAIL: zero-cutoff bypass\n");
-            return 1;
+    const int cuts[]={-50,-25,-1,0,1,25,50};
+    puts("cutoff | 100 Hz | 1000 Hz | 5000 Hz | 20000 Hz | 21000 Hz");
+    for(unsigned i=0;i<sizeof cuts/sizeof cuts[0];i++)
+        printf("%+6d | %.5f | %.5f | %.5f | %.5f | %.5f\n",cuts[i],
+            response(cuts[i],0,100),response(cuts[i],0,1000),
+            response(cuts[i],0,5000),response(cuts[i],0,20000),response(cuts[i],0,21000));
+    double lp=2,hp=2;
+    for(int mag=1;mag<=50;mag++){
+        double treble=response(-mag,0,5000),bass=response(mag,0,100);
+        CHECK(treble<=lp+0.001);CHECK(bass<=hp+0.001);lp=treble;hp=bass;
+        CHECK(response(-mag,0,100)>response(-mag,0,20000)); /* LP polarity */
+        CHECK(response(mag,0,21000)>bass); /* HP polarity */
+        for(int res=0;res<=127;res+=127)for(int hz=20000;hz<=21000;hz+=1000){
+            double actual=response(mag,res,hz),expected=hp_reference(mag,res,hz);
+            CHECK(fabs(actual-expected)<0.025); /* HP alone, no extra LP rolloff */
+            CHECK(hz!=21000 || actual>0.90);
         }
     }
-
-    puts("PASS: bipolar frequency response and exact bypass");
+    CHECK(response(-1,0,1000)>0.90 && response(1,0,1000)>0.90); /* nearly open */
+    CHECK(response(-50,0,1000)<0.10 && response(50,0,100)<0.002); /* closed */
+    for(int res=0;res<=127;res+=127)for(int hz=100;hz<=20100;hz+=5000)
+        CHECK(response(0,res,hz)==1.0);
+    printf("PASS: %u checks; negative LP lowers cutoff, positive HP raises cutoff; HP treble and exact bypass\n",checks);
     return 0;
 }
