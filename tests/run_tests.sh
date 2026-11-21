@@ -211,6 +211,8 @@ $CC -o "$OUT/home_levels_unit_test" tests/home_levels_unit_test.c
 run "HOME levels: smoothing, independent mailboxes, intensity, rest, timing and bounds" "$OUT/home_levels_unit_test"
 
 if [ -f build/gen/felucca_tables.h ]; then
+    $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/grain_filter_transition_test" tests/grain_filter_transition_test.c -lm
+    run "GRAIN filter: exact dry bypass, zero/polarity fades and modulation" "$OUT/grain_filter_transition_test"
     $CC -w -ffp-contract=off -Ibuild/gen -Ifirmware/src -o "$OUT/home_levels_test" tests/home_levels_test.c -lm
     run "HOME levels: actual four-part audio, stereo spread and hidden-page gating" "$OUT/home_levels_test" "$OUT/home_levels_on.pcm"
     $CC -w -ffp-contract=off -DFELUCCA_HOME_LEVELS=0 -Ibuild/gen -Ifirmware/src -o "$OUT/home_levels_reference" tests/home_levels_test.c -lm

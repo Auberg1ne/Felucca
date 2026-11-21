@@ -81,7 +81,7 @@ static int render(void)
     for(unsigned type=0;type<4;type++)for(int cut=-50;cut<=50;cut++)for(unsigned r=0;r<2;r++)for(unsigned sign=0;sign<2;sign++)for(unsigned st=0;st<NELEM(states);st++)for(unsigned ramp=0;ramp<NELEM(ramps);ramp++) {
         unsigned count=(unsigned[]){0,1,17,CTL,CTL+7}[cases%5],n=count>CTL?CTL:count;
         t->p[P_GTYPE]=type;t->p[P_GCUT]=cut;t->p[P_GRES]=r?127:0;
-        v->s[0]=0;v->s[1]=100000;v->s[2]=321;v->s[3]=states[st][0];v->s[4]=states[st][1];v->s[6]=GR_TONE_UNITY;
+        v->s[0]=0;v->s[1]=100000;v->s[7]=-1;v->s[2]=321;v->s[3]=states[st][0];v->s[4]=states[st][1];v->s[6]=GR_TONE_UNITY;
         for(unsigned j=0;j<GR_NG;j++) {
             gr_grain_t *g=&p->g[j];memset(g,0,sizeof *g);g->owner=1;g->z=gr_zone(3,0);g->left=CTL*2;
             g->a=g->b=sign?30000:-30000;g->step=256;g->wph=128u<<24;g->gain=32767;
@@ -105,8 +105,21 @@ static int render(void)
         int cut=(int)(b%101)-50,res=(b&1)?127:0;t->p[P_GCUT]=cut;t->p[P_GRES]=res;
         v->s[1]=100000;for(unsigned g=0;g<GR_NG;g++){p->g[g].owner=1;p->g[g].left=CTL*2;p->g[g].a=p->g[g].b=b&1?30000:-30000;p->g[g].frac=0;}
         int32_t a=v->s[3],d=v->s[4],y=v->s[2],out[CTL]={0},expected[CTL];tsvf_t c;vmod_t m={0};m.amp0=65527;m.amp1=0;
-        if(cut)tsvf_coef(&c,cut<0?(40<<8)+(-cut)*(60<<8)/50:(46<<8)+(50-cut)*(54<<8)/50,res);
-        for(unsigned i=0;i<CTL;i++){y=cut?ref_filter(&c,b&1?65535:-65535,8192-res*7600/127,&a,&d,cut<0):(b&1?65535:-65535);expected[i]=ref_output(0,y,&m,i);}
+        /* The transition now has an explicit dry/wet weight. Check the
+         * new ramp against the existing wide SVF/amplitude reference. */
+        uint32_t state=(uint32_t)v->s[7],wet=state&511u;
+        int running=(int)(state>>9)-50;
+        if(v->s[7]<0 || wet>256 || running< -50 || running>50 || !running){running=cut;wet=v->s[7]<0&&cut?256:0;}
+        if(!wet){a=d=0;running=cut;}
+        int toward=cut && ((cut<0)==(running<0));if(toward)running=cut;
+        if(running)tsvf_coef(&c,running<0?(40<<8)+(-running)*(60<<8)/50:(46<<8)+(50-running)*(54<<8)/50,res);
+        for(unsigned i=0;i<CTL;i++){
+            int32_t x=b&1?65535:-65535;
+            y=running?ref_filter(&c,x,8192-res*7600/127,&a,&d,running<0):x;
+            int32_t mixed=(int32_t)((__int128)x+(((__int128)y-x)*wet)/256);
+            expected[i]=ref_output(0,mixed,&m,i);
+            if(toward){if(wet<256)wet++;}else if(wet)wet--;
+        }
         grain_render(t,v,out,CTL,&m);REQUIRE(!memcmp(out,expected,sizeof out));REQUIRE(abs(v->s[3])<=150000 && abs(v->s[4])<=150000);
     }
     printf("GRAIN actual render reference cases=%u; live transitions=4096\n",cases);

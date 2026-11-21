@@ -39,7 +39,7 @@
  * (gr_part_t, in the part's engine memory: engines.c eng_mem), the random numbers outside it (gr_rng: they run on
  * over notes and engine switches); per voice s[0] the zone, s[1] the countdown to the next grain,
  * s[2] filter output, s[3..4] resonant filter state, s[5] TONE sample state,
- * s[6] TONE coefficient Q14. ph[0] is fallback sine phase, ph[1] STUTTER phase. */
+ * s[6] TONE coefficient Q14; s[7] packed filter fade/last cutoff (-1 fresh). ph[0] is fallback sine phase, ph[1] STUTTER phase. */
 /* Production WIN uses the validated tables/morph and original endpoint ramp.
  * Test selectors/fidelity remain separate opt-in experiments. */
 #include "grain_tukey.h"
@@ -555,6 +555,7 @@ static void grain_note_on(track_t *t, voice_t *v)
         v->s[4] = 0;
         v->s[5] = 0;
         v->s[6] = gr_tone_coef(t->p[P_E7]);
+        v->s[7] = -1; /* first render may start fully wet; no preceding dry audio */
     }
 }
 
@@ -595,18 +596,71 @@ static int32_t gr_output(int32_t previous, int32_t sample, const vmod_t *m, uint
     return sum > INT32_MAX ? INT32_MAX : sum < INT32_MIN ? INT32_MIN : (int32_t)sum;
 }
 
+/* A 256-sample (~5.8 ms) linear dry/wet fade. s[7] owns a 9-bit
+ * weight plus the last nonzero cutoff+50. A polarity reversal goes through
+ * dry before starting the other filter. Keep integrators until fully dry;
+ * only then reset, so re-entry never exposes a reset at full wet gain.
+ * No voice/part growth and no changes to steady nonzero coefficients. */
+#define GR_FILTER_FADE 256u
+static void gr_filter(voice_t *v, const int32_t *acc, int32_t *out, uint32_t n,
+                      const vmod_t *m, int32_t cutoff, int32_t resonance)
+{
+    uint32_t state = (uint32_t)v->s[7];
+    uint32_t wet = state & 511u;
+    int32_t running = (int32_t)(state >> 9) - 50;
+    if (v->s[7] < 0 || wet > GR_FILTER_FADE || running < -50 || running > 50 || !running) {
+        running = cutoff;
+        wet = v->s[7] < 0 && cutoff ? GR_FILTER_FADE : 0u;
+    }
+    if (!wet) {
+        v->s[2] = v->s[3] = v->s[4] = 0;
+        running = cutoff;
+    }
+    if (!running) { /* settled exact dry path, including the amplitude ramp */
+        for (uint32_t i = 0; i < n; i++)
+            out[i] = gr_output(out[i], clamp(acc[i], -65535, 65535), m, i);
+        v->s[7] = 0;
+        return;
+    }
+    int toward = cutoff && ((cutoff < 0) == (running < 0));
+    if (toward) running = cutoff;
+    int32_t cut = running < 0
+        ? (40 << 8) + ((-running) * (60 << 8) / 50)
+        : (46 << 8) + ((50 - running) * (54 << 8) / 50);
+    int32_t ic1 = v->s[3], ic2 = v->s[4], y = v->s[2];
+    int32_t k = 8192 - resonance * 7600 / 127;
+    tsvf_t fc;
+    tsvf_coef(&fc, cut, resonance);
+    for (uint32_t i = 0; i < n; i++) {
+        int32_t x = clamp(acc[i], -65535, 65535);
+        int32_t old_ic1 = ic1;
+        int32_t lp = tsvf_lp(&fc, x, &ic1, &ic2);
+        int32_t bp = (ic1 + old_ic1) >> 1;
+        int32_t hp = x - ((k * bp) >> 12) - lp;
+        y = running > 0 ? lp : hp;
+        /* Wide intermediate: filter excursions may exceed the dry accumulator.
+         * Division by constant preserves exact dry/wet endpoints and bounds. */
+        int32_t mixed = wet == GR_FILTER_FADE ? y :
+            x + (int32_t)(((int64_t)y - x) * wet / GR_FILTER_FADE);
+        out[i] = gr_output(out[i], mixed, m, i);
+        if (toward) { if (wet < GR_FILTER_FADE) wet++; }
+        else if (wet) wet--;
+    }
+    if (!wet) { v->s[2] = v->s[3] = v->s[4] = 0; }
+    else { v->s[2] = y; v->s[3] = ic1; v->s[4] = ic2; }
+    v->s[7] = (int32_t)(wet | (uint32_t)(running + 50) << 9);
+}
+
 static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const vmod_t *m)
 {
     gr_part_t *P = gr_of(t);
     const int16_t *p = t->p;
     uint32_t vi = (uint32_t)(v - t->v) % NVOICE, i, mine = 0, nact = 0, iv;
     int32_t zl = v->s[0], acc[CTL];
-    int32_t ic1 = v->s[3], ic2 = v->s[4], y = v->s[2];
     /* Combine the saved/step-locked bipolar cutoff with per-voice
      * LFO, envelope and modulation-matrix filter destinations. */
-    int32_t cutoff = clamp((int32_t)p[P_GCUT] + m->cutoff / 256, -50, 50), cut, k;
+    int32_t cutoff = clamp((int32_t)p[P_GCUT] + m->cutoff / 256, -50, 50);
     uint32_t fallback = (zl == GR_SINE);
-    tsvf_t fc;
 
     if (n > CTL)
         n = CTL;
@@ -692,36 +746,7 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
 
     gr_tone(v, acc, n, gr_tone_coef(p[P_E7]));
 
-    /* Zero is a genuine bypass; negative is HP, positive is LP. */
-    if (cutoff == 0) {
-        for (i = 0; i < n; i++) {
-            out[i] = gr_output(out[i], clamp(acc[i], -65535, 65535), m, i);
-        }
-        v->s[2] = 0;
-        v->s[3] = 0;
-        v->s[4] = 0;
-        return;
-    }
-
-    cut = cutoff < 0
-        ? (40 << 8) + ((-cutoff) * (60 << 8) / 50)
-        : (46 << 8) + ((50 - cutoff) * (54 << 8) / 50);
-    tsvf_coef(&fc, cut, p[P_GRES]);
-    k = 8192 - p[P_GRES] * 7600 / 127;
-
-    for (i = 0; i < n; i++) {
-        int32_t x = clamp(acc[i], -65535, 65535);
-        int32_t old_ic1 = ic1;
-        int32_t lp = tsvf_lp(&fc, x, &ic1, &ic2);
-        int32_t bp = (ic1 + old_ic1) >> 1;
-        int32_t hp = x - ((k * bp) >> 12) - lp;
-        y = cutoff > 0 ? lp : hp;
-        out[i] = gr_output(out[i], y, m, i);
-    }
-
-    v->s[3] = ic1;
-    v->s[4] = ic2;
-    v->s[2] = y;
+    gr_filter(v, acc, out, n, m, cutoff, p[P_GRES]);
 }
 
 static const preset_t GRAIN_PRESETS[] = {
