@@ -23,7 +23,14 @@ static int short_windows(void){
  for(unsigned len=16;len<=128;len++)for(unsigned offset=0;offset<CTL;offset++)for(unsigned rev=0;rev<2;rev++){
   gr_part_t p={0};gr_grain_t*g=&p.g[0];g->z=&SMP_ZONES[0];g->owner=1;g->window=192;g->rev=rev;g->a=g->b=16000;g->gain=32767;g->left=len;g->winc=UINT32_MAX/len;g->pos=1;
   unsigned nonzero=0,done=0;while(g->owner){struct{int32_t pre,v[CTL],post;}out={.pre=12345,.post=67890};unsigned n=done?CTL:CTL-offset;
-   gr_run(&p,g,out.v,n);REQUIRE(out.pre==12345&&out.post==67890);for(unsigned j=0;j<n;j++){field(out.v[j]);nonzero+=out.v[j]!=0;}done++;}
+   /* Preserve Step 237's historical short-envelope hash; the production
+    * correction has a separate exhaustive non-silence/state gate. */
+#ifdef GRANULAR_QUALITY_LEGACY_SHORT_PROBE
+   gr_run_block(&p,g,out.v,n);
+#else
+   gr_run(&p,g,out.v,n);
+#endif
+   REQUIRE(out.pre==12345&&out.post==67890);for(unsigned j=0;j<n;j++){field(out.v[j]);nonzero+=out.v[j]!=0;}done++;}
   short_silent+=!nonzero;
  }
  return 0;

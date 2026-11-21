@@ -30,6 +30,10 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
         # Existing mixer/ADPCM paths intentionally use signed wrap and shifts.
         # Bounds/object/pointer checks remain enabled in this new harness.
         flags += ['-fsanitize=address,undefined','-fno-sanitize=signed-integer-overflow,shift','-fno-sanitize-recover=all','-fno-omit-frame-pointer']
+    # The frozen short probe records the old defect. Keep it as a legacy
+    # oracle while the new short-envelope gate verifies corrected rendering.
+    if not a.freeze:
+        flags += ['-DGRANULAR_QUALITY_LEGACY_SHORT_PROBE=1']
     exe = str(out/'granular-quality')
     run(shlex.split(os.environ.get('CC','cc'))+flags+['tests/granular_quality_test.c','-lm','-o',exe])
     for kind, name in enumerate(['CLOUD','FREEZE','STUTTER','SHIMMER']):
@@ -45,6 +49,15 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
     run(shlex.split(os.environ.get('CC','cc'))+flags+['tests/granular_quality_storage_test.c','-lm','-o',storage])
     r=run([storage],capture_output=True,text=True)
     result['storage']=json.loads(r.stdout)
+    if not a.freeze:
+        # The fix must pass alongside its retained legacy oracle. No sanitizer
+        # exclusions on the new numerical/decoder kernel gate.
+        kernel=str(out/'grain-short-envelope')
+        strict=[f for f in flags if f != '-fno-sanitize=signed-integer-overflow,shift']
+        run(shlex.split(os.environ.get('CC','cc'))+strict+['tests/grain_short_envelope_test.c','-lm','-o',kernel])
+        r=run([kernel],capture_output=True,text=True)
+        (out/'grain-short-envelope.log').write_text(r.stdout+r.stderr)
+        print(r.stdout.strip(),flush=True)
     if a.freeze:
         fixture.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
     else:

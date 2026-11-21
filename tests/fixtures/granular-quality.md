@@ -107,6 +107,14 @@ archived base sources were also used to reproduce the shipping failures with
 the same generated headers/submodule. No existing test assertions or goldens
 were edited. This was focused regression validation, not the entire host runner.
 
+## Step238 correction
+
+The original JSON remains unchanged. The runner keeps its306-count short probe
+on the legacy block kernel and now also requires the corrected production
+short-envelope gate to pass. All24 mixer captures still exercise production
+rendering. See `docs/grain-short-envelope-fix.md` for the306 ->0 evidence,
+strict checks, intentional short-only differences and resource measurements.
+
 ## Use for subsequent work
 
 Suitable as the pre-change short-envelope baseline: compare legacy/default

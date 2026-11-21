@@ -442,7 +442,7 @@ static inline int32_t gr_experiment_win(const gr_grain_t *g, uint32_t phase)
 
 /* one grain into acc; returns 0 when it ended. The window (times the grain's level) is a
  * linear ramp over the block between its exact values at the block's ends. */
-static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
+static int gr_run_block(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
 {
     uint32_t i, m = n < g->left ? n : g->left, step = g->step, pos = g->pos;
     int32_t a = g->a, b = g->b, frac = g->frac, w0, w1, wq, dq;
@@ -452,7 +452,11 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     g->left -= m;
     w1 = g->left ? mulq15(GR_RENDER_WIN(g, g->wph), g->gain) : 0;
     wq = w0 * 1024;
-    dq = m == CTL ? ((w1 - w0) * 1024) >> CTL_LOG2 : m ? (w1 - w0) * 1024 / (int32_t)m : 0;
+    /* Exact division by four, including negative slopes, without a runtime
+     * divide in the common short-grain fragment. */
+    dq = m == CTL ? ((w1 - w0) * 1024) >> CTL_LOG2
+       : m == 4u ? (w1 - w0) * 256
+       : m ? (w1 - w0) * 1024 / (int32_t)m : 0;
     if (!g->rev) {
         int32_t pred = g->pred, idx = g->idx;
         for (i = 0; i < m; i++) {
@@ -493,6 +497,24 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     g->frac = frac;
     if (!g->left)
         g->owner = 0;
+    return g->left != 0;
+}
+
+/* A whole <=32-frame grain can fit between two zero window endpoints. Only
+ * those grains use <=4-frame ramps, sampling the window interior. winc is
+ * immutable: a long grain's short tail keeps the exact legacy path. Reuse the
+ * decoder unchanged; at most eight fragments for the normal CTL=32 call. */
+static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
+{
+    if (g->winc < UINT32_MAX / 32u || !g->left || !n)
+        return gr_run_block(P, g, acc, n);
+    uint32_t done = 0;
+    while (done < n && g->left) {
+        uint32_t fragment = n - done;
+        if (fragment > 4u) fragment = 4u;
+        gr_run_block(P, g, acc + done, fragment);
+        done += fragment;
+    }
     return g->left != 0;
 }
 
