@@ -57,7 +57,7 @@ static int real_cache(void){
 int main(int argc,char **argv){
  FILE *f=argc>1?fopen(argv[1],"w"):0;if(argc>1)CHECK(f);
  if(f)fprintf(f,"length,offset,reverse,window,method,cap,error_RMS,output_RMS,peak,max_jump,silent\n");
- CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7296 && sizeof(track_t)==1840);
+ CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7320 && sizeof(track_t)==1840);
  for(unsigned len=1;len<=128;len++)for(unsigned off=0;off<32;off++)for(unsigned rev=0;rev<2;rev++)for(unsigned w=0;w<NELEM(windows);w++)for(unsigned method=0;method<5;method++)
   if(run(len,off,rev,0,32767,windows[w],method==4?2:method?1:0,method==1?4:method==2?8:16,f))return 1;
  const unsigned longlen[]={129,441,4410,86432};

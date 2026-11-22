@@ -116,6 +116,15 @@ typedef struct {
     uint16_t frac, target;       /* last admitted POS + SHP, Q8 in 0..127 */
 } gr_head_t;
 
+/* Audio-owned DRIFT foundation. Q32 timebase and signed Q24 fraction of zone
+ * length; displacement is reserved/zero in 243A and is NOT read by spawning. */
+typedef struct { uint32_t phase; int32_t displacement; } gr_drift_t;
+_Static_assert(sizeof(gr_drift_t) == 8u, "DRIFT owns two 32-bit words per voice");
+#define GR_DRIFT_PHASE_STEP 4869u /* per output frame: approximately 20 seconds/turn */
+#define GR_DRIFT_LIMIT (1 << 21)  /* future displacement bound: +/-1/8 zone */
+static void gr_drift_reset(gr_drift_t *d) { d->phase = 0; d->displacement = 0; }
+static void gr_drift_tick(gr_drift_t *d, uint32_t n) { d->phase += GR_DRIFT_PHASE_STEP * n; }
+
 typedef struct {
     gr_grain_t g[GR_NG];
     int16_t rb[GR_NG][GR_RB];    /* reverse windows */
@@ -128,9 +137,10 @@ typedef struct {
     gr_head_t head[GR_POLY];     /* shared source position per voice */
     uint8_t head_zl[GR_POLY];    /* zone associated with each source head */
     uint8_t win_snapshot;        /* audio-owned block snapshot; existing tail padding */
+    gr_drift_t drift[GR_POLY];    /* separate from scanning head, RNG and voice ph/s */
 } gr_part_t;
 _Static_assert(sizeof(gr_grain_t) == (sizeof(void *) == 8u ? 64u : 56u), "GRAIN latch must not grow record");
-_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7296u : 7200u), "GRAIN snapshot must not grow part");
+_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7320u : 7224u), "GRAIN DRIFT foundation: exactly 24 bytes of reserved engine region");
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
 static int32_t gr_rng[NPART];
 
@@ -241,6 +251,7 @@ static void gr_reset(gr_part_t *P, uint32_t src, uint32_t stamp)
     for (i = 0; i < GR_POLY; i++) {
         P->head[i] = (gr_head_t){0};
         P->head_zl[i] = 0xFFu;
+        gr_drift_reset(&P->drift[i]);
     }
     for (i = 0; i < P->nz; i++) {
         uint32_t c = (gr_zone(src, i)->n + GR_SEG - 1u) >> GR_SEG_LOG2;
@@ -580,7 +591,9 @@ static void grain_note_on(track_t *t, voice_t *v)
 {
     gr_part_t *P = gr_of(t);
     uint32_t vi = (uint32_t)(v - t->v) % NVOICE, i;
+    int32_t old_zone = v->s[0];
     v->s[0] = gr_find((uint32_t)t->p[P_E0] % SMP_NALL, v->note);
+    if (vi < GR_POLY && (!v->env || old_zone != v->s[0])) gr_drift_reset(&P->drift[vi]);
     P->head[vi] = (gr_head_t){0};
     P->head_zl[vi] = 0xFFu;
     v->s[1] = 0;                                    /* the first grain at once */
@@ -615,6 +628,10 @@ static void grain_block(track_t *t)
     for (i = 0; i < GR_NG; i++)
         if (P->g[i].owner && !t->v[(P->g[i].owner - 1u) % NVOICE].active)
             P->g[i].owner = 0;
+    for (i = 0; i < GR_POLY; i++)
+        if ((P->drift[i].phase || P->drift[i].displacement) &&
+            (!t->v[i].active || t->v[i].s[0] < 0 || t->v[i].s[0] >= P->nz ||
+             (uint32_t)t->p[P_GTYPE] != 1u)) gr_drift_reset(&P->drift[i]);
     gr_build(P, t);
     /* track_render calls this once after mod_begin, before all voices. Main
      * control writers cannot run during the audio ISR/C1 job; TIMER5 defers
@@ -754,6 +771,10 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
                 v->active = 0;
             return;
         }
+
+        /* State-only foundation: no displacement calculation or position read. */
+        if (vi < GR_POLY && (uint32_t)p[P_GTYPE] == 1u && p[P_GRC] > 0)
+            gr_drift_tick(&P->drift[vi], n);
 
         for (i = 0; i < GR_POLY; i++)
             nact += t->v[i].active;

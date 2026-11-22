@@ -25,6 +25,6 @@ int main(void){
  }
  turn(EN_SELECT,2);int bpm=song.g[G_BPM];btn_down(B_GLO);frame();turn(EN_SELECT,1);btn_up(B_GLO);frame();frames(320);CHECK(song.g[G_BPM]>bpm && grain_edit_row==2);
  press(B_EDIT);CHECK(grain_grid_page(cur_page())==2 && grain_edit_row==0);frames(400);press(B_EDIT);CHECK(grain_grid_page(cur_page())==1 && grain_edit_row==0);
- CHECK(!motion_param(109));CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7296 && sizeof(track_t)==1840);
+ CHECK(!motion_param(109));CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7320 && sizeof(track_t)==1840);
  printf("WIN device UI: %u checks passed; full values/four tracks, mapping, modifiers and no learn/automation\n",checks);return 0;
 }

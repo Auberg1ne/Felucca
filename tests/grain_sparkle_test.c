@@ -5,7 +5,7 @@ static unsigned checks,accents,chosen_count[6];
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"sparkle %u: %s\n",__LINE__,#x);return 1;}}while(0)
 int main(void){
  ui_power_on();track_t*t=&trk[0];static gr_part_t indexed,p;const unsigned src[]={0,2,3,13,14};
- CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7296 && sizeof(track_t)==1840);
+ CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7320 && sizeof(track_t)==1840);
  for(unsigned s=0;s<5;s++){
   host_preset(t,ENGI_GRAIN,0);t->p[P_E0]=src[s];gr_reset(&indexed,src[s],gr_stamp(src[s]));
   for(unsigned i=0;i<GR_NIDX;i++)gr_build(&indexed,t);

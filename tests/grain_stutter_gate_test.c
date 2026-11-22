@@ -86,6 +86,6 @@ static int bench(void){
 }
 int main(int argc,char**argv){
  if(argc==2&&!strcmp(argv[1],"--bench"))return bench();
- CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7296);CHECK(!sweep());CHECK(!fragments());CHECK(!render_phase());metrics();
+ CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7320);CHECK(!sweep());CHECK(!fragments());CHECK(!render_phase());metrics();
  printf("STUTTER gate: %llu checks; %llu rate/gate settings; unity/support/centroid/signed symmetry/block and uint32 wrap passed\n",(unsigned long long)checks,(unsigned long long)gate_settings);return 0;
 }

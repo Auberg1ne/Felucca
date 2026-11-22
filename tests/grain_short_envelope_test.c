@@ -77,7 +77,7 @@ static int bench(void){
 }
 int main(int argc,char**argv){
  if(argc==2&&!strcmp(argv[1],"--bench"))return bench();
- CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7296);
+ CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7320);
  for(unsigned len=16;len<=128;len++)for(unsigned offset=0;offset<32;offset++)for(unsigned rev=0;rev<2;rev++)for(unsigned win=0;win<128;win++)for(unsigned sign=0;sign<2;sign++)if(held(len,offset,rev,win,sign?-32768:32767))return 1;
  CHECK(silent_old==306&&silent_new==0);CHECK(error_new<error_old);CHECK(!decoder());CHECK(!fitted());
  printf("short envelope: %llu cases; %llu checks; Hann silent %llu -> %llu / 7232; all128 windows; %llu changed short renders; squared error %.0f -> %.0f; decoder/state exact\n",(unsigned long long)cases,(unsigned long long)checks,(unsigned long long)silent_old,(unsigned long long)silent_new,(unsigned long long)changed_short,error_old,error_new);return 0;

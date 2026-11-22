@@ -5,7 +5,7 @@ static unsigned checks;
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"WIN I2 latch %u: %s\n",__LINE__,#x);return 1;}}while(0)
 static unsigned occupied(const gr_part_t*p){unsigned n=0;for(unsigned i=0;i<GR_NG;i++)n+=p->g[i].owner!=0;return n;}
 int main(void){
- _Static_assert(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7296 && sizeof(track_t)==1840,"host state growth");
+ _Static_assert(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7320 && sizeof(track_t)==1840,"host state growth");
  CHECK(offsetof(gr_grain_t,window)==offsetof(gr_grain_t,zl)+1);
  CHECK(offsetof(gr_part_t,win_snapshot)==offsetof(gr_part_t,head_zl)+GR_POLY);
  ui_power_on();vmod_t m={0};m.pitch16=960;m.shape=64<<8;
