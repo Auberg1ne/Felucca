@@ -59,7 +59,8 @@ int main(int argc,char**argv){
   if(p<tracks)trk_note_on(t,60+2*p,100);
  }
  FILE*f=fopen(argv[3],"wb");REQUIRE(f);audio_stats_t stats={0};unsigned crosses=0;int lastcut[4]={0};
- for(unsigned b=0;b<2048;b++){
+ unsigned blocks=getenv("GRAIN_BLOCKS")?atoi(getenv("GRAIN_BLOCKS")):2048;REQUIRE(blocks>=2048&&blocks<=65536);
+ for(unsigned b=0;b<blocks;b++){
   uint32_t before[4];for(unsigned p=0;p<tracks;p++)before[p]=gr_rng[gr_part(&trk[p])];
   if(scenario==4||scenario==5)for(unsigned p=0;p<tracks;p++)trk[p].p[P_GCUT]=(int[]){0,-1,-25,-50,0,1,25,50}[b/32%8];
   if(getenv("GRC_LIVE"))for(unsigned p=0;p<tracks;p++)trk[p].p[P_GRC]=!strcmp(getenv("GRC_LIVE"),"chaos")?(int[]){0,100,0,25,50,100,0,50}[b/128%8]:(int[]){0,100,25,50}[b/128%4];
@@ -80,6 +81,9 @@ int main(int argc,char**argv){
    REQUIRE(load<=GR_LOAD_MAX && active<=GR_NG);if(load>maxload)maxload=load;if(active>maxactive)maxactive=active;field(load);
   }
  }
+#ifdef GR_DRIFT_PHASE_STEP
+ if(getenv("DRIFT_REPORT"))fprintf(stderr,"DRIFT %u %d\n",gr_of(&trk[0])->drift[0].phase,gr_of(&trk[0])->drift[0].displacement);
+#endif
  REQUIRE(!fclose(f));REQUIRE(audio_stats_sounding(&stats,2,0.1));REQUIRE(admitted>0);if(scenario==3)REQUIRE(reverse>0);if(scenario==4)REQUIRE(crosses>10);
  printf("{\"short_silent\":%u,\"state_fnv64\":\"%016llx\",\"rng_draws\":[%u,%u,%u,%u],\"admitted\":%u,\"reverse_admitted\":%u,\"max_load_q16\":%u,\"max_active\":%u,\"filter_changes\":%u,\"peak\":%.0f,\"rms\":%.6f,\"nonzero\":%llu}\n",short_silent,(unsigned long long)state,draws[0],draws[1],draws[2],draws[3],admitted,reverse,maxload,maxactive,crosses,stats.peak,audio_stats_rms(&stats),(unsigned long long)stats.nonzero);
  return 0;

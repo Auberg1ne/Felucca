@@ -18,7 +18,7 @@ int main(void){
   uint32_t expected=0;for(unsigned b=0;b<4096;b++){
    unsigned c=(unsigned[]){0,100,0,25,50,100,0,50}[b/128%8];t->p[P_GRC]=c;grain_block(t);
    uint32_t ph[3];memcpy(ph,v->ph,sizeof ph);struct{int32_t pre,out[CTL],post;}out={.pre=12345,.post=67890};grain_render(t,v,out.out,CTL,&m);if(c)expected+=CTL*GR_DRIFT_PHASE_STEP;
-   CHECK(P->drift[0].phase==expected&&P->drift[0].displacement==0);CHECK(out.pre==12345&&out.post==67890);CHECK(!memcmp(v->ph,ph,sizeof ph));
+   CHECK(P->drift[0].phase==expected&&abs(P->drift[0].displacement)<=GR_DRIFT_LIMIT);CHECK(out.pre==12345&&out.post==67890);CHECK(!memcmp(v->ph,ph,sizeof ph));
    song.sel=(ch+b)%NTRK;CHECK(P==gr_of(t));
   }
   /* Rendering one voice cannot move another voice's clock. */
@@ -33,10 +33,10 @@ int main(void){
   v->s[0]=0;P->drift[0]=(gr_drift_t){7,9};t->p[P_GTYPE]=2;grain_block(t);CHECK(!P->drift[0].phase&&!P->drift[0].displacement);t->p[P_GTYPE]=1;
   P->drift[0]=(gr_drift_t){7,9};t->p[P_E0]=13;grain_block(t);CHECK(!P->drift[0].phase&&!P->drift[0].displacement);
   P->drift[0]=(gr_drift_t){7,9};P->stamp^=1;grain_block(t);CHECK(!P->drift[0].phase&&!P->drift[0].displacement);
-  /* A future displacement must not affect today's grain spawn or other regions. */
+  /* Displacement may change source starts, never rate/head/gain/RNG or ownership. */
   gr_reset(P,3,gr_stamp(3));t->p[P_E0]=3;for(unsigned k=0;k<GR_NIDX;k++)gr_build(P,t);
   static gr_part_t first,second;*P=(gr_part_t){0};gr_reset(P,3,gr_stamp(3));for(unsigned k=0;k<GR_NIDX;k++)gr_build(P,t);first=*P;second=first;second.drift[0]=(gr_drift_t){UINT32_MAX,GR_DRIFT_LIMIT};
-  gr_rng[ch]=12345;gr_spawn_one(&first,t,0,0,1000,&m,0,32767);unsigned r=gr_rng[ch];gr_rng[ch]=12345;gr_spawn_one(&second,t,0,0,1000,&m,0,32767);CHECK(gr_rng[ch]==r);CHECK(!memcmp(&first,&second,7296));
+  gr_rng[ch]=12345;gr_spawn_one(&first,t,0,0,1000,&m,0,32767);unsigned r=gr_rng[ch];gr_rng[ch]=12345;gr_spawn_one(&second,t,0,0,1000,&m,0,32767);CHECK(gr_rng[ch]==r);CHECK(!memcmp(first.head,second.head,sizeof first.head));CHECK(first.g[0].step==second.g[0].step&&first.g[0].left==second.g[0].left&&first.g[0].gain==second.g[0].gain&&first.g[0].rev==second.g[0].rev);
  }
  /* Real user-zone reassignment and common voice-start lifecycle. */
  track_t*t=&trk[0];setup(t,3);gr_part_t*P=gr_of(t);voice_t*v=&t->v[0];usr_nz[0]=2;
@@ -57,5 +57,5 @@ int main(void){
   memset(eng_mem[ch].b,0x7b,ENGINES[ENGI_PHYS]->mem);trk[ch].engine=ENGI_GRAIN;eng_mem_claim(&trk[ch]);for(unsigned i=0;i<sizeof(gr_part_t);i++)CHECK(eng_mem[ch].b[i]==0);
 #endif
  }
- printf("DRIFT foundation: %u checks; clock wrap, lifecycle, zero displacement and reservation/engine ownership passed\n",checks);return 0;
+ printf("DRIFT foundation: %u checks; clock wrap, lifecycle, bounded displacement and reservation/engine ownership passed\n",checks);return 0;
 }

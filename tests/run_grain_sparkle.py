@@ -28,9 +28,9 @@ def render(binary,kind,scenario,c=0,source=None,live=False):
 for kind in range(4):
  for scenario in range(6):
   old,b=render('base',kind,scenario);new,n=render('new',kind,scenario);assert b==n and old==new;identities+=1
-  if kind not in (2,3) and scenario!=5:
+  if kind==0 and scenario!=5:
    d,c=render('new',kind,scenario,100);assert c==b and d==new;identities+=1
-print(f'{identities} exact base/C0 and non-SHIMMER C100 comparisons passed',flush=True)
+print(f'{identities} exact base/C0 and unaffected C100 comparisons passed',flush=True)
 for source in [0,2,3,13,14]:
  old,b=render('base',3,1,source=source);zero,z=render('new',3,1,source=source);assert b==z and old==zero
  outputs=[]

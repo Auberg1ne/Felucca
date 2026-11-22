@@ -116,14 +116,34 @@ typedef struct {
     uint16_t frac, target;       /* last admitted POS + SHP, Q8 in 0..127 */
 } gr_head_t;
 
-/* Audio-owned DRIFT foundation. Q32 timebase and signed Q24 fraction of zone
- * length; displacement is reserved/zero in 243A and is NOT read by spawning. */
+/* Audio-owned DRIFT: Q32 timebase and slewed signed Q24 fraction of zone length. */
 typedef struct { uint32_t phase; int32_t displacement; } gr_drift_t;
 _Static_assert(sizeof(gr_drift_t) == 8u, "DRIFT owns two 32-bit words per voice");
 #define GR_DRIFT_PHASE_STEP 4869u /* per output frame: approximately 20 seconds/turn */
-#define GR_DRIFT_LIMIT (1 << 21)  /* future displacement bound: +/-1/8 zone */
+#define GR_DRIFT_LIMIT (1 << 21)  /* displacement bound: +/-1/8 zone */
 static void gr_drift_reset(gr_drift_t *d) { d->phase = 0; d->displacement = 0; }
 static void gr_drift_tick(gr_drift_t *d, uint32_t n) { d->phase += GR_DRIFT_PHASE_STEP * n; }
+#define GR_DRIFT_SLEW 96u /* Q24 units/frame: full-depth return to zero <=0.496 s */
+static void gr_drift_update(gr_drift_t *d, int32_t control, uint32_t n)
+{
+    if (n > CTL) n = CTL;
+    uint32_t c = (uint32_t)clamp(control, 0, 100);
+    if (c) gr_drift_tick(d, n); /* preserve the foundation's C0 pause */
+    uint32_t depth = c * c * 32768u / 10000u;
+    int32_t target = sine_i(d->phase) * (int32_t)depth / 512;
+    int32_t current = clamp(d->displacement, -GR_DRIFT_LIMIT, GR_DRIFT_LIMIT);
+    int32_t step = (int32_t)(GR_DRIFT_SLEW * n);
+    d->displacement = current + clamp(target - current, -step, step);
+}
+/* Relative to zone length, further bounded by the grain's available start domain.
+ * Clamp before signed conversion/multiplication, including corrupt INT32_MIN. */
+static int32_t gr_drift_offset(const gr_drift_t *d, uint32_t n, uint32_t span)
+{
+    int32_t q = clamp(d->displacement, -GR_DRIFT_LIMIT, GR_DRIFT_LIMIT);
+    int32_t offset = (int32_t)(((int64_t)q * n) / 16777216);
+    int32_t bound = (int32_t)((n > 3u && span < n - 3u ? n - 3u - span : 0u) / 8u);
+    return clamp(offset, -bound, bound);
+}
 
 typedef struct {
     gr_grain_t g[GR_NG];
@@ -385,6 +405,10 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
         uint32_t width = gr_scale(n, chaos * chaos * 32768u / 10000u);
         pos += (int32_t)gr_scale(width, r2 >> 16) - (int32_t)(width >> 1);
     }
+    /* DRIFT changes only future FROZEN grain starts, never head or playback rate.
+     * A C0 release tail is applied until the owned displacement reaches zero. */
+    if ((uint32_t)p[P_GTYPE] == 1u && vi < GR_POLY && P->drift[vi].displacement)
+        pos += gr_drift_offset(&P->drift[vi], n, span);
     if (rev)
         pos = clamp(pos, (int32_t)span, (int32_t)n - 2);
     else
@@ -772,9 +796,9 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             return;
         }
 
-        /* State-only foundation: no displacement calculation or position read. */
-        if (vi < GR_POLY && (uint32_t)p[P_GTYPE] == 1u && p[P_GRC] > 0)
-            gr_drift_tick(&P->drift[vi], n);
+        if (vi < GR_POLY && (uint32_t)p[P_GTYPE] == 1u &&
+            (p[P_GRC] > 0 || P->drift[vi].displacement))
+            gr_drift_update(&P->drift[vi], p[P_GRC], n);
 
         for (i = 0; i < GR_POLY; i++)
             nact += t->v[i].active;
