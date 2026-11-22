@@ -143,11 +143,11 @@ static uint32_t ed_bk_commit(void)
         const up_bank_t *p = (const up_bank_t *)raw;
         if (ed_bk_len && (ed_bk_len != sizeof *p || p->magic != UP_BANK_MAGIC ||
             p->rsize != sizeof(up_rec_t) || p->nslot != UP_PER_BANK)) return 2;
-        if (grain_bank_readonly(&up_bank[ed_bk_id-6u]) || (ed_bk_len && grain_bank_readonly(p))) {
+        if (grain_bank_readonly(&up_bank[ed_bk_id-6u]) || (ed_bk_len && !up_bank_known(p))) {
             ui_message("GRAIN ONLY: PRESET BANK READ ONLY");
             return 2;
         }
-        /* Unknown record versions remain inert bytes, preserving future/older bank data. */
+        /* Physical ownership of BOTH copies is checked again before replacement/clear. */
         obj = OBJ_UPRESET0 + ed_bk_id - 6u;
     } else if (ed_bk_id == 8u) {                    /* an older archive's FM6 bank: into the restored user presets */
         if (!ed_bk_len) return 0;
@@ -168,7 +168,8 @@ static uint32_t ed_bk_commit(void)
         return upf_save() == 2 ? 4u : 0u;           /* (a failed write keeps the restored RAM copy) */
     } else return 1;
 #if FELUCCA_FLASH
-    if (!flash_ok || st_save(obj, raw, ed_bk_len)) return 4;
+    if (!flash_ok || ((ed_bk_id == 6u || ed_bk_id == 7u)
+        ? up_bank_save(ed_bk_id - 6u, raw, ed_bk_len) : st_save(obj, raw, ed_bk_len))) return 4;
 #else
     (void)obj;
 #endif

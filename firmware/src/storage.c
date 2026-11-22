@@ -169,6 +169,10 @@ static int st_load(uint32_t obj, void *dst, uint32_t max)
 }
 
 /* save into copy `to` (0 A, 1 B; -1: the one that is not the current copy, as st_save) */
+#define ST_OWNER_DENIED (-20) /* private: no erase was attempted */
+#if FELUCCA_FLASH && defined(NTRK) && !defined(UP_HOST)
+static int up_bank_inspect(uint32_t bank, st_hdr_t *selected, int *current); /* upreset.c */
+#endif
 static int st_save_to(uint32_t obj, const void *src, uint32_t len, int to)
 {
     uint32_t seq, base, off;
@@ -176,7 +180,14 @@ static int st_save_to(uint32_t obj, const void *src, uint32_t len, int to)
     st_hdr_t h;
     if (obj >= OBJ_COUNT || len > ST_PAYLOAD_MAX || to > 1)
         return -1;
-    cur = st_current(obj, &h);
+#if FELUCCA_FLASH && defined(NTRK) && !defined(UP_HOST)
+    if (obj >= OBJ_UPRESET0 && obj < OBJ_UPRESET0 + 2u) {
+        /* Selection comes from the same complete inspection. Do not perform
+         * a second, fallback-capable st_current read after establishing it. */
+        if (!up_bank_inspect(obj - OBJ_UPRESET0, &h, &cur)) return ST_OWNER_DENIED;
+    } else
+#endif
+        cur = st_current(obj, &h);
     seq = cur < 0 ? 0u : h.seq;
     if (to < 0)
         to = cur == 0 ? 1 : 0;                        /* write the other copy */

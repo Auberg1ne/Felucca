@@ -126,6 +126,19 @@ static int grain_bank_readonly(const up_bank_t *b)
         (!up_valid(&b->r[i]) || (FELUCCA_GRAIN_ONLY && !grain_engine_allowed(b->r[i].engine))))return 1;
     return 0;
 }
+/* A recognizable bank contains supported records or canonical zeroed empty
+ * records. Nonzero unused/reserved records are not permission to overwrite. */
+static int up_bank_known(const up_bank_t *b)
+{
+    if (b->magic != UP_BANK_MAGIC || b->rsize != sizeof(up_rec_t) || b->nslot != UP_PER_BANK || grain_bank_readonly(b))
+        return 0;
+    for (uint32_t i = 0; i < UP_PER_BANK; i++)
+        if (b->r[i].used != UP_USED) {
+            const uint8_t *p = (const uint8_t *)&b->r[i];
+            for (uint32_t j = 0; j < sizeof(up_rec_t); j++) if (p[j]) return 0;
+        }
+    return 1;
+}
 #endif
 static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_LEGACY_GRID || r->ver == UP_VER_GRID; }
 static int16_t up_value(const up_rec_t *r, uint32_t k) { return r->ver >= 4u ? (int16_t)r->packed[k] - 64 : r->p[k]; }
@@ -304,6 +317,57 @@ static void up_values(const up_rec_t *r, int16_t *v)   /* mapped and clamped for
 #include "up_fm6.c"                            /* the FM6 user presets' patches: the same kind of store */
 #include "fm6_vbank.c"                         /* FM6's voice bank (SLOT B1..B32, 1.4.1) */
 
+#if FELUCCA_FLASH
+/* Inspect BOTH physical copies, independently of the selected/cache image.
+ * Zero-length, CRC-valid objects are existing explicit bank-clear commits. */
+static int up_bank_inspect(uint32_t bank, st_hdr_t *selected, int *current)
+{
+    if (!flash_ok || bank >= UP_SLOTS / UP_PER_BANK) return 0;
+    st_hdr_t best;
+    int chosen = -1;
+    for (uint32_t copy = 0; copy < 2u; copy++) {
+        st_hdr_t h;
+        int state = st_copy_state(OBJ_UPRESET0 + bank, copy, &h);
+        if (state < 0) return 0;
+        if (!state) continue;
+        if (h.len && (h.len != sizeof(up_bank_t) || !up_bank_known((const up_bank_t *)st_buf))) return 0;
+        if (chosen < 0 || (h.seq != best.seq && h.seq - best.seq < 0x80000000u)) {
+            best = h;
+            chosen = (int)copy;
+        }
+    }
+    *current = chosen;
+    if (chosen >= 0) *selected = best;
+    return 1;
+}
+static int up_bank_writable(uint32_t bank)
+{
+    st_hdr_t h;
+    int copy;
+    return up_bank_inspect(bank, &h, &copy);
+}
+static int up_bank_save(uint32_t bank, const void *raw, uint32_t len)
+{
+    if (bank >= UP_SLOTS / UP_PER_BANK || (len && (len != sizeof(up_bank_t) || !up_bank_known(raw))))
+        return ST_OWNER_DENIED;
+    uint32_t obj = OBJ_UPRESET0 + bank;
+    st_hdr_t h;
+    int current;
+    if (!up_bank_inspect(bank, &h, &current)) return ST_OWNER_DENIED;
+    int to = current == 0 ? 1 : 0;
+    /* st_save_to rechecks physical ownership before its first erase. */
+    int rc = st_save_to(obj, raw, len, to);
+    if (rc && rc != ST_OWNER_DENIED) {
+        /* We owned this target immediately before THIS attempted write.
+         * Clean only our incomplete transaction, retaining the prior valid
+         * copy. Never infer this authority after reboot or guard rejection. */
+        if (st_copy_state(obj, (uint32_t)to, &h) == -1)
+            (void)st_erase(st_sector(obj, (uint32_t)to));
+    }
+    return rc;
+}
+#endif
+
 static void up_boot(void)                      /* persist_boot: the banks from flash */
 {
 #if FELUCCA_FLASH
@@ -314,8 +378,13 @@ static void up_boot(void)                      /* persist_boot: the banks from f
     upf_boot();                                  /* (after the banks: it may move the retired FM6 bank's patches) */
     fvb_boot();                                  /* FM6's voice bank: a staged one finished, its voices */
 #ifdef FELUCCA_FAVORITES
-    for (uint32_t k = 0; k < UP_SLOTS; k++)
-        if (!up_used(k)) favorite_set(NENGINES, k, 0);
+    for (uint32_t bank = 0; bank < UP_SLOTS / UP_PER_BANK; bank++) {
+#if FELUCCA_FLASH
+        if (!up_bank_writable(bank)) continue; /* invalid cache must not discard unknown favorites */
+#endif
+        for (uint32_t k = bank * UP_PER_BANK; k < (bank + 1u) * UP_PER_BANK; k++)
+            if (!up_used(k)) favorite_set(NENGINES, k, 0);
+    }
 #endif
 }
 
@@ -331,6 +400,7 @@ static int up_put(uint32_t k, const up_rec_t *r)
 #endif
     if (k >= UP_SLOTS)
         return 1;
+    if (r && !up_valid(r)) return 1;
     if((up_rec(k)->used==UP_USED && !up_valid(up_rec(k))) ||
        (FELUCCA_GRAIN_ONLY && ((up_rec(k)->used==UP_USED && !grain_engine_allowed(up_rec(k)->engine)) ||
        (r && !grain_engine_allowed(r->engine))))){ui_message("GRAIN ONLY: PRESET READ ONLY");return 1;}
@@ -342,6 +412,12 @@ static int up_put(uint32_t k, const up_rec_t *r)
         ui_message("STOP TO SAVE");
         return 2;
     }
+#if FELUCCA_FLASH
+    if (!up_bank_writable(k / UP_PER_BANK)) {
+        ui_message("PRESET BANK READ ONLY");
+        return 2;
+    }
+#endif
     bk = &up_bank[k / UP_PER_BANK];
 #if FELUCCA_FLASH
     old = *up_rec(k);
@@ -357,7 +433,7 @@ static int up_put(uint32_t k, const up_rec_t *r)
     else
         memset(up_rec(k), 0, sizeof(up_rec_t));
 #if FELUCCA_FLASH
-    if (flash_ok && st_save(OBJ_UPRESET0 + k / UP_PER_BANK, bk, sizeof *bk)) {
+    if (up_bank_save(k / UP_PER_BANK, bk, sizeof *bk)) {
         *up_rec(k) = old;
         bk->magic = magic;
         bk->rsize = rsize;

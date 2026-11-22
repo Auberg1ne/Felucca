@@ -36,6 +36,9 @@ static uint32_t bridge_programs;
 static int bridge_read_fail;
 #endif
 static int st_read(uint32_t off, void *dst, uint32_t n) {
+#ifdef PRESET_BANK_TEST_IO
+    if (preset_bank_test_readfail(off, n)) return -8;
+#endif
 #ifdef BRIDGE_TEST_IO
     if (bridge_read_fail) return -8;
 #endif
@@ -44,9 +47,15 @@ static int st_read(uint32_t off, void *dst, uint32_t n) {
 static int st_erase(uint32_t off)
 {
     erases++;
+#ifdef PRESET_BANK_TEST_IO
+    preset_bank_test_hook(0, off, 4096);
+#endif
     as_erases += off >= 0xE5000u && off < 0xE7000u;
     if (erase_error) return -8;
     memset(nor + off, 0xFF, 4096);
+#ifdef PRESET_BANK_TEST_IO
+    preset_bank_test_hook(1, off, 4096);
+#endif
     return 0;
 }
 static int st_prog(uint32_t off, const void *src, uint32_t n)
@@ -59,6 +68,9 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)
     if (fail_after == 0) return -9;
     if (fail_after > 0) fail_after--;
     for (i = 0; i < n; i++) nor[off + i] &= s[i];
+#ifdef PRESET_BANK_TEST_IO
+    preset_bank_test_hook(2, off, n);
+#endif
     return 0;
 }
 static uint32_t irq_save(void) { return 0; }
