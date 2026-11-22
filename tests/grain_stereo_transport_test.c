@@ -5,7 +5,7 @@ static unsigned checks;
 #define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr,"stereo %u: %s\n",__LINE__,#x); return 1; } } while(0)
 int main(void) {
  ui_power_on();
- CHECK(sizeof eng_mem==51552 && sizeof(gr_part_t)==7576);
+ CHECK(sizeof eng_mem==51552 && sizeof(gr_part_t)==(7576+GR_CLOUD_WIDTH_BYTES));
  CHECK(ENG_GRAIN.render==grain_render);
  for(unsigned ch=0;ch<4;ch++) {
   track_t*t=&trk[ch];host_preset(t,ENGI_GRAIN,0);eng_mem_claim(t);

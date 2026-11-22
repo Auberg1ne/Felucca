@@ -98,6 +98,18 @@ static const int16_t GR_NORM[GR_NG + 1] = {32767, 32767, 23170, 18918, 16384, 14
 #ifndef FELUCCA_GRAIN_STEREO_INTEGRATION
 #define FELUCCA_GRAIN_STEREO_INTEGRATION 0
 #endif
+#ifndef FELUCCA_GRAIN_CLOUD_WIDTH
+#define FELUCCA_GRAIN_CLOUD_WIDTH (!FELUCCA_GRAIN_STEREO_INTEGRATION)
+#endif
+#if FELUCCA_GRAIN_CLOUD_WIDTH && FELUCCA_GRAIN_STEREO_INTEGRATION
+#error "CLOUD decorrelation and experimental per-grain stereo are exclusive"
+#endif
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+#include "cloud_width.h"
+#define GR_CLOUD_WIDTH_BYTES (sizeof(void*)==8u?584u:580u)
+#else
+#define GR_CLOUD_WIDTH_BYTES 0u
+#endif
 #if FELUCCA_GRAIN_STEREO_INTEGRATION
 #if !FELUCCA_GRAIN_STEREO_PROTOTYPE
 #error "Stereo integration requires the isolated placement prototype"
@@ -199,9 +211,12 @@ typedef struct {
     uint32_t lr_block;
     int32_t lr_work[3][CTL], lr_out[3][CTL]; /* owning core, reused serially per voice */
 #endif
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+    cloud_width_t cloud;
+#endif
 } gr_part_t;
 _Static_assert(sizeof(gr_grain_t) == (sizeof(void *) == 8u ? 64u : 56u), "GRAIN latch must not grow record");
-_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u) + GR_STEREO_STATE_BYTES + GR_INTEGRATION_BYTES, "GRAIN stereo layout within reserved engine region");
+_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u) + GR_STEREO_STATE_BYTES + GR_INTEGRATION_BYTES + GR_CLOUD_WIDTH_BYTES, "GRAIN stereo layout within reserved engine region");
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
 /* No producer is enabled in 244B. Clear full capacity, including short-block tails.
  * Only the owning part's render core may write these buffers. Never share V-SPRD. */

@@ -824,6 +824,31 @@ static int32_t send_c[CTL], send_d[CTL], send_r[CTL], wet[CTL], mix_l[CTL], mix_
  * perf_mute_sd) and passes DIST by (the spread of a distorted chord is its voices' clean difference). The sends
  * take b, mono, as before. SPRD 0, MONO or LEGATO: mix_part's own loop, bit for bit as before. The cost: a block's
  * clear and sum of spread_buf, the side and a wider mix loop, per part; per voice none (it picks its buffer) */
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+static cloud_width_t *cloud_prepare(track_t*t,const int32_t*b,uint32_t n)
+{
+    if(t->engine!=ENGI_GRAIN)return 0;
+    cloud_width_t*s=&gr_of(t)->cloud;uint32_t k=(uint32_t)(t-trk);
+    if(s->epoch!=cloud_width_epoch[k]){memset(s,0,sizeof *s);s->epoch=cloud_width_epoch[k];}
+    uint32_t alive=0;for(uint32_t v=0;v<GR_POLY;v++)alive|=t->v[v].active;
+    int32_t target=alive && t->p[P_GTYPE]==0 && eng_idx(t->eng_req)==ENGI_GRAIN?clamp(t->p[P_GRC],0,100):0;
+    if(!target&&!s->gain)return 0;
+    int32_t gain=target*CW_MAX/100;
+    for(uint32_t i=0;i<n;i++)s->side[i]=cw_step_gain(s,b[i],gain,1,t->xf_on&&t->xf?32u:16u);
+    return s;
+}
+static uint32_t cloud_tail(const track_t*t)
+{
+    return t->engine==ENGI_GRAIN && gr_of(t)->cloud.gain>0;
+}
+static void cloud_add(const cloud_width_t*s,uint32_t i,int32_t lvl,int32_t pan,int32_t*left,int32_t*right)
+{
+    int32_t common=4096-(pan<0?-pan:pan)*64; /* no extra width beyond a hard track pan */
+    int64_t side=((int64_t)s->side[i]*lvl*common)/16777216;
+    *left=cw_narrow((int64_t)*left+side);*right=cw_narrow((int64_t)*right-side);
+}
+#endif
+
 static __attribute__((noinline)) void mix_spread(track_t *t, int32_t *b, uint32_t n SM_DECL)
 {
     int32_t *d = SPREAD_BUF(t);
@@ -842,9 +867,14 @@ static __attribute__((noinline)) void mix_spread(track_t *t, int32_t *b, uint32_
     track_dist(t, b, n);
     if (t->p[P_ITYPE] | t->ins_run)
         track_insert(t, b, n);                          /* (the mono sum, as DIST) */
-    slicer_track_sd(t, b, d, n);
-    if ((pf.mute >> (t - trk)) & 1u)
-        perf_mute_sd((uint32_t)(t - trk), b, d, n);
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+    cloud_width_t*cw=cloud_prepare(t,b,n);
+    if(cw){slicer_track_grain(t,b,d,cw->side,0,n);if((pf.mute>>(t-trk))&1u)perf_mute_grain((uint32_t)(t-trk),b,d,cw->side,0,n);}
+    else
+#endif
+    {slicer_track_sd(t, b, d, n);
+     if ((pf.mute >> (t - trk)) & 1u)perf_mute_sd((uint32_t)(t - trk), b, d, n);}
+
     for (i = 0; i < n; i++) {
         int32_t x = ((b[i] >> 2) * lvl) >> 10, a = x < 0 ? -x : x, y = ((d[i] >> 2) * lvl) >> 10;
         int32_t xs = clamp(x, -xmax, xmax);
@@ -858,12 +888,18 @@ static __attribute__((noinline)) void mix_spread(track_t *t, int32_t *b, uint32_
             SM(v)[i] += mulq15(xs, r);
         int32_t left = ((x * glm) >> 12) + ((y * gld) >> 12);
         int32_t right = ((x * grm) >> 12) + ((y * grd) >> 12);
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+        if(cw)cloud_add(cw,i,lvl,pan,&left,&right);
+#endif
         home_pk = home_level_peak(home_pk, left, right);
         SM(l)[i] += left;
         SM(r)[i] += right;
     }
     t->peak = pk;
     home_level_end((uint32_t)(t - trk), home_pk);
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+    if(cw&&!cw->gain)memset(cw->side,0,sizeof cw->side);
+#endif
 }
 
 #if FELUCCA_GRAIN_STEREO_INTEGRATION
@@ -936,7 +972,11 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
 #endif
         t->tail = t->p[P_ITYPE] ? 64 : 16;              /* blocks of DIST / INSERT state to run out after the last
                                                          * voice (the INSERT's: 46 ms, a flanger's feedback) */
-    else if ((!t->tail || !(t->p[P_DIST] | t->p[P_ITYPE]) || !--t->tail) && !slicer_busy(t)) {
+    else if ((!t->tail || !(t->p[P_DIST] | t->p[P_ITYPE]) || !--t->tail) && !slicer_busy(t)
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+             && !cloud_tail(t)
+#endif
+            ) {
         slicer_track(t, 0, n);                          /* (the SLICER's step clock runs on) */
         if (t->ins_run && !t->p[P_ITYPE])
             ins_rest(t);                                /* TYPE OFF while silent: no fade-out left for the next note */
@@ -944,6 +984,9 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
             mod_end(t);
         return;
     }
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+    cloud_width_t*cw=0;
+#endif
 #if FELUCCA_GRAIN_STEREO_INTEGRATION
     uint32_t grain_stereo=t->engine==ENGI_GRAIN && gr_of(t)->lr_block;
     if(grain_stereo)mix_grain_stereo(t,b,n SM_ARG(sm));
@@ -955,9 +998,13 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
         track_dist(t, b, n);
         if (t->p[P_ITYPE] | t->ins_run)
             track_insert(t, b, n);                      /* the INSERT (1.5): off, nothing */
-        slicer_track(t, b, n);                          /* slicer.c: before the level, pan and sends */
-        if ((pf.mute >> (t - trk)) & 1u)
-            perf_mute((uint32_t)(t - trk), b, n);       /* perform.c: a black key in the FX layer */
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+        cw=cloud_prepare(t,b,n);
+        if(cw){slicer_track_grain(t,b,0,cw->side,0,n);if((pf.mute>>(t-trk))&1u)perf_mute_grain((uint32_t)(t-trk),b,0,cw->side,0,n);}
+        else
+#endif
+        {slicer_track(t, b, n);
+         if ((pf.mute >> (t - trk)) & 1u)perf_mute((uint32_t)(t - trk), b, n);}       /* perform.c: a black key in the FX layer */
     }
     if (!T_SPREAD(t)
 #if FELUCCA_GRAIN_STEREO_INTEGRATION
@@ -983,12 +1030,18 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
             if (r)
                 SM(v)[i] += mulq15(xs, r);
             int32_t left = (x * gl) >> 12, right = (x * gr) >> 12;
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+            if(cw)cloud_add(cw,i,lvl,pan,&left,&right);
+#endif
             home_pk = home_level_peak(home_pk, left, right);
             SM(l)[i] += left;
             SM(r)[i] += right;
         }
         t->peak = pk;
         home_level_end((uint32_t)(t - trk), home_pk);
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+        if(cw&&!cw->gain)memset(cw->side,0,sizeof cw->side);
+#endif
     }
     if (pf.thr)
         perf_throw(t, b, SM(d), SM(v), n);              /* perform.c: REV / ECHO THROW (1.5.1), the sends towards full */

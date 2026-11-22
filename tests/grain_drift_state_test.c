@@ -5,7 +5,7 @@ static unsigned checks;
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"DRIFT state %u: %s\n",__LINE__,#x);return 1;}}while(0)
 static void setup(track_t*t,unsigned src){host_preset(t,ENGI_GRAIN,0);t->p[P_GTYPE]=1;t->p[P_GRC]=100;t->p[P_E0]=src;t->p[P_GCUT]=0;eng_mem_claim(t);gr_part_t*P=gr_of(t);gr_reset(P,src,gr_stamp(src));for(unsigned k=0;k<GR_NIDX;k++)gr_build(P,t);memset(t->v,0,sizeof t->v);t->v[0].active=1;t->v[0].note=60;grain_note_on(t,&t->v[0]);}
 int main(void){
- ui_power_on();CHECK(sizeof(gr_drift_t)==8);CHECK(sizeof(gr_part_t)==7576&&sizeof(gr_grain_t)==64&&sizeof(track_t)==1840);CHECK(sizeof eng_mem==NPART*ENG_MEM_PART && ENG_MEM_PART==12888);
+ ui_power_on();CHECK(sizeof(gr_drift_t)==8);CHECK(sizeof(gr_part_t)==(7576+GR_CLOUD_WIDTH_BYTES)&&sizeof(gr_grain_t)==64&&sizeof(track_t)==1840);CHECK(sizeof eng_mem==NPART*ENG_MEM_PART && ENG_MEM_PART==12888);
  CHECK((uint8_t*)&gr_of(&trk[0])->drift[0]-(uint8_t*)gr_of(&trk[0])==7296);
  struct{uint32_t pre;gr_drift_t d;uint32_t post;}g={12345,{0,98765},67890};uint64_t frames=0;
  for(unsigned n=1;n<=32;n++)for(unsigned k=0;k<65536;k++){gr_drift_tick(&g.d,n);frames+=n;CHECK(g.d.phase==(uint32_t)(frames*GR_DRIFT_PHASE_STEP));CHECK(g.d.displacement==98765&&g.pre==12345&&g.post==67890);}

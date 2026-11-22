@@ -1553,6 +1553,9 @@ static void midi_pc_poll(void)                       /* main loop (ui_input) */
 
 static void track_defaults(track_t *t)
 {
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+    cloud_width_request_reset(t);
+#endif
 #if FELUCCA_GRAIN_STEREO_INTEGRATION
     gr_lr_test_reset(t); /* reset test control, not audio-owned filter history */
 #endif

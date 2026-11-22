@@ -86,7 +86,7 @@ static int numerical_controls(void){
 int main(int argc,char **argv){
  FILE *f=argc>1?fopen(argv[1],"w"):0;if(argc>1)CHECK(f);
  if(f)fprintf(f,"length,offset,reverse,window,method,cap,threshold,error_RMS,output_RMS,peak,max_jump,silent\n");
- CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==7576 && sizeof(track_t)==1840);
+ CHECK(sizeof(gr_grain_t)==64 && sizeof(gr_part_t)==(7576+GR_CLOUD_WIDTH_BYTES) && sizeof(track_t)==1840);
  for(unsigned len=1;len<=128;len++)for(unsigned off=0;off<32;off++)for(unsigned rev=0;rev<2;rev++)for(unsigned w=0;w<NELEM(windows);w++)for(unsigned p=0;p<NELEM(methods);p++)
   if(run(len,off,rev,0,32767,windows[w],methods[p],caps[p],thresholds[p],f))return 1;
  const unsigned longlen[]={129,256,441,4410,86432};

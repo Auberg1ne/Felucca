@@ -30,7 +30,7 @@ static int kernel(unsigned slot,unsigned n) {
  return 0;
 }
 int main(void){
- ui_power_on();CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7592&&sizeof eng_mem==51552);
+ ui_power_on();CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==(7592+GR_CLOUD_WIDTH_BYTES)&&sizeof eng_mem==51552);
  CHECK(ENG_GRAIN.render==grain_render);const unsigned sources[]={0,2,3,13,14,5,5,5};
  unsigned admissions=0,rejects=0;
  for(unsigned source=0;source<8;source++){

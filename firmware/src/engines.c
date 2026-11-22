@@ -135,6 +135,10 @@ static void eng_mem_claim(const track_t *t)
     if (p >= NPART)
         return;
     e = eng_idx(t->engine);
+#if FELUCCA_GRAIN_CLOUD_WIDTH
+    if(eng_mem_owner[p]==ENGI_GRAIN+1u && e!=ENGI_GRAIN)
+        memset(&gr_of(t)->cloud,0,sizeof gr_of(t)->cloud);
+#endif
     n = ENGINES[e]->mem;
     if (!n || eng_mem_owner[p] == e + 1u)
         return;

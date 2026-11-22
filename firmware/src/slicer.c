@@ -100,7 +100,7 @@ static void sl_enter(const track_t *t, sl_t *s)
 /* m samples of one step (no boundary inside). sd: SPREAD's side signal (fx.c mix_spread) or 0: it gets the gate and
  * the live sound's share of the cross-fade (the repeat is the mono recording: on PAN). Inlined into both callers:
  * slicer_track's (sd 0) is the code it always was */
-#if FELUCCA_GRAIN_STEREO_INTEGRATION
+#if FELUCCA_GRAIN_STEREO_INTEGRATION || FELUCCA_GRAIN_CLOUD_WIDTH
 #define SL_LR_PARAMS , int32_t *sa, int32_t *sb
 #define SL_LR_NONE ,0,0
 #else
@@ -131,7 +131,7 @@ static inline __attribute__((always_inline)) void sl_seg(const track_t *t, sl_t 
                 z -= mulq16(z, (uint32_t)s->w << 1);
             sd[j] = z;
         }
-#if FELUCCA_GRAIN_STEREO_INTEGRATION
+#if FELUCCA_GRAIN_STEREO_INTEGRATION || FELUCCA_GRAIN_CLOUD_WIDTH
         for(uint32_t c=0;c<2;c++) {
             int32_t *lane=c?sb:sa;
             if(lane){int32_t z=lane[j];if(s->gc)z-=mulq16(z,(uint32_t)s->gc<<1);if(s->w)z-=mulq16(z,(uint32_t)s->w<<1);lane[j]=z;}
@@ -215,7 +215,7 @@ static int slicer_busy(const track_t *t)
     return s->w || (t->p[P_SLCR] == SL_STUT && s->loop);
 }
 
-#if FELUCCA_GRAIN_STEREO_INTEGRATION
+#if FELUCCA_GRAIN_STEREO_INTEGRATION || FELUCCA_GRAIN_CLOUD_WIDTH
 static void slicer_track_grain(const track_t *t,int32_t *b,int32_t *d,int32_t *a,int32_t *c,uint32_t n)
 {
     uint32_t k=(uint32_t)(t-trk),i=0;sl_t *s=&sl[k];
@@ -223,7 +223,7 @@ static void slicer_track_grain(const track_t *t,int32_t *b,int32_t *d,int32_t *a
     while(i<n){
         if(s->pos>=s->len)sl_enter(t,s);
         uint32_t m=s->len-s->pos;if(m>n-i)m=n-i;
-        if(act)sl_seg(t,s,sl_buf[k],b+i,d?d+i:0,m,a+i,c+i);
+        if(act)sl_seg(t,s,sl_buf[k],b+i,d?d+i:0,m,a?a+i:0,c?c+i:0);
         s->pos+=m;i+=m;
     }
 }

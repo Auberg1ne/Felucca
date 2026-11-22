@@ -96,15 +96,17 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
     r=run([exe,'0','0',str(pcm)],capture_output=True,text=True)
     record=json.loads(r.stdout);record['pcm_sha256']=sha(pcm)
     assert record==result['cases']['CLOUD/low-density']
-    # SPARKLE, CHAOS and FROZEN DRIFT are active. CLOUD stays exact;
+    # All four contextual C controls are now active; CLOUD changes only mixer output.
     # Each active personality has a dedicated exact-base comparison gate.
     for kind,name in enumerate(['CLOUD','FREEZE','STUTTER','SHIMMER']):
         for scenario,mode in enumerate(['low-density','high-density','minimum-size','reverse','mod-filter','four-track']):
             r=run([exe,str(kind),str(scenario),str(pcm)],capture_output=True,text=True,env={**os.environ,'GRC_VALUE':'100'})
             c=json.loads(r.stdout);c['pcm_sha256']=sha(pcm)
             if kind==0 and scenario!=5:
-                assert c==result['cases'][f'{name}/{mode}'],('inactive C changed audio/state',name,mode)
+                assert c['pcm_sha256']!=result['cases'][f'{name}/{mode}']['pcm_sha256'],('CLOUD width silent/no difference',mode)
+                for field in ['state_fnv64','rng_draws','admitted','reverse_admitted','max_load_q16','max_active','filter_changes']:
+                    assert c[field]==result['cases'][f'{name}/{mode}'][field],('CLOUD changed grain state',mode,field)
             else:
                 assert c['pcm_sha256']!=result['cases'][f'{name}/{mode}']['pcm_sha256'],('active C silent/no difference',name,mode)
-    print('Actual C100: 5 CLOUD PCM/state cases identical; 19 DRIFT/CHAOS/SPARKLE/four-track cases intentionally changed',flush=True)
+    print('Actual C100: all24 audio cases intentionally changed; CLOUD grain/RNG/decoder state remains exact',flush=True)
 print('24 frozen cases + independent process repeat passed; mappings, short windows, RNG, admission and load checked')
