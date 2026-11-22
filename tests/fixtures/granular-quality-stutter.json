@@ -1,0 +1,59 @@
+{
+  "audio": {
+    "CLOUD/four-track": {
+      "nonzero": 130904,
+      "pcm_sha256": "7707c2437bbdab5fc21d2338b380d5c0cb0f012be3f95ef885a5bbc3fc85c752",
+      "peak": 18289,
+      "rms": 3843.885869
+    },
+    "FREEZE/four-track": {
+      "nonzero": 130734,
+      "pcm_sha256": "69c472f6eefacd2c5e21fade199e18ffd71d296d5efe372eca2bb939b8386224",
+      "peak": 18198,
+      "rms": 3937.341539
+    },
+    "SHIMMER/four-track": {
+      "nonzero": 130868,
+      "pcm_sha256": "ac6f58047c737f15b16321aa5639ab6f6d20c9b9687bd23c8c8059749cf20d44",
+      "peak": 18083,
+      "rms": 4158.91902
+    },
+    "STUTTER/four-track": {
+      "nonzero": 130904,
+      "pcm_sha256": "e4415a0863e5f468246159a08b9e65ec89efbb5f163f32e7435a49ddc8bd97d0",
+      "peak": 18663,
+      "rms": 3741.57537
+    },
+    "STUTTER/high-density": {
+      "nonzero": 112632,
+      "pcm_sha256": "2f32861b479a2c242f9d1620c7bf1f22fd011893cb9dc4e43d0bd0c3c1ccbeae",
+      "peak": 8515,
+      "rms": 856.108375
+    },
+    "STUTTER/low-density": {
+      "nonzero": 112310,
+      "pcm_sha256": "f271745fe3f0486bfe6bb0f480924e49b38120f25b3646df343656428c2c0467",
+      "peak": 13884,
+      "rms": 640.796765
+    },
+    "STUTTER/minimum-size": {
+      "nonzero": 125954,
+      "pcm_sha256": "12cceb851f5509cd1e1b890669397753a5e69dc30bdd87c42bb26fc460b23cd9",
+      "peak": 16491,
+      "rms": 1367.801121
+    },
+    "STUTTER/mod-filter": {
+      "nonzero": 125938,
+      "pcm_sha256": "da1ca9d273724b4873c4e2c769f57bcebe68cddf830f2fb5db7caa94c7011eeb",
+      "peak": 13099,
+      "rms": 1197.798605
+    },
+    "STUTTER/reverse": {
+      "nonzero": 124292,
+      "pcm_sha256": "4c0170049fd23952dedf4d38908e3dd8ae4a62f63e894f3235bcfd5aff8c504e",
+      "peak": 6119,
+      "rms": 796.863198
+    }
+  },
+  "base": "f0be0148acd39e27fe772e028cdc72630bdd7066"
+}

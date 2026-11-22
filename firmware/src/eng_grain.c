@@ -675,6 +675,37 @@ static void gr_filter(voice_t *v, const int32_t *acc, int32_t *out, uint32_t n,
     v->s[7] = (int32_t)(wet | (uint32_t)(running + 50) << 9);
 }
 
+/* Symmetric edges wholly inside the original opening. Up to 64 samples
+ * (~1.45 ms at 44.1 kHz); narrow openings form a bounded triangle instead.
+ * A short closed interval caps the ramps too, preserving near-full duty.
+ * One-/two-sample pulses retain half gain, not an all-zero envelope. */
+static void gr_stutter_gate(int32_t *acc, uint32_t n, uint32_t start,
+                            uint32_t period, uint32_t on)
+{
+    if (on == period) return;                   /* GATE 127: exact continuous output */
+    if (!on) { memset(acc, 0, n * sizeof *acc); return; }
+    uint32_t fade = (on + 1u) / 2u;
+    if (fade > period - on) fade = period - on;
+    if (fade > 64u) fade = 64u;
+    if (fade < 2u) fade = 2u;
+    uint32_t step = (65536u + fade - 1u) / fade; /* reciprocal once per block */
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t phase = (start + i) % period;
+        if (phase >= on) acc[i] = 0;
+        else {
+            uint32_t edge = phase + 1u;
+            if (edge > on - phase) edge = on - phase;
+            if (edge < fade) {
+                /* Wide product and signed-symmetric nearest rounding. Tiny
+                 * one-/two-sample pulses do not round entirely to zero. */
+                int64_t scaled = (int64_t)acc[i] * (edge * step);
+                scaled += scaled < 0 ? -32768 : 32768;
+                acc[i] = (int32_t)(scaled / 65536);
+            }
+        }
+    }
+}
+
 static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const vmod_t *m)
 {
     gr_part_t *P = gr_of(t);
@@ -760,10 +791,7 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             uint32_t gate = (uint32_t)p[P_GB];
             uint32_t period = 128u + (127u - (uint32_t)p[P_GA]) * 12u;
             uint32_t on = (period * gate) / 127u;
-            for (i = 0; i < n; i++) {
-                uint32_t phase = (v->ph[1] + i) % period;
-                if (phase >= on) acc[i] = 0;
-            }
+            gr_stutter_gate(acc, n, v->ph[1], period, on);
             v->ph[1] += n;
         }
     }

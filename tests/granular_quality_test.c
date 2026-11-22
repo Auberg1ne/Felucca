@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Frozen Step 237 host oracle. Hash explicit LE fields, never pointers/padding. */
 #define UI_TEST_NO_MAIN 1
-#include "ui_test.c"
+#ifndef GRANULAR_QUALITY_UI_SOURCE
+#define GRANULAR_QUALITY_UI_SOURCE "ui_test.c"
+#endif
+#include GRANULAR_QUALITY_UI_SOURCE
 #include "audio_stats.h"
 static uint64_t state=UINT64_C(14695981039346656037);
 static void field(uint32_t x){for(unsigned j=0;j<4;j++){state^=(x>>(j*8))&255;state*=UINT64_C(1099511628211);}}

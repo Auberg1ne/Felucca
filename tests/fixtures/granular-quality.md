@@ -126,3 +126,10 @@ user-source matrix, no exact timestamp hook for failed spawn attempts, and no
 complete per-sample scheduling trace. The silent-grain count is an envelope-only
 probe, not an estimate of musical silence frequency. Additional GRAIN/WIN stress
 suites remain necessary before promoting a renderer or new personality control.
+
+## Step239 STUTTER audio overlay
+
+The original JSON is retained. Nine captures containing STUTTER have reviewed
+audio-only expectations in `granular-quality-stutter.json`; decoder/RNG/state
+expectations remain exact. The runner now also requires the strict STUTTER gate
+test. See `docs/grain-stutter-gate.md` for timing, jump and resource evidence.

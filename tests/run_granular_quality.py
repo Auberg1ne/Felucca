@@ -41,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
             pcm = out/f'{name}-{mode}.pcm'
             r = run([exe,str(kind),str(scenario),str(pcm)],capture_output=True,text=True)
             record = json.loads(r.stdout)
+            assert 0 < record['peak'] < 32767, ('capture silence/clipping',name,mode)
             assert pcm.stat().st_size == 65536*2*4
             record['pcm_sha256'] = sha(pcm)
             result['cases'][f'{name}/{mode}'] = record
@@ -58,10 +59,24 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
         r=run([kernel],capture_output=True,text=True)
         (out/'grain-short-envelope.log').write_text(r.stdout+r.stderr)
         print(r.stdout.strip(),flush=True)
+        gate=str(out/'grain-stutter-gate')
+        run(shlex.split(os.environ.get('CC','cc'))+strict+['tests/grain_stutter_gate_test.c','-lm','-o',gate])
+        r=run([gate],capture_output=True,text=True)
+        (out/'grain-stutter-gate.log').write_text(r.stdout+r.stderr)
+        print(r.stdout.strip(),flush=True)
     if a.freeze:
         fixture.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
     else:
         expected=json.loads(fixture.read_text())
+        # Step239 changes audio only where a STUTTER gate participates. The
+        # original golden remains intact; never override decoder/RNG fields.
+        overlay=json.loads((root/'tests/fixtures/granular-quality-stutter.json').read_text())
+        assert overlay['base']=='f0be0148acd39e27fe772e028cdc72630bdd7066'
+        affected={k for k in expected['cases'] if k.startswith('STUTTER/') or k.endswith('/four-track')}
+        assert set(overlay['audio'])==affected
+        for key, audio in overlay['audio'].items():
+            assert set(audio)=={'pcm_sha256','peak','rms','nonzero'}
+            expected['cases'][key].update(audio)
         assert result==expected, 'Frozen PCM/state/input mismatch; do not regenerate without review'
     # Reuse frozen legacy readers and physical NOR assertions without rewriting
     # historical binaries or substituting a mock parser.
