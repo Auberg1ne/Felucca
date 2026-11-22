@@ -1329,6 +1329,7 @@ static void fm4_apply(track_t *t, int16_t *p)
         ui_message("GRAIN ONLY: PRESET REFUSED");
         return;
     }
+    p[P_GRC] = 0; /* reserved for non-GRAIN conversions */
     uint8_t v[FP_SIZE + 1u];
     uint32_t pr = fm4_convert(p, v), tr = trk_index(t), f;
     fm6_set_patch(tr, v);
@@ -1391,6 +1392,7 @@ static void apply_preset_to(track_t *t, uint32_t pi)
         return;                                       /* (core.h drum_from_perc) */
     }
     load_begin(t, UNDO_SOUND);
+    t->p[P_GRC] = 0; /* factory/init defaults; undo captured the previous C */
     panic_req |= (uint8_t)(1u << trk_index(t));       /* MONO/POLY may change: release what sounds */
     t->user = 0;
     if (t == TSEL)
@@ -1554,6 +1556,7 @@ static void track_defaults(track_t *t)
     uint32_t i;
     for (i = 0; i < P_E0; i++)
         t->p[i] = i == P_GWIN ? params_win_default(t->eng_req % NENGINES) : TP[i].def;
+    t->p[P_GRC] = 0;
     track_defaults_steps(t);
 }
 

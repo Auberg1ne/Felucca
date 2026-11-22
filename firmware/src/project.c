@@ -5,11 +5,14 @@
  * also goes to flash through storage.c, and an
  * empty RAM slot is filled from flash on load.
  *
- * Format 11 ("FUNB", written): the same 3840-byte allocation as FUN10,
+ * Format13 ("FUND", written) marks stable IDs0..118 and C provenance; format12 ("FUNC")
+ * marked WIN only. Both keep the3840-byte allocation and existing fixed field offsets.
+ * The frozen4840-byte native schema imports explicitly into the4848-byte C schema.
+ * Format 11 ("FUNB", historical): the same 3840-byte allocation as FUN10,
  * with four losslessly bit-packed seven-bit FM6 patches (112 bytes each).
  * MIDI moves to 3373 and FM6 to 3376, leaving 49 spare bytes with P_COUNT 118.
  * FUN10 and earlier imports retain their original formats and migrations.
- * The in-memory/noinit schema and magic are unchanged. See docs/project-format-fun11.md.
+ * See docs/project-format-fun11.md for its historical layout.
  *
  * Format 7 ("FUN7", historical) stores P_COUNT (byte 66) and maps an older count as user presets do: FUN7 of
  * 89 parameters (before the chord keys P_CHRD / P_VOIC) loads its engine values at today's P_E0..P_E7,
@@ -100,10 +103,11 @@
  *
  * Built on the Mac too (tests/project_test.c, -DPROJ_HOST): the part above the #ifndef
  * PROJ_HOST needs core.h, params.c (TP) and engines.c. */
+#define PROJ_MAGIC_V13 0x46554E44u             /* FUND: stable IDs0..118, C provenance */
 #define PROJ_MAGIC_V12 0x46554E43u             /* FUNC: explicit WIN provenance, same 3840-byte layout */
 #define PROJ_MAGIC_V11 0x46554E42u             /* FUNB: seven-bit FM6 storage, 3840 bytes */
 #define PROJ_MAGIC_V10 0x46554E41u
-#define PROJ_MAGIC PROJ_MAGIC_V12             /* WIN-aware internal schema, unchanged size */
+#define PROJ_MAGIC PROJ_MAGIC_V13             /* C-aware native schema; old4840 schema frozen below */
 #define PROJ_MAGIC_LEGACY PROJ_MAGIC_V10      /* frozen pre-WIN retained schema */
 #define PROJ_MAGIC_V9 0x46554E39u              /* "FUN9": FUN8, 64 bytes longer (the DRUM lane levels, 99 parameters) */
 #define PROJ_MAGIC_V8 0x46554E38u              /* "FUN8": FUN7 + the tracks' FM6 patches */
@@ -141,6 +145,14 @@ typedef struct {
     char name[PROJ_NAME_LEN];                  /* the project's name: upper-case ASCII 32..126, 0-padded; "" = none */
     uint32_t sum;
 } project_t;
+/* Frozen pre-C native schema. Never bind its geometry to current P_COUNT. */
+typedef struct { int16_t p[118]; uint8_t engine, preset; step_t step[NSTEP]; } proj_trk118_t;
+typedef struct {
+    uint32_t magic, size; int16_t g[G_COUNT]; uint8_t sel, parts, phys, rsv;
+    proj_trk118_t t[NTRK]; chain_config_t chain; motion_store_t motion;
+    uint8_t fm6[NTRK][FM6_PACKED], mch[NTRK]; char name[PROJ_NAME_LEN]; uint32_t sum;
+} project118_t;
+_Static_assert(sizeof(project118_t) == 4840u && sizeof(project_t) == 4848u, "native project schema sizes");
 /* Historical FUN5/6 types are frozen, independent of today's P_COUNT/step_t. */
 typedef struct { uint8_t note[4], n, time, flags, vel, hit, acc; } step10_t;
 typedef struct { int16_t p[69]; uint8_t engine, preset; step10_t step[NSTEP]; uint8_t lane[NLANE][5]; } proj_trk_v5_t;
@@ -246,7 +258,8 @@ static uint32_t proj_sum(const project_t *p) { return proj_hash(p, sizeof *p - 4
 static int proj_win_valid(const project_t *q)
 {
     for (uint32_t t = 0; t < NTRK; t++)
-        if (!params_win_valid(q->t[t].p, q->t[t].engine)) return 0;
+        if (!params_win_valid(q->t[t].p, q->t[t].engine) || q->t[t].p[P_GRC] < 0 ||
+            q->t[t].p[P_GRC] > (q->t[t].engine == ENGI_GRAIN ? 100 : 0)) return 0;
     return 1;
 }
 static int proj_ok(const project_t *q) { return q->magic == PROJ_MAGIC && q->size == sizeof *q &&
@@ -521,23 +534,29 @@ static int proj_engines_ok(const project_t *q)
 }
 /* n bytes of a stored project (any format) -> q as today's, DIGITAL and SAMPLE PERC tracks converted; 0 = not a
  * project */
-static int proj_import(project_t *q, const void *b, int n)
+static project_t proj_import_stage __attribute__((section(".pool"))); /* main-loop only; failed imports atomic */
+static int proj_import(project_t *out, const void *b, int n)
 {
+    if (!out || !b || n < 8 || ((uintptr_t)b & 3u)) return 0; /* all wire/native ingress buffers are aligned */
+    project_t *q = &proj_import_stage;
     uint32_t magic = 0;
     if (n >= 4) memcpy(&magic, b, 4);
-    int win_aware = magic == PROJ_MAGIC_V12 && (n == PROJ_STORE_SIZE || n == (int)sizeof *q);
+    int win_aware = (magic == PROJ_MAGIC_V12 || magic == PROJ_MAGIC_V13) &&
+        (n == PROJ_STORE_SIZE || n == (int)sizeof(project118_t) || n == (int)sizeof *q);
     if (!proj_import_any(q, b, n) || !proj_engines_ok(q))
         return 0;
     proj_fm4(q);
     proj_perc(q);
     if (!win_aware) for (uint32_t t = 0; t < NTRK; t++) params_win_legacy(q->t[t].p, q->t[t].engine);
+    if (magic != PROJ_MAGIC_V13) for (uint32_t t = 0; t < NTRK; t++) q->t[t].p[P_GRC] = 0;
     if (!proj_win_valid(q)) return 0;
     q->sum = proj_sum(q);
+    if (out != q) memcpy(out, q, sizeof *q);
     return 1;
 }
 static int proj_import_any(project_t *q, const void *b, int n)
 {
-    if (n == PROJ_STORE_SIZE && (((const uint32_t *)b)[0] == PROJ_MAGIC_V12 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V11 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V10))
+    if (n == PROJ_STORE_SIZE && (((const uint32_t *)b)[0] == PROJ_MAGIC_V13 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V12 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V11 || ((const uint32_t *)b)[0] == PROJ_MAGIC_V10))
         return proj_unpack(q, b, PROJ_STORE_SIZE);
     if (n == PROJ_STORE_SIZE && ((const uint32_t *)b)[1] >= 8u && ((const uint32_t *)b)[1] < PROJ_STORE_SIZE)
         n = (int)((const uint32_t *)b)[1];      /* a retained slot holding an older, shorter record: its own size
@@ -548,10 +567,22 @@ static int proj_import_any(project_t *q, const void *b, int n)
         return proj_unpack(q, b, PROJ_STORE_V8);
     if (n == (int)PROJ_STORE_V7 && ((const uint32_t *)b)[0] == PROJ_MAGIC_V7)
         return proj_unpack(q, b, PROJ_STORE_V7);
-    if (n == (int)sizeof *q && (proj_ok((const project_t *)b) ||
-        (((const project_t *)b)->magic == PROJ_MAGIC_LEGACY && ((const project_t *)b)->size == sizeof *q &&
-         ((const project_t *)b)->sum == proj_sum((const project_t *)b) &&
-         chain_valid(&((const project_t *)b)->chain) && motion_valid(&((const project_t *)b)->motion)))) {
+    if (n == (int)sizeof(project118_t)) {
+        const project118_t *old = b;
+        if ((old->magic != PROJ_MAGIC_V12 && old->magic != PROJ_MAGIC_LEGACY) || old->size != sizeof *old ||
+            old->sum != proj_hash(old, sizeof *old - 4u) || !chain_valid(&old->chain) || !motion_valid(&old->motion)) return 0;
+        memset(q, 0, sizeof *q); q->magic = PROJ_MAGIC; q->size = sizeof *q;
+        memcpy(q->g, old->g, sizeof q->g); memcpy(&q->sel, &old->sel, 4);
+        for (uint32_t t = 0; t < NTRK; t++) {
+            memcpy(q->t[t].p, old->t[t].p, sizeof old->t[t].p);
+            q->t[t].engine = old->t[t].engine; q->t[t].preset = old->t[t].preset;
+            memcpy(q->t[t].step, old->t[t].step, sizeof q->t[t].step);
+        }
+        q->chain=old->chain; q->motion=old->motion; memcpy(q->fm6,old->fm6,sizeof q->fm6);
+        memcpy(q->mch,old->mch,sizeof q->mch); memcpy(q->name,old->name,sizeof q->name);
+        proj_drums_to_part(q); proj_phys(q); return 1;
+    }
+    if (n == (int)sizeof *q && proj_ok((const project_t *)b)) {
         memcpy(q, b, sizeof *q);
         q->magic = PROJ_MAGIC;
         proj_drums_to_part(q);
@@ -676,7 +707,7 @@ static void proj_fm6_unpack(uint8_t *out, const uint8_t *in)
  * np, format flags, then four byte-param tracks and nine-byte steps; FUN8: the patches at PROJ_FM6_OFF. */
 static int proj_pack(project_store_t *out, const project_t *q)
 {
-    uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC_V12, size = PROJ_STORE_SIZE, sum;
+    uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC_V13, size = PROJ_STORE_SIZE, sum;
     if (q->magic != PROJ_MAGIC || q->size != sizeof *q || !proj_win_valid(q)) return 0;
     if (68u + NTRK * (P_COUNT + 2u + NSTEP * 9u) +
         sizeof q->chain + sizeof q->motion > PROJ_MIDI_OFF || !proj_engines_ok(q)) return 0;
@@ -727,12 +758,13 @@ static int proj_pack(project_store_t *out, const project_t *q)
  * locks). 0: an id that store could not have named (np or more) */
 static int proj_motion_ids(motion_store_t *m, uint32_t np)
 {
+    if (np < 8u || np > 118u) return 0; /* historical namespace, independent of new P_COUNT */
     uint32_t i;
     for (i = 0; i < m->count && i < MOTION_MAX; i++) {
         uint32_t id = MOTION_ID(&m->event[i]);
         if (id >= np) return 0;
-        if (np < P_COUNT && id >= np - 8u)
-            m->event[i].param = (uint8_t)((m->event[i].param & MOTION_LOCK) | (id + P_COUNT - np));
+        if (np < 118u && id >= np - 8u)
+            m->event[i].param = (uint8_t)((m->event[i].param & MOTION_LOCK) | (id + 118u - np));
     }
     return 1;
 }
@@ -767,17 +799,18 @@ static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
         return 0;
     uint32_t pos = 68u, t, i, magic, size, sum, np = b[66], v7 = st == PROJ_STORE_V7, v10 = st == PROJ_STORE_SIZE;
     memcpy(&magic, b, 4);
-    uint32_t v12 = v10 && magic == PROJ_MAGIC_V12;
+    uint32_t v13 = v10 && magic == PROJ_MAGIC_V13;
+    uint32_t v12 = v10 && (magic == PROJ_MAGIC_V12 || v13);
     uint32_t v11 = v10 && (magic == PROJ_MAGIC_V11 || v12);
-    if (v12 && np != P_COUNT) return 0;
+    if ((v13 && np != 119u) || (v12 && !v13 && np != 118u)) return 0;
     uint32_t name_off = st - 4u - PROJ_NAME_LEN;
     uint32_t fm6_off = v7 ? name_off : name_off - NTRK * (v11 ? PROJ_FM6_STORE : FM6_PACKED);
     uint32_t end = fm6_off - (v10 ? 3u : 0u);
     uint32_t mot = v10 ? sizeof q->motion : PROJ_MOTION_V9, chn = v10 ? sizeof q->chain : sizeof(chain_v9_t);
     memcpy(&magic, b, 4); memcpy(&size, b + 4, 4); memcpy(&sum, b + st - 4u, 4);
-    if (magic != (v7 ? PROJ_MAGIC_V7 : st == PROJ_STORE_V8 ? PROJ_MAGIC_V8 : st == PROJ_STORE_V9 ? PROJ_MAGIC_V9 : (v12 ? PROJ_MAGIC_V12 : v11 ? PROJ_MAGIC_V11 : PROJ_MAGIC_V10)) ||
+    if (magic != (v7 ? PROJ_MAGIC_V7 : st == PROJ_STORE_V8 ? PROJ_MAGIC_V8 : st == PROJ_STORE_V9 ? PROJ_MAGIC_V9 : (v13 ? PROJ_MAGIC_V13 : v12 ? PROJ_MAGIC_V12 : v11 ? PROJ_MAGIC_V11 : PROJ_MAGIC_V10)) ||
         size != st || sum != proj_hash(b, st - 4u) ||
-        np < 8u || np > P_COUNT || 68u + NTRK * (np + 2u + NSTEP * 9u) + chn + mot > end)
+        np < 8u || np > (v13 ? 119u : 118u) || 68u + NTRK * (np + 2u + NSTEP * 9u) + chn + mot > end)
         return 0;
     memset(q, 0, sizeof *q); q->magic = PROJ_MAGIC; q->size = sizeof *q;
     memcpy(q->g, b + 8, sizeof q->g); q->sel = b[62]; q->parts = b[63]; q->phys = b[64];
@@ -789,7 +822,8 @@ static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
         q->t[t].engine = b[pos++]; q->t[t].preset = b[pos++];
         if (q->t[t].engine >= NENGINES) return 0;
         for (i = 0; i < P_COUNT; i++) def[i] = param_desc_of(q->t[t].engine, i)->def;
-        params_by_count(q->t[t].p, values, np, def);
+        if (v13) memcpy(q->t[t].p, values, sizeof q->t[t].p);
+        else params_by_count(q->t[t].p, values, np, def);
         for (i = 0; i < NSTEP; i++) {
             step_t *s = &q->t[t].step[i]; uint32_t meta, nd = 0;
             for (uint32_t j = 0; j < 4u; j++) {         /* (FUN10: bit 7 of note j is bit j of the nudge) */
@@ -820,7 +854,7 @@ static int proj_unpack(project_t *q, const uint8_t *b, uint32_t st)
         memcpy(&q->motion, b + pos, sizeof q->motion);
     else if (!proj_motion_v9(&q->motion, b + pos))
         return 0;
-    if (!proj_motion_ids(&q->motion, np) || !chain_valid(&q->chain) || !motion_valid(&q->motion)) return 0;
+    if (!proj_motion_ids(&q->motion, v13 ? 118u : np) || !chain_valid(&q->chain) || !motion_valid(&q->motion)) return 0;
     if (v10)
         proj_midi_unpack(q, b, fm6_off - 3u);                         /* (1.5.5: 0 in every FUN10 before, FUN9..FUN7 have none) */
     for (t = 0; t < NTRK; t++) {
@@ -927,7 +961,7 @@ static int project_raw_state(const void *raw, uint32_t n)
     }
     uint32_t magic = 0;
     if (n >= 4u) memcpy(&magic, raw, 4);
-    return ((magic >= PROJ_MAGIC_V1 && magic <= PROJ_MAGIC_V9) || magic == PROJ_MAGIC_V10 || magic == PROJ_MAGIC_V11 || magic == PROJ_MAGIC_V12) ? PS_CORRUPT : PS_UNSUPPORTED;
+    return ((magic >= PROJ_MAGIC_V1 && magic <= PROJ_MAGIC_V9) || magic == PROJ_MAGIC_V10 || magic == PROJ_MAGIC_V11 || magic == PROJ_MAGIC_V12 || magic == PROJ_MAGIC_V13) ? PS_CORRUPT : PS_UNSUPPORTED;
 }
 #if FELUCCA_FLASH
 static int project_object_state(uint32_t obj)
@@ -982,6 +1016,29 @@ static int project_slot_state(uint32_t slot)
     }
     return zero || erased ? PS_EMPTY : project_raw_state(raw, sizeof *raw);
 #endif
+}
+
+/* An old/unmarked backup cannot replace a C-bearing physical object. New FUND
+ * provenance is fully validated by the caller before a commit. No cache trust. */
+static int project_backup_legacy_ok(uint32_t slot)
+{
+#if FELUCCA_FLASH
+    if (!flash_ok) return 0;
+    uint32_t obj = OBJ_PROJECT0 + slot;
+    for (uint32_t copy = 0; copy < 2u; copy++) {
+        st_hdr_t h; int state = st_copy_state(obj, copy, &h);
+        if (state < 0) return 0;
+        if (!state || !h.len) continue;
+        if (!proj_import(&proj_scratch, st_buf, (int)h.len)) return 0;
+        for (uint32_t t = 0; t < NTRK; t++) if (proj_scratch.t[t].p[P_GRC]) return 0;
+    }
+#else
+    int state = project_slot_state(slot);
+    if (state == PS_EMPTY) return 1;
+    if (!proj_import(&proj_scratch, &proj_slot[slot], sizeof proj_slot[slot])) return 0;
+    for (uint32_t t = 0; t < NTRK; t++) if (proj_scratch.t[t].p[P_GRC]) return 0;
+#endif
+    return 1;
 }
 
 #if FELUCCA_FLASH
@@ -1251,7 +1308,10 @@ static int project_restore_runtime(const project_t *input)
     project_t *p = &proj_scratch;
     uint32_t i, k;
     if (!proj_ok(input)) {
-        if (!proj_import(p, input, sizeof *input)) return 1;
+        uint32_t bytes = input->size == sizeof(project118_t) &&
+            (input->magic == PROJ_MAGIC_V12 || input->magic == PROJ_MAGIC_LEGACY)
+            ? sizeof(project118_t) : sizeof *input;
+        if (!proj_import(p, input, (int)bytes)) return 1;
         input = p;
     }
     if (!proj_engines_ok(input)) return 1;

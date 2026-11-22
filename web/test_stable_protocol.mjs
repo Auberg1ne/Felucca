@@ -2,7 +2,7 @@
 import fs from 'node:fs';import vm from 'node:vm';import assert from 'node:assert/strict';import{spawn,execFileSync}from'node:child_process';import readline from'node:readline';
 const html=fs.readFileSync(new URL('editor.html',import.meta.url),'utf8');
 const old=execFileSync('git',['show','fd7f6f036487c53af3d31df3f209b63d6d2d9e8d:web/editor.html'],{encoding:'utf8'});
-const make=s=>vm.runInNewContext(s.slice(s.indexOf('/*PROTO-BEGIN*/'),s.indexOf('/*PROTO-END*/'))+';({frame,unframe,CMD,parse,req,bank,readLibraryFile,remapParams,assertWinLibraryTransfer,libraryFile,auditionPatch'+(s===html?',stableCapability,negotiateStable,stableScalarRequest,stableScalarReply,parameterProvenance,legacyCoverage':'')+'})',{setTimeout,clearTimeout,console});
+const make=s=>vm.runInNewContext(s.slice(s.indexOf('/*PROTO-BEGIN*/'),s.indexOf('/*PROTO-END*/'))+';({frame,unframe,CMD,parse,req,bank,readLibraryFile,remapParams,assertWinLibraryTransfer,libraryFile,auditionPatch'+(s===html?',stableCapability,negotiateStable,stableScalarRequest,stableScalarReply,stableTransaction,stableDump,safeLegacyDump,parameterProvenance,legacyCoverage':'')+'})',{setTimeout,clearTimeout,console});
 const E=make(html),O=make(old);let checks=0;const check=(x,m)=>{assert(x,m);checks++;};
 function gateway(path){const child=spawn(path,[],{stdio:['pipe','pipe','inherit']}),q=[];const lines=readline.createInterface({input:child.stdout});lines.on('line',s=>q.shift()?.resolve(s));child.on('exit',code=>{for(const p of q.splice(0))p.reject(Error('gateway exit '+code));});return {async rq(r){const line=await new Promise((resolve,reject)=>{q.push({resolve,reject});child.stdin.write('F '+Array.from(E.frame(...r)).join(' ')+'\n');});const w=line.split(' ').slice(1).map(Number);return w.length?Array.from(E.unframe(w).a):[];},async close(){child.stdin.end();await new Promise(r=>child.once('exit',r));lines.close();}};}
 const newer=gateway(process.argv[2]),older=gateway(process.argv[3]);
@@ -10,7 +10,7 @@ try{
  const ni=await newer.rq(E.req.info()),oi=await older.rq(O.req.info());
  for(const [editor,info]of[[O,oi],[E,oi],[O,ni],[E,ni]]){const p=editor.parse[editor.CMD.INFO](info);check(p.pcount===118&&p.pe0===110,'all four combinations retain legacy118');}
  let sent=0;check(await E.negotiateStable(E.parse[E.CMD.INFO](oi),()=>{sent++;throw Error('old firmware');},33)===null && !sent,'new client never probes old firmware without capability');
- const info=E.parse[E.CMD.INFO](ni);check(info.stable.count===118 && info.stable.flags===7,'no C or bulk advertisement');
+ const info=E.parse[E.CMD.INFO](ni);check(info.stable.count===119 && info.stable.flags===23,'C and global snapshots implemented; no bulk advertisement');
  await newer.rq(E.req.upStore(0,"LEGACY"));await older.rq(O.req.upStore(0,"LEGACY"));
  for(const r of [E.req.upGet(0),E.req.dump(),E.req.trackDump(0),E.req.get(0,109),E.req.desc(0,109)])check(JSON.stringify(await newer.rq(r))===JSON.stringify(await older.rq(r)),'legacy frames byte-identical');
  let session=await E.negotiateStable(info,r=>newer.rq(r),33);check(session.negotiated,'negotiated actual firmware');
@@ -18,8 +18,8 @@ try{
   const r=await newer.rq(E.stableScalarRequest(session,track,109,value));check(E.stableScalarReply(r,session,track,109).value===value,'targeted WIN scalar');
  }
  const get=await newer.rq(E.stableScalarRequest(session,0,109));check(E.stableScalarReply(get,session,0,109).value===127,'stable read');
- assert.throws(()=>E.stableScalarRequest(session,0,118,55));checks++;
- await assert.rejects(()=>E.negotiateStable({stable:{...info.stable,count:119}},()=>{throw Error('must not send');},33),/Unsupported/);checks++;
+ assert.throws(()=>E.stableScalarRequest(session,0,119,55));checks++;
+ await assert.rejects(()=>E.negotiateStable({stable:{...info.stable,count:120}},()=>{throw Error('must not send');},33),/Unsupported/);checks++;
  const unknown=await newer.rq([82,[0,2,1,33,0,118,0]]);check(unknown[1]===3,'unknown negotiated version refused');
  const stale=await newer.rq(E.stableScalarRequest(session,0,109,0));check(stale[1]===2,'failed negotiation revokes stale lease');
  session=await E.negotiateStable(info,r=>newer.rq(r),34);
@@ -45,7 +45,31 @@ try{
  const before=E.stableScalarReply(await newer.rq(E.stableScalarRequest(session,0,109)),session,0,109).value;
  const bad=await newer.rq([82,[2,1,1,34,0,0,109,0,0,65]]);check(bad[1]===4,'out-of-range rejected');check(E.stableScalarReply(await newer.rq(E.stableScalarRequest(session,0,109)),session,0,109).value===before,'atomic refusal');
  const start=html.indexOf('async function stableSet('),end=html.indexOf('/* engine / preset browser */',start);
- const uiSet=vm.runInNewContext(html.slice(start,end)+';stableSet',{negotiateStable:E.negotiateStable,stableScalarRequest:E.stableScalarRequest,stableScalarReply:E.stableScalarReply,assertSession:d=>{if(d.closed)throw Error('closed');},sessionRequest:(_d,r)=>newer.rq(r)});
+ const uiSet=vm.runInNewContext(html.slice(start,end)+';stableSet',{negotiateStable:E.negotiateStable,stableScalarRequest:E.stableScalarRequest,stableScalarReply:E.stableScalarReply,stableTransaction:E.stableTransaction,assertSession:d=>{if(d.closed)throw Error('closed');},sessionRequest:(_d,r)=>newer.rq(r)});
  const device={info};for(let track=0;track<4;track++)check((await uiSet(device,track,109,[0,64,127,1][track])).value===[0,64,127,1][track],'actual browser stableSet negotiates before writing');
+ session=await E.negotiateStable(info,r=>newer.rq(r),100);
+ for(let track=0;track<4;track++)for(const c of[0,1,55,100]){
+  const r=await newer.rq(E.stableScalarRequest(session,track,118,c));check(E.stableScalarReply(r,session,track,118).value===c,'actual C scalar0/1/55/100 on all tracks');
+ }
+ check(!(await newer.rq(E.req.set(0,118,0))).length,'legacy scalar cannot address C');
+ await newer.rq(E.req.set(0,0,50));check(E.stableScalarReply(await newer.rq(E.stableScalarRequest(session,0,118)),session,0,118).value===100,'unrelated legacy edit preserves C');
+ check(!(await newer.rq(E.req.dump())).length,'legacy dump cannot lose C');
+ const dump=await E.stableDump(r=>newer.rq(r),info);check(dump.personalityC===100 && dump.p.length===118 && dump.g.length===27,'modern browser reads full native snapshot without adding C UI');
+ await assert.rejects(()=>E.safeLegacyDump(r=>newer.rq(r),info),/Personality-C/);checks++;
+ await newer.rq(E.req.upStore(1,'C100'));
+ const overwrite=await newer.rq(E.req.upPut(1,{engine:8,name:'OLD',p:Array(118).fill(0)}));check(overwrite[1]!==0,'legacy bulk cannot overwrite C-bearing preset');
+ check((await newer.rq(E.req.upErase(1)))[1]!==0,'legacy erase cannot clear C-bearing preset');
+ const beforeC=await E.stableDump(r=>newer.rq(r),info);check(beforeC.personalityC===100,'C retained after rejected operations');
+ const phaseE=make(execFileSync('git',['show','37187a52589f8f736172b4f77957b7eff4a47520:web/editor.html'],{encoding:'utf8'}));
+ check(phaseE.parse[phaseE.CMD.INFO](ni).stable.count===118,'older negotiated client retains its explicit118 compatibility view');
+ const eh=execFileSync('git',['show','37187a52589f8f736172b4f77957b7eff4a47520:web/editor.html'],{encoding:'utf8'});
+ const oldExt=vm.runInNewContext(eh.slice(eh.indexOf('/*PROTO-BEGIN*/'),eh.indexOf('/*PROTO-END*/'))+';({negotiateStable,stableScalarRequest,stableScalarReply})',{setTimeout,clearTimeout,console});
+ const oldSession=await oldExt.negotiateStable(phaseE.parse[phaseE.CMD.INFO](ni),r=>newer.rq(r),81);
+ check(oldExt.stableScalarReply(await newer.rq(oldExt.stableScalarRequest(oldSession,0,109,64)),oldSession,0,109).value===64,'StepE client still edits its negotiated118 domain');
+ check((await newer.rq([82,[1,1,1,81,0,0,118,0]]))[1]===4,'118 lease cannot access C even on C-aware firmware');
+ check((await newer.rq([82,[3,1,1,81,0,0]]))[1]===3,'118 snapshot cannot silently drop nonzero C');
+ if(process.argv[4]){
+  const eg=gateway(process.argv[4]);try{const ei=E.parse[E.CMD.INFO](await eg.rq(E.req.info()));const es=await E.negotiateStable(ei,r=>eg.rq(r),82);check(es.count===118,'new client negotiates actual StepE firmware');check(E.stableScalarReply(await eg.rq(E.stableScalarRequest(es,0,109,64)),es,0,109).value===64,'new client uses old stable118 scalar path');}finally{await eg.close();}
+ }
  console.log(`Stable browser/firmware: ${checks} checks passed; all four compatibility combinations, marked/unmarked119, WIN and refusal policy`);
 }finally{await Promise.all([newer.close(),older.close()]);}

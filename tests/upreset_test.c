@@ -39,7 +39,7 @@ static uint32_t put_frame(uint8_t *a, uint32_t slot, uint32_t eng, const char *n
     for (i = 0; name[i]; i++)
         a[n++] = (uint8_t)name[i];
     a[n++] = 0;
-    for (i = 0; i < P_COUNT; i++) {
+    for (i = 0; i < 118u; i++) { /* frozen legacy UP_PUT wire count */
         uint32_t u = (uint32_t)(base + (int32_t)i + 8192);
         a[n++] = u & 127u;
         a[n++] = (u >> 7) & 127u;
@@ -65,7 +65,7 @@ int main(void)
     bad += check("UP_PUT parses", up_parse(a, n, &r, &slot) == 0 && slot == 5u && r.engine == 2u &&
                                       up_valid(&r) && !memcmp(r.name, "Bass One", 8) && !r.name[8]);
     ok = 1;
-    for (i = 0; i < P_COUNT; i++)
+    for (i = 0; i < 118u; i++)
         ok &= up_value(&r, i) == (i == P_GWIN ? 0 : (int16_t)(-40 + (int32_t)i));
     bad += check("UP_PUT values (negative v14 too)", ok);
     bad += check("pattern: rest drops flags, tie has no note",
@@ -189,7 +189,7 @@ int main(void)
         d.engine = ENGI_PHYS;
         m.engine = ENGI_PHYS;                               /* MEMB: stays PHYS */
         o.engine = ENGI_PHYS;
-        o.np = P_COUNT - 2u;                                /* an older layout: E0 at np - 8 */
+        o.np = 116u;                                /* an older layout: E0 at np - 8 */
         for (k = 0; k < 8u; k++) {
             up_set_value(&d, P_E0 + k, OLD[k]);
             up_set_value(&m, P_E0 + k, (int16_t)(k ? 9 : 2));
@@ -226,7 +226,7 @@ int main(void)
         up_rec_t d = r, m = r, o = r, before;
         uint32_t k;
         d.engine = m.engine = o.engine = ENGI_SAMPLE;
-        o.np = P_COUNT - 2u;                                /* an older layout: E0 at np - 8 */
+        o.np = 116u;                                /* an older layout: E0 at np - 8 */
         for (k = 0; k < 8u; k++) {
             up_set_value(&d, P_E0 + k, (int16_t)(k ? 30 + k : SMP_SET_PERC));
             up_set_value(&m, P_E0 + k, (int16_t)(k ? 30 + k : 2));   /* FLUTE: stays SAMPLE */
@@ -264,7 +264,7 @@ int main(void)
     /* map by count: a record from a build with 2 parameters fewer */
     for (i = 0; i < P_COUNT; i++)
         def[i] = (int16_t)(1000 + i);
-    r.np = P_COUNT - 2u;
+    r.np = 116u;
     for (i = 0; i < P_COUNT; i++)
         up_set_value(&r, i, (int16_t)i);
     up_params(&r, v, def);
@@ -287,7 +287,7 @@ int main(void)
          P_GTYPE + 1 == P_GA && P_GA + 1 == P_GB && P_GB + 1 == P_GCUT &&
          P_GCUT + 1 == P_GRES && P_GRES + 1 == P_GFILTER_RSVD1 &&
          P_GFILTER_RSVD1 + 1 == P_GFILTER_RSVD2 && P_GFILTER_RSVD2 + 1 == P_E0 &&
-         P_E0 == 110 && P_COUNT == 118;
+         P_E0 == 110 && P_COUNT == 119;
     for (i = 0; i < 45u; i++)
         ok &= v[i] == (int16_t)(2000 + i);
     for (i = P_SLCR; i < P_E0; i++)
@@ -338,13 +338,13 @@ int main(void)
         bad += check("v4 / v5 records of 91, 89 and 69 parameters: E0..E7 at P_E0, lane levels and chord keys defaults", ok);
     }
     r.ver = UP_LEGACY_PACKED;
-    r.np = P_COUNT;
+    r.np = 118u;
     for (i = 0; i < P_COUNT; i++)
         up_set_value(&r, i, (int16_t)i);
     up_params(&r, v, def);
     ok = 1;
     for (i = 0; i < P_COUNT; i++)
-        ok &= v[i] == (i == P_GWIN ? params_win_default(r.engine) : (int16_t)i);
+        ok &= v[i] == (i == P_GRC ? 0 : i == P_GWIN ? params_win_default(r.engine) : (int16_t)i);
     bad += check("np == P_COUNT: as stored", ok);
 
     {   /* steps -> pattern (UP_STORE) */
@@ -369,7 +369,7 @@ int main(void)
         a[n++] = 0;
         for (i = 0; i < 16u; i++) a[n++] = 0;
         a[n++] = CAT_KEYS;
-        ok = !up_parse(a, n, &r, &slot) && up_cat_of(&r) == CAT_KEYS && UP_CAT_AT >= P_COUNT && r.np == P_COUNT;
+        ok = !up_parse(a, n, &r, &slot) && up_cat_of(&r) == CAT_KEYS && UP_CAT_AT >= P_COUNT && r.np == 118u;
         a[n - 1u] = CAT_N;
         ok &= up_parse(a, n, &got, &slot) == 1;
         n = put_frame(a, 17, ENGI_DRUM, "KIT", 0);

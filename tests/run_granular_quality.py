@@ -10,11 +10,15 @@ p = argparse.ArgumentParser()
 p.add_argument('--freeze', action='store_true')
 p.add_argument('--sanitize', action='store_true')
 p.add_argument('--out', type=pathlib.Path)
+p.add_argument('--oracle-tree',type=pathlib.Path,help='clean pre-C checkpoint for historical serialized-byte fixtures')
 a = p.parse_args()
 fixture = root/'tests/fixtures/granular-quality.json'
 base = '49e7698c646b1b7395b4c7059fd1e8274ce67df4'
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 def run(args, **kw): return subprocess.run(args, cwd=root, check=True, **kw)
+if a.oracle_tree:
+    assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=a.oracle_tree,text=True).strip()=='fd7f6f036487c53af3d31df3f209b63d6d2d9e8d'
+    subprocess.run(['git','diff','--exit-code','HEAD','--','firmware','tests'],cwd=a.oracle_tree,check=True)
 if a.freeze:
     assert subprocess.check_output(['git','rev-parse','HEAD'], cwd=root, text=True).strip() == base
     run(['git','diff','--exit-code',base,'--','firmware','web','build.sh','build_coffee_grains.sh'])
@@ -47,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
             result['cases'][f'{name}/{mode}'] = record
             print(f'{name}/{mode}: {record["pcm_sha256"]}',flush=True)
     storage = str(out/'granular-quality-storage')
-    run(shlex.split(os.environ.get('CC','cc'))+flags+['tests/granular_quality_storage_test.c','-lm','-o',storage])
+    run(shlex.split(os.environ.get('CC','cc'))+flags+([f'-DGRANULAR_QUALITY_PERSISTENCE_SOURCE="{a.oracle_tree.resolve()}/tests/persistence_test.c"'] if a.oracle_tree else [])+['tests/granular_quality_storage_test.c','-lm','-o',storage])
     r=run([storage],capture_output=True,text=True)
     result['storage']=json.loads(r.stdout)
     if not a.freeze:
@@ -82,7 +86,8 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
     # historical binaries or substituting a mock parser.
     for test in ['grain_win_persistence_test','upreset_test']:
         binary=str(out/test)
-        run(shlex.split(os.environ.get('CC','cc'))+flags+[f'tests/{test}.c','-lm','-o',binary])
+        source=(a.oracle_tree.resolve()/f'tests/{test}.c') if a.oracle_tree and test=='grain_win_persistence_test' else root/f'tests/{test}.c'
+        run(shlex.split(os.environ.get('CC','cc'))+flags+[str(source),'-lm','-o',binary])
         r=run([binary],capture_output=True,text=True)
         (out/(test+'.log')).write_text(r.stdout+r.stderr)
         print(r.stdout.splitlines()[-1],flush=True)
@@ -91,4 +96,12 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
     r=run([exe,'0','0',str(pcm)],capture_output=True,text=True)
     record=json.loads(r.stdout);record['pcm_sha256']=sha(pcm)
     assert record==result['cases']['CLOUD/low-density']
+    # C is explicitly disconnected from audio. Reuse all frozen PCM/state cases
+    # with actual native C100 on every track, not a synthetic JS shadow.
+    for kind,name in enumerate(['CLOUD','FREEZE','STUTTER','SHIMMER']):
+        for scenario,mode in enumerate(['low-density','high-density','minimum-size','reverse','mod-filter','four-track']):
+            r=run([exe,str(kind),str(scenario),str(pcm)],capture_output=True,text=True,env={**os.environ,'GRC_VALUE':'100'})
+            c=json.loads(r.stdout);c['pcm_sha256']=sha(pcm)
+            assert c==result['cases'][f'{name}/{mode}'],('inactive C changed audio/state',name,mode)
+    print('Actual C100: all24 PCM/state cases identical to C0',flush=True)
 print('24 frozen cases + independent process repeat passed; mappings, short windows, RNG, admission and load checked')

@@ -3,13 +3,13 @@
 #include "editor_test.c"
 static unsigned checks;
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"stable line %u: %s\n",__LINE__,#x);return 1;}}while(0)
-static uint8_t neg[]={0,1,1,17,2,118,0};
+static uint8_t neg[]={0,1,1,17,2,119,0};
 static unsigned ext(uint8_t *a,unsigned n){unsigned got=request(ED_STABLE,a,n);return got>=12?host_wire[6]:99;}
 int main(void){
  reset();memset(&ed_stable,0,sizeof ed_stable);for(unsigned t=0;t<4;t++){set_engine_of(&trk[t],ENGI_GRAIN);trk[t].engine=ENGI_GRAIN;}
- CHECK(P_COUNT==118);CHECK(request(ED_INFO,0,0)>5);int cap=0;for(unsigned i=0;i+6<host_wire_n;i++)if(host_wire[i]==0x58&&host_wire[i+1]==1&&host_wire[i+2]==82){cap++;CHECK(host_wire[i+4]==118&&host_wire[i+5]==0&&host_wire[i+6]==7);}CHECK(cap==1);
+ CHECK(P_COUNT==119 && ED_LEGACY_COUNT==118);CHECK(request(ED_INFO,0,0)>5);int cap=0;for(unsigned i=0;i+6<host_wire_n;i++)if(host_wire[i]==0x58&&host_wire[i+1]==2&&host_wire[i+2]==82){cap++;CHECK(host_wire[i+4]==119&&host_wire[i+5]==0&&host_wire[i+6]==23);}CHECK(cap==1);
  uint8_t get[]={1,1,1,17,2,0,109,0};CHECK(ext(get,sizeof get)==2);
- CHECK(ext(neg,sizeof neg)==0);CHECK(host_wire[11]==118&&host_wire[13]==7);
+ CHECK(ext(neg,sizeof neg)==0);CHECK(host_wire[11]==119&&host_wire[13]==23);
  for(unsigned t=0;t<4;t++)for(unsigned w=0;w<128;w++){
   uint8_t put[]={2,1,1,17,2,t,109,0,w,64};CHECK(ext(put,sizeof put)==0);CHECK(trk[t].p[109]==(int)w);CHECK(!motion.count);
   get[5]=t;CHECK(ext(get,sizeof get)==0);CHECK(ed_rv(host_wire+14)==(int)w);
@@ -17,19 +17,19 @@ int main(void){
  /* Every truncated prefix/extra tail must reject without touching tracks or NOR. */
  uint8_t put[]={2,1,1,17,2,0,109,0,64,64,0};static track_t before[4];
  for(unsigned n=0;n<sizeof put;n++){if(n==10)continue;memcpy(before,trk,sizeof before);unsigned e=host_erases,p=host_writes;CHECK(ext(put,n)!=0);CHECK(!memcmp(before,trk,sizeof before));CHECK(e==host_erases&&p==host_writes);CHECK(ext(neg,sizeof neg)==0);}
- CHECK(ext(put,sizeof put)==1);put[6]=118;CHECK(ext(put,10)==4);put[6]=109;put[9]=65;CHECK(ext(put,10)==4);put[9]=64;
- uint8_t newer[]={0,2,1,17,2,118,0};CHECK(ext(newer,sizeof newer)==3);CHECK(ext(get,sizeof get)==2);
- newer[1]=1;newer[5]=119;CHECK(ext(newer,sizeof newer)==3);CHECK(ext(get,sizeof get)==2);CHECK(ext(neg,sizeof neg)==0);
+ CHECK(ext(put,sizeof put)==1);put[6]=119;CHECK(ext(put,10)==4);put[6]=109;put[9]=65;CHECK(ext(put,10)==4);put[9]=64;
+ uint8_t newer[]={0,2,1,17,2,119,0};CHECK(ext(newer,sizeof newer)==3);CHECK(ext(get,sizeof get)==2);
+ newer[1]=1;newer[5]=120;CHECK(ext(newer,sizeof newer)==3);CHECK(ext(get,sizeof get)==2);CHECK(ext(neg,sizeof neg)==0);
  uint8_t wrong[]={1,1,1,18,2,0,109,0};CHECK(ext(wrong,sizeof wrong)==2);CHECK(ext(get,sizeof get)==0);
  usb.config=0;CHECK(ext(get,sizeof get)==2);usb.config=1;CHECK(ext(get,sizeof get)==2);CHECK(ext(neg,sizeof neg)==0);
  uint8_t badcount[]={0,1,1,17,2,0,0};CHECK(ext(badcount,sizeof badcount)==3);CHECK(ext(neg,sizeof neg)==0);
  for(unsigned seed=0;seed<128;seed++){
-  uint8_t invalid[]={2,1,1,17,2,0,118,0,seed,64};memcpy(before,trk,sizeof before);
+  uint8_t invalid[]={2,1,1,17,2,0,119,0,seed,64};memcpy(before,trk,sizeof before);
   CHECK(ext(invalid,sizeof invalid)==4);CHECK(!memcmp(before,trk,sizeof before));
  }
  usb.resets++;CHECK(ext(get,sizeof get)==2);CHECK(ext(neg,sizeof neg)==0);fm1_ms+=5000;CHECK(ext(get,sizeof get)==2);
  fm1_ms=UINT32_MAX-100;CHECK(ext(neg,sizeof neg)==0);fm1_ms=50;CHECK(ext(get,sizeof get)==0);
- uint8_t snap[]={3,1,1,17,2,0};CHECK(ext(snap,sizeof snap)==0);CHECK(host_wire_n==253 && host_wire[14]==118);
+ uint8_t snap[]={3,1,1,17,2,0};CHECK(ext(snap,sizeof snap)==0);CHECK(host_wire_n==255 && host_wire[14]==119);
  uint8_t bulk[8+2*119]={4,1,1,17,2,0,119,0};memcpy(before,trk,sizeof before);CHECK(ext(bulk,sizeof bulk)==1);CHECK(!memcmp(before,trk,sizeof before));
  /* Unmarked119 is never the stable layout. Real legacy framing remains118. */
  uint8_t legacy[4+2*119+32]={0,ENGI_GRAIN,'X',0};
@@ -49,5 +49,5 @@ int main(void){
   model[P_LEVEL]=TSEL->p[P_LEVEL];CHECK(model[118]==frozen[118]);
  }
  CHECK(!motion_param(109));CHECK(ml_learn(70,0,109)==2);
- printf("Stable editor: %u checks passed; negotiated existing IDs only, malformed atomicity, no C/bulk advertisement\n",checks);return 0;
+ printf("Stable editor: %u checks passed; negotiated existing IDs only, malformed atomicity, C119 negotiated; no bulk advertisement\n",checks);return 0;
 }

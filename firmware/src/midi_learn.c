@@ -12,7 +12,7 @@ typedef char ml_row_free[NENGINES <= 14 ? 1 : -1];   /* (factory[14]: no engine'
 static uint8_t *const ml_tab = favorites.factory[14];
 static volatile uint8_t *const ml_io = ui.ml.io;         /* (midi_control.c ml_arm, ml_heard) */
 
-static uint32_t ml_code(uint32_t id) { return id >= P_E0 ? ML_E0 + id - P_E0 : id + 1u; }
+static uint32_t ml_code(uint32_t id) { return id >= 118u ? 0u : id >= P_E0 ? ML_E0 + id - P_E0 : id + 1u; }
 static uint32_t ml_get(uint32_t i) { return ml_tab[2u * i] | (uint32_t)ml_tab[2u * i + 1u] << 8; }
 static void ml_put(uint32_t i, uint32_t e)       /* (the ISR reads the two bytes: never half of one) */
 {
@@ -24,7 +24,7 @@ static void ml_put(uint32_t i, uint32_t e)       /* (the ISR reads the two bytes
 /* the CC of parameter id on track k, + 1; 0 none */
 static uint32_t ml_cc_of(uint32_t k, uint32_t id)
 {
-    if (id == P_GWIN) return 0; /* quarantined mappings remain raw settings bytes */
+    if (id >= 118u || id == P_GWIN) return 0; /* quarantined mappings remain raw settings bytes */
     uint32_t i, e;
     for (i = 0; i < ML_N; i++)
         if (((e = ml_get(i)) >> 9) == ml_code(id) && ((e >> 7) & 3u) == k)
@@ -46,7 +46,7 @@ static int ml_drop(uint32_t cc, uint32_t k, uint32_t id)
     for (i = 0; i < ML_N; i++) {
         if (!((e = ml_get(i)) >> 9))
             continue;
-        if ((e & 127u) == cc || ((e >> 9) == ml_code(id) && ((e >> 7) & 3u) == k)) {
+        if ((e & 127u) == cc || (id < 118u && (e >> 9) == ml_code(id) && ((e >> 7) & 3u) == k)) {
             ml_put(i, 0);
             gone = 1;
         }
@@ -57,7 +57,7 @@ static int ml_drop(uint32_t cc, uint32_t k, uint32_t id)
 static uint32_t ml_learn(uint32_t cc, uint32_t k, uint32_t id)
 {
     uint32_t i;
-    if (!ml_free_cc(cc) || k >= NTRK || id >= P_COUNT || id == P_GWIN)
+    if (!ml_free_cc(cc) || k >= NTRK || id >= 118u || id == P_GWIN)
         return 2;
     (void)ml_drop(cc, k, id);
     for (i = 0; i < ML_N; i++)
@@ -105,7 +105,7 @@ static void ml_toggle(void)
 /* a knob turned parameter id of track t (ui_input.c): picked while learning */
 static void ml_knob(const track_t *t, uint32_t id)
 {
-    if (!ui.ml.on || id >= P_COUNT || id == P_GWIN)
+    if (!ui.ml.on || id >= 118u || id == P_GWIN)
         return;
     ui.ml.trk = (uint8_t)trk_index(t);
     ui.ml.id = (uint8_t)id;

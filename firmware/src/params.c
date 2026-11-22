@@ -180,6 +180,7 @@ static const param_desc_t TP[P_COUNT] = {
     [P_GRES] = PD("RESONANCE", F_PCT, 0, 127, 0),
     [P_GFILTER_RSVD1] = PD("G-F RSV1", F_INT, 0, 0, 0),
     [P_GFILTER_RSVD2] = PD("G-F RSV2", F_INT, 0, 0, 0),
+    [P_GRC] = PD("-", F_INT, 0, 0, 0),
 };
 
 /* the INSERT's A B C as its TYPE means them (TP's ranges and defaults): the drives DRIVE TONE LEVEL, CRUSH BITS RATE
@@ -249,11 +250,20 @@ static const param_desc_t *param_desc_of(uint32_t e, uint32_t id)
         static const param_desc_t grain_stretch = PD("STRETCH", F_INT, 0, 127, 0);
         return &grain_stretch;
     }
-    return id >= P_E0 ? &ENGINES[e]->edit[id - P_E0] : &TP[id];
+    if (id == P_GRC && e == ENGI_GRAIN) {
+        static const param_desc_t grain_c = PD("C", F_INT, 0, 100, 0);
+        return &grain_c;
+    }
+    if (id >= P_COUNT || e >= NENGINES) {
+        static const param_desc_t reserved = PD("-", F_INT, 0, 0, 0);
+        return &reserved;
+    }
+    return id >= P_E0 && id <= P_E7 ? &ENGINES[e]->edit[id - P_E0] : &TP[id];
 }
 
 static const param_desc_t *track_desc(const track_t *t, uint32_t id)
 {
+    if (id >= P_GRC) return param_desc_of(t->eng_req % NENGINES, id);
     if (id == P_E3 && t->eng_req % NENGINES == ENGI_GRAIN) {
         static const param_desc_t grain_dens = PD("DENS", F_PCT, 0, 127, 80);
         return &grain_dens;

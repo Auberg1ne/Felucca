@@ -60,7 +60,13 @@ static void historical_funa(project_store_t *out)
 int main(void){
  fixture("tests/fixtures/grain-win-i1/fun11-base.bin",&valid);fixture("tests/fixtures/grain-win-i1/proposed-func.bin",&future);
  #ifdef PROJ_MAGIC_V12
- uint32_t next_magic=0x46554e44u;memcpy(future.raw,&next_magic,4);uint32_t next_sum=proj_hash(future.raw,3836);memcpy(future.raw+3836,&next_sum,4);
+ uint32_t next_magic=
+#ifdef PROJ_MAGIC_V13
+0x46554e45u;
+#else
+0x46554e44u;
+#endif
+memcpy(future.raw,&next_magic,4);uint32_t next_sum=proj_hash(future.raw,3836);memcpy(future.raw+3836,&next_sum,4);
 #endif
  for(unsigned slot=0;slot<4;slot++){
   boot();CHECK(st_save(OBJ_PROJECT0+slot,&future,sizeof future)==0);blocked(slot,PS_UNSUPPORTED);
@@ -125,7 +131,7 @@ int main(void){
  /* Known valid A/B history remains writable through repeated saves. */
  boot();for(unsigned k=0;k<5;k++)CHECK(!project_save(0));
 
- CHECK(P_COUNT==118 && P_E0==110 && sizeof(project_store_t)==3840 && sizeof(up_rec_t)==192);
+ CHECK(P_COUNT==119 && P_GRC==118 && P_E0==110 && sizeof(project_store_t)==3840 && sizeof(up_rec_t)==192);
  printf("project downgrade bridge: %u checks passed; physical NOR/retained atomicity, all slot writers and backup guards\n",checks);return 0;
 }
 

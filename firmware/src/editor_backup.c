@@ -54,7 +54,26 @@ static const uint8_t *ed_bk_object(uint32_t id, uint32_t *len)
         return (const uint8_t *)&proj_slot[id - 2u];
     }
     if (id == 6u || id == 7u) {
+#if FELUCCA_FLASH
+        /* Archive the authoritative physical image, not a normalized/lost cache.
+         * This is a read: supported outer banks may contain opaque legacy records. */
+        if (!flash_ok) return 0;
+        st_hdr_t best = {0}, h; int selected = -1;
+        for (uint32_t copy = 0; copy < 2u; copy++) {
+            int state = st_copy_state(OBJ_UPRESET0 + id - 6u, copy, &h);
+            if (state < 0) return 0;
+            if (!state) continue;
+            const up_bank_t *bank = (const up_bank_t *)st_buf;
+            if (h.len && (h.len != sizeof *bank || bank->magic != UP_BANK_MAGIC || bank->rsize != sizeof(up_rec_t) || bank->nslot != UP_PER_BANK)) return 0;
+            if (selected < 0 || (h.seq != best.seq && h.seq - best.seq < 0x80000000u)) { selected = (int)copy; best = h; }
+        }
+        if (selected >= 0 && best.len) {
+            if (st_copy_state(OBJ_UPRESET0 + id - 6u, (uint32_t)selected, &h) != 1 || h.len != sizeof(up_bank_t)) return 0;
+            *len = h.len; return st_buf;
+        }
+#else
         if (up_bank[id - 6u].magic == UP_BANK_MAGIC) *len = sizeof up_bank[0];
+#endif
         return (const uint8_t *)&up_bank[id - 6u];
     }
     if (id == 8u)                                   /* the retired FM6 patch bank: always empty */
@@ -119,6 +138,13 @@ static uint32_t ed_bk_commit(void)
             project_readonly_message(ed_bk_id-2u);
             return 2;
         }
+        uint32_t incoming_magic = 0;
+        if (ed_bk_len >= 4u) memcpy(&incoming_magic, raw, 4);
+        if (incoming_magic != PROJ_MAGIC_V13) {
+            if (ed_bk_id == 0u) {
+                for (uint32_t t = 0; t < NTRK; t++) if (trk[t].p[P_GRC]) return 2;
+            } else if (!project_backup_legacy_ok(ed_bk_id - 2u)) return 2;
+        }
         if (ed_bk_len && !proj_import(&proj_scratch, raw, (int)ed_bk_len)) return 2;
         if (ed_bk_len && !grain_project_ok(&proj_scratch)) {
             ui_message("GRAIN ONLY: LEGACY BACKUP");
@@ -147,6 +173,15 @@ static uint32_t ed_bk_commit(void)
             ui_message("GRAIN ONLY: PRESET BANK READ ONLY");
             return 2;
         }
+#if FELUCCA_FLASH
+        if (!up_bank_backup_ok(ed_bk_id - 6u, p, ed_bk_len)) return 2;
+#else
+        for (uint32_t k = 0; k < UP_PER_BANK; k++) {
+            const up_rec_t *old = &up_bank[ed_bk_id - 6u].r[k];
+            if (up_valid(old) && old->ver >= UP_VER && up_value(old, P_GRC))
+                if (ed_bk_len != sizeof *p || !up_valid(&p->r[k]) || p->r[k].ver < UP_VER) return 2;
+        }
+#endif
         /* Physical ownership of BOTH copies is checked again before replacement/clear. */
         obj = OBJ_UPRESET0 + ed_bk_id - 6u;
     } else if (ed_bk_id == 8u) {                    /* an older archive's FM6 bank: into the restored user presets */
@@ -242,7 +277,7 @@ static int ed_backup_handle(uint32_t cmd, const uint8_t *a, uint32_t n)
         uint32_t len[ED_BK_N], crc[ED_BK_N]; /* bounded 144-byte manifest, no payload buffer */
         if (!rc) for (uint32_t i = 0; i < ED_BK_N; i++) {
             const uint8_t *p = ed_bk_object(ED_BK_IDS[i], &len[i]);
-            if (!p && ED_BK_IDS[i] >= 2u && ED_BK_IDS[i] <= 5u) { rc = 2; break; }
+            if (!p && ED_BK_IDS[i] >= 2u && ED_BK_IDS[i] <= 7u) { rc = 2; break; }
             crc[i] = st_crc32(p, len[i]);
             fm1_wdt_feed();
         }

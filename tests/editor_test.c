@@ -750,14 +750,14 @@ static int fm6_patches(void)
 /* UP_PUT -> UP_GET: every value round-trips through the v4 record (a byte each), negative ones too */
 static int user_preset_roundtrip(void)
 {
-    static uint8_t a[16 + 2u * P_COUNT + 32u + 18u];
+    static uint8_t a[16 + 2u * ED_LEGACY_COUNT + 32u + 18u];
     int16_t want[P_COUNT], got[P_COUNT];
     uint32_t k = 0, i, p, ok, n;
     int bad = 0;
     reset();
     a[k++] = 3; a[k++] = 0;                                /* slot U04, ANALOG */
     memcpy(a + k, "ROUND", 5); k += 5; a[k++] = 0;
-    for (i = 0; i < P_COUNT; i++) {
+    for (i = 0; i < ED_LEGACY_COUNT; i++) {
         const param_desc_t *d = param_desc_of(0, i);
         int16_t v = d->def;
         uint32_t u;
@@ -774,12 +774,12 @@ static int user_preset_roundtrip(void)
     bad += check("UP_PUT stores a v4 record (no flash here: kept in RAM)",
                  host_wire[6] != 1u && up_used(3) && up_rec(3)->ver == UP_VER);
     up_values(up_rec(3), got);
-    for (i = 0, ok = 1; i < P_COUNT; i++) ok &= got[i] == want[i];
+    for (i = 0, ok = 1; i < ED_LEGACY_COUNT; i++) ok &= got[i] == want[i];
     bad += check("UP_PUT keeps every value (PAN -20, FLT -40, min and max)", ok);
     a[0] = 3;
     request(ED_UP_GET, a, 1);
     ok = host_wire[5] == 3 && host_wire[6] == 1 && host_wire[7] == 0 && !memcmp(host_wire + 8, "ROUND", 6);
-    for (i = 0, p = 14; i < P_COUNT; i++, p += 2u)
+    for (i = 0, p = 14; i < ED_LEGACY_COUNT; i++, p += 2u)
         ok &= (int32_t)(host_wire[p] | host_wire[p + 1] << 7) - 8192 == want[i];
     for (i = 0; i < 16u; i++, p += 2u)
         ok &= host_wire[p] == (i & 1u ? 0u : 48u + i);
@@ -1212,7 +1212,7 @@ static int menu_protocol(void)
 static int drum_kit_retired(void)
 {
     static const uint8_t MAP[4] = {0, 6, 5, 8};
-    static uint8_t a[16 + 2u * P_COUNT + 32u];
+    static uint8_t a[16 + 2u * ED_LEGACY_COUNT + 32u];
     int16_t got[P_COUNT];
     uint32_t r, i, k = 0, ok = 1;
     int bad = 0;
@@ -1238,7 +1238,7 @@ static int drum_kit_retired(void)
     bad += check("SET of DRUM KIT 1..3 lands on 66 10 77 (and replies it)", ok);
     a[k++] = 5; a[k++] = ENGI_DRUM;                        /* slot U06, DRUM, KIT 3 (H+CYM) */
     memcpy(a + k, "OLDKIT", 6); k += 6; a[k++] = 0;
-    for (i = 0; i < P_COUNT; i++) {
+    for (i = 0; i < ED_LEGACY_COUNT; i++) {
         uint32_t u = (uint32_t)((i == P_E0 ? 3 : param_desc_of(ENGI_DRUM, i)->def) + 8192);
         a[k++] = u & 127u; a[k++] = (u >> 7) & 127u;
     }

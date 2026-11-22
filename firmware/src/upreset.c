@@ -8,8 +8,9 @@
  * the record itself is unchanged). Loading one loads the sound only; its pattern
  * is offered by SAVE > PHRASES ("U07", up_pat_load). The bank and record sizes are unchanged.
  *
- * Versions: a bank whose magic, record size or slot count differ reads as
- * empty; unsupported used records retain their bytes and are read-only. A record keeps np =
+ * Versions8/9 mark stable IDs0..118 and C; versions6/7 mark WIN with118 parameters.
+ * Unknown physical bank shapes are protected by the two-copy ownership guard,
+ * even when the browsing cache is empty. Historical versions1..7 keep np =
  * the P_COUNT it was stored with; when that differs from today's it is
  * mapped by count: its last 8 values are P_E0..P_E7, the first np - 8 are
  * P_LEVEL.. in order, and parameters it does not have take their defaults.
@@ -49,8 +50,10 @@
 #define UP_PMAX 72u                              /* room for P_COUNT to grow */
 #define UP_USED 0xA5u
 #define UP_LEGACY_WIRE_COUNT 118u /* fixed unmarked editor arrays, never a native layout marker */
-#define UP_VER 6u                                /* explicit WIN provenance; legacy 1..5 remain readable */
-#define UP_VER_GRID 7u                           /* WIN-aware grid; legacy grids were 3 and 5 */
+#define UP_VER_WIN 6u
+#define UP_VER_WIN_GRID 7u
+#define UP_VER 8u                                /* stable0..118 plus explicit C provenance */
+#define UP_VER_GRID 9u                           /* C-aware grid; WIN-only6/7 remain readable */
 #define UP_LEGACY_PACKED 4u
 #define UP_LEGACY_GRID 5u
 #define UP_BANK_MAGIC 0x31425055u                /* "UPB1" */
@@ -113,11 +116,17 @@ static int up_valid(const up_rec_t *r)
     if (!(r->used == UP_USED && r->ver >= 1u && r->ver <= UP_VER_GRID && r->engine < NENGINES &&
           r->np >= 8u && r->np <= (r->ver >= 4u ? UP_PMAX * 2u : UP_PMAX) && r->name[0])) return 0;
     if (r->ver >= 4u) for (uint32_t i = 0; i < r->np; i++) if (r->packed[i] > 191u) return 0;
-    if (r->ver >= UP_VER && (r->np != P_COUNT ||
+    if (r->ver >= UP_VER_WIN && (r->np != (r->ver >= UP_VER ? 119u : 118u) ||
         (r->engine == ENGI_GRAIN ? r->packed[P_GWIN] < 64u : r->packed[P_GWIN] != 64u))) return 0;
+    if (r->ver >= UP_VER && (r->packed[P_GRC] < 64u ||
+        r->packed[P_GRC] > (r->engine == ENGI_GRAIN ? 164u : 64u))) return 0;
     return 1;
 }
 
+static uint32_t up_engine_base(const up_rec_t *r)
+{
+    return r->ver >= UP_VER ? P_E0 : (uint32_t)r->np - 8u;
+}
 static int up_used(uint32_t k) { return k < UP_SLOTS && up_valid(up_rec(k)); }
 
 #ifndef UP_HOST
@@ -141,7 +150,7 @@ static int up_bank_known(const up_bank_t *b)
     return 1;
 }
 #endif
-static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_LEGACY_GRID || r->ver == UP_VER_GRID; }
+static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_LEGACY_GRID || r->ver == UP_VER_WIN_GRID || r->ver == UP_VER_GRID; }
 static int16_t up_value(const up_rec_t *r, uint32_t k) { return r->ver >= 4u ? (int16_t)r->packed[k] - 64 : r->p[k]; }
 static void up_set_value(up_rec_t *r, uint32_t k, int16_t v)
 {
@@ -152,10 +161,10 @@ static void up_migrate(up_rec_t *r)
 {
     int16_t e[8]; uint32_t k;
     if (!up_valid(r)) return;
-    for (k = 0; k < 8u; k++) e[k] = up_value(r, r->np - 8u + k);
+    for (k = 0; k < 8u; k++) e[k] = up_value(r, up_engine_base(r) + k);
     if (drum_from_phys(r->engine, e) || drum_from_perc(r->engine, e)) {   /* (SAMPLE PERC: see the top) */
         r->engine = ENGI_DRUM;
-        for (k = 0; k < 8u; k++) up_set_value(r, r->np - 8u + k, e[k]);
+        for (k = 0; k < 8u; k++) up_set_value(r, up_engine_base(r) + k, e[k]);
     }
 }
 
@@ -190,8 +199,9 @@ static void up_params(const up_rec_t *r, int16_t *out, const int16_t *def)
 {
     int16_t values[UP_PMAX * 2u];
     for (uint32_t i = 0; i < r->np && i < NELEM(values); i++) values[i] = up_value(r, i);
-    params_by_count(out, values, r->np, def);
-    if (r->ver < UP_VER) params_win_legacy(out, r->engine);
+    if (r->ver >= UP_VER) memcpy(out, values, sizeof(int16_t) * P_COUNT);
+    else params_by_count(out, values, r->np, def);
+    if (r->ver < UP_VER_WIN) params_win_legacy(out, r->engine);
 }
 
 static int up_name_ok(const uint8_t *s, uint32_t n)   /* 1..12 printable ASCII */
@@ -347,6 +357,46 @@ static int up_bank_writable(uint32_t bank)
     int copy;
     return up_bank_inspect(bank, &h, &copy);
 }
+/* Legacy slot commands must not trust a lost/stale browsing cache. */
+static int up_legacy_c_ok(uint32_t slot)
+{
+    if (slot >= UP_SLOTS) return 0;
+    uint32_t bank = slot / UP_PER_BANK;
+    st_hdr_t h; int selected;
+    if (!up_bank_inspect(bank, &h, &selected)) return 0;
+    for (uint32_t copy = 0; copy < 2u; copy++) {
+        int state = st_copy_state(OBJ_UPRESET0 + bank, copy, &h);
+        if (state < 0) return 0;
+        if (!state || !h.len) continue;
+        const up_bank_t *physical = (const up_bank_t *)st_buf;
+        for (uint32_t k = 0; k < UP_PER_BANK; k++) {
+            const up_rec_t *r = &physical->r[k];
+            if (r->used != UP_USED || r->ver < UP_VER || !up_value(r, P_GRC)) continue;
+            if (k == slot % UP_PER_BANK || memcmp(r, &up_bank[bank].r[k], sizeof *r)) return 0;
+        }
+    }
+    return 1;
+}
+/* Legacy/raw bank clears do not carry C provenance. Inspect physical copies,
+ * never a possibly empty/stale cache, before replacing C-bearing records. */
+static int up_bank_backup_ok(uint32_t bank, const up_bank_t *incoming, uint32_t len)
+{
+    st_hdr_t h; int current;
+    if (!up_bank_inspect(bank, &h, &current)) return 0;
+    for (uint32_t copy = 0; copy < 2u; copy++) {
+        int state = st_copy_state(OBJ_UPRESET0 + bank, copy, &h);
+        if (state < 0) return 0;
+        if (!state || !h.len) continue;
+        if (h.len != sizeof(up_bank_t) || !up_bank_known((const up_bank_t *)st_buf)) return 0;
+        const up_bank_t *old = (const up_bank_t *)st_buf;
+        for (uint32_t k = 0; k < UP_PER_BANK; k++) {
+            const up_rec_t *r = &old->r[k];
+            if (r->used == UP_USED && r->ver >= UP_VER && up_value(r, P_GRC))
+                if (len != sizeof(up_bank_t) || !up_valid(&incoming->r[k]) || incoming->r[k].ver < UP_VER) return 0;
+        }
+    }
+    return 1;
+}
 static int up_bank_save(uint32_t bank, const void *raw, uint32_t len)
 {
     if (bank >= UP_SLOTS / UP_PER_BANK || (len && (len != sizeof(up_bank_t) || !up_bank_known(raw))))
@@ -407,8 +457,10 @@ static int up_put(uint32_t k, const up_rec_t *r)
        (r && !grain_engine_allowed(r->engine))))){ui_message("GRAIN ONLY: PRESET READ ONLY");return 1;}
     /* Unmarked bulk replacement cannot silently discard an explicit window.
      * Native STORE has a WIN-aware version and captures canonical live state. */
-    if (r && r->ver < UP_VER && up_valid(up_rec(k)) && up_rec(k)->ver >= UP_VER &&
+    if (r && r->ver < UP_VER_WIN && up_valid(up_rec(k)) && up_rec(k)->ver >= UP_VER_WIN &&
         up_rec(k)->engine == ENGI_GRAIN && up_value(up_rec(k), P_GWIN) != 64) return 1;
+    if (r && r->ver < UP_VER && up_valid(up_rec(k)) && up_rec(k)->ver >= UP_VER &&
+        up_value(up_rec(k), P_GRC) != 0) return 1; /* unmarked replacement cannot discard C */
     if (transport_busy()) {                            /* no flash erase while playing (project_save) */
         ui_message("STOP TO SAVE");
         return 2;

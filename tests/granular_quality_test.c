@@ -13,7 +13,7 @@ static int mapping(void){
  const unsigned row[4]={103,104,105,255};
  const int defaults[4][2]={{64,64},{96,8},{64,64},{80,64}};
  const char *names[4][2]={{"DRIFT","WIDTH"},{"HOLD","MOTION"},{"RATE","GATE"},{"INTERVAL","HARMONICS"}};
- REQUIRE(P_COUNT==118 && P_E0==110 && P_GWIN==109);
+ REQUIRE(P_COUNT==119 && P_GRC==118 && P_E0==110 && P_GWIN==109);
  for(unsigned type=0;type<4;type++){
   TSEL->p[P_GTYPE]=type;
   for(unsigned c=0;c<4;c++)REQUIRE(grain_grid_param(1,0,c)==row[c]);
@@ -51,6 +51,7 @@ int main(int argc,char**argv){
   t->p[P_ED_FLT]=t->p[P_LD_FLT]=t->p[P_ED_SHP]=t->p[P_LD_SHP]=t->p[P_LD_AMP]=0;t->p[P_PAN]=t->p[P_SPRD]=0;
   const int e[]={src,64,scenario==2?0:80,scenario==0?30:127,0,40,scenario==3?127:30,127};
   for(unsigned i=0;i<8;i++)t->p[P_E0+i]=e[i];
+  t->p[P_GRC]=getenv("GRC_VALUE")?atoi(getenv("GRC_VALUE")):0;REQUIRE(t->p[P_GRC]>=0 && t->p[P_GRC]<=100);
   t->p[P_GTYPE]=kind;t->p[P_GA]=t->p[P_GB]=64;t->p[P_GWIN]=64;t->p[P_GCUT]=0;t->p[P_GRES]=127;t->p[108]=0;
   if(scenario==4){t->p[P_LRATE]=95;t->p[P_LD_FLT]=60;t->p[P_LD_SHP]=50;}
   gr_part_t*g=gr_of(t);memset(g,0,sizeof *g);gr_reset(g,src,gr_stamp(src));for(unsigned i=0;i<GR_NIDX;i++)gr_build(g,t);

@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Compact current-format snapshots; historical binaries are frozen separately. */
 #define PERSISTENCE_TEST_NO_MAIN 1
-#include "persistence_test.c"
+#ifndef GRANULAR_QUALITY_PERSISTENCE_SOURCE
+#define GRANULAR_QUALITY_PERSISTENCE_SOURCE "persistence_test.c"
+#endif
+#include GRANULAR_QUALITY_PERSISTENCE_SOURCE
 #define REQUIRE(x) do{if(!(x)){fprintf(stderr,"quality storage %u: %s\n",__LINE__,#x);return 1;}}while(0)
 static uint64_t bytes(const void*p,unsigned n){const unsigned char*b=p;uint64_t h=UINT64_C(14695981039346656037);for(unsigned i=0;i<n;i++){h^=b[i];h*=UINT64_C(1099511628211);}return h;}
 int main(void){

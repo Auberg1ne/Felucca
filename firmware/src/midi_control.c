@@ -247,14 +247,14 @@ static void midi_cc_set(track_t *t, uint32_t id, uint32_t value)
  * (midi_learn.c) writes the entries with the interrupts off; ml_arm / ml_heard hand a CC heard while learning to it */
 #define ML_N 16u
 #define ML_E0 120u
-typedef char ml_ids_fit[P_E0 < ML_E0 && P_COUNT - P_E0 == 8 ? 1 : -1];
+typedef char ml_ids_fit[P_E0 < ML_E0 && P_E7 - P_E0 == 7 ? 1 : -1];
 static uint8_t *const ml_tab;               /* favorites.factory[14] (midi_learn.c: a build without the UI, none) */
 static volatile uint8_t *const ml_io;       /* ui.ml.io (midi_learn.c; not globals here: the ISR's data keeps its layout) */
 #define ml_arm (ml_io[0])                   /* the UI waits for a CC (MIDI LEARN with a parameter picked) */
 #define ml_heard (ml_io[1])                 /* .. the CC that came meanwhile, + 1 (0 none) */
 static uint32_t ml_id(uint32_t code)        /* an entry's code -> P_* id, P_COUNT: none this firmware knows */
 {
-    return code >= ML_E0 ? P_E0 + code - ML_E0 : code && code <= P_E0 ? code - 1u : P_COUNT;
+    return code >= ML_E0 && code < 128u ? P_E0 + code - ML_E0 : code && code <= P_E0 ? code - 1u : P_COUNT;
 }
 static int ml_free_cc(uint32_t cc)          /* (CC1 6 38 64 98..101 120..127: midi_control's own) */
 {

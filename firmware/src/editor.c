@@ -713,7 +713,8 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(0x43); ed_b(1); ed_b(ML_N);   /* 1.5: MIDI LEARN's map (cmds 78, 79; editor_learn.c) */
         ed_b(0x4B); ed_b(1); ed_b(NCOND);   /* 1.5.5: a step's condition (1..11) after its nudge */
         ed_b(0x45); ed_b(1); ed_b(ED_PAL_N);   /* 1.6: CUSTOM, the user's palette: 5 colours (cmds 80, 81; editor_palette.c) */
-        ed_b(0x58); ed_b(1); ed_b(ED_STABLE); ed_b(1); ed_b(ED_STABLE_COUNT); ed_b(ED_STABLE_COUNT >> 7); ed_b(ED_STABLE_FLAGS);
+        ed_b(0x58); ed_b(2); ed_b(ED_STABLE); ed_b(1); ed_b(ED_STABLE_COUNT); ed_b(ED_STABLE_COUNT >> 7); ed_b(ED_STABLE_FLAGS);
+        ed_b(0x58); ed_b(1); ed_b(ED_STABLE); ed_b(1); ed_b(ED_LEGACY_COUNT); ed_b(ED_LEGACY_COUNT >> 7); ed_b(7);
         if(FELUCCA_GRAIN_ONLY){ed_b(0x47);ed_b(1);ed_b(ENGI_GRAIN);} /* optional, appended policy tag */
         break;
     case ED_GET:
@@ -722,7 +723,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
             return;
         if (cmd == ED_SET && na >= 4u && !(chain_busy() && !a[0] && chain_owns(a[1]))) {
             if (a[0] == 1 && a[1] == G_ENGSEL) {          /* engine defaults: a potentially lossy replacement */
-                if (!ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT)) return;
+                if (!ed_legacy_live(TSEL)) return;
                 if (!grain_engine_allowed((uint32_t)ed_rv(a+2))) {
                     ui_message("GRAIN ONLY: ENGINE REFUSED");
                     return;
@@ -746,6 +747,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_v(*vp);
         break;
     case ED_DUMP:
+        if (!ed_legacy_live(TSEL)) return;
         for (i = 0; i < ED_NV; i++)                       /* the editor gets them all here */
             ed_w.v[i] = *ed_val(i);
         ed_b(ed_eng(TSEL));
@@ -785,7 +787,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         break;
     }
     case ED_PRESET: {                                      /* engine, preset */
-        if (!ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT)) return;
+        if (!ed_legacy_live(TSEL)) return;
         ed_load_t b;
         if (na < 2u || a[0] >= NENGINES)
             return;
@@ -933,6 +935,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         if (na < 1u || a[0] >= UP_SLOTS)
             return;
         r = up_rec(a[0]);
+        if (!ed_legacy_slot(a[0])) return;
         u = (uint32_t)up_used(a[0]);
         if (u)
             up_values(r, v);                               /* today's P_* order, clamped */
@@ -959,7 +962,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         uint32_t slot = 0, rc;
         if (na < 1u)
             return;
-        rc = ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT) ? (uint32_t)up_parse(a, na, &r, &slot) : 1u;
+        rc = ed_legacy_slot(a[0]) ? (uint32_t)up_parse(a, na, &r, &slot) : 1u;
         if (!rc && ed_flash_stop())
             rc = 2;
         if (!rc) {
@@ -980,7 +983,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
             return;
         for (n0 = 0; 1u + n0 < na && a[1 + n0] && n0 < 13u; n0++)
             ;
-        if (a[0] < UP_SLOTS && (!n0 || up_name_ok(a + 1, n0)) &&
+        if (ed_legacy_slot(a[0]) && a[0] < UP_SLOTS && (!n0 || up_name_ok(a + 1, n0)) &&
             (1u + n0 == na || (2u + n0 == na && !a[1u + n0]))) {   /* "" = automatic name */
             for (i = 0; i < n0; i++)
                 nm[i] = (char)a[1 + i];
@@ -996,13 +999,13 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         if (na < 1u)
             return;
         ed_b(a[0]);
-        ed_b(ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT) && a[0] < UP_SLOTS && !up_load(a[0]) ? 0u : 1u);
+        ed_b(ed_legacy_live(TSEL) && ed_legacy_slot(a[0]) && a[0] < UP_SLOTS && !up_load(a[0]) ? 0u : 1u);
         break;
     case ED_UP_ERASE:
         if (na < 1u)
             return;
         ed_b(a[0]);
-        ed_b(!ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT) || a[0] >= UP_SLOTS ? 1u : ed_flash_stop() || up_put(a[0], 0) ? 2u : 0u);
+        ed_b(!ed_legacy_slot(a[0]) || a[0] >= UP_SLOTS ? 1u : ed_flash_stop() || up_put(a[0], 0) ? 2u : 0u);
         break;
     case ED_WATCH: {                                       /* on -> on */
         uint32_t keep, v4was = ed_w.v4;
@@ -1061,6 +1064,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
     case ED_TRACK_DUMP:                                    /* track -> track, engine, preset, P_COUNT x v14 */
         if (na < 1u || a[0] >= NTRK)
             return;
+        if (!ed_legacy_live(&trk[a[0]])) return;
         ed_b(a[0]);
         ed_b(ed_eng(&trk[a[0]]));
         ed_b(trk[a[0]].preset);

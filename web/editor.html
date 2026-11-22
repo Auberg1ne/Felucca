@@ -368,8 +368,13 @@ function stableCapability(a) {
   if(end>=3 && a[end-3]===0x47 && a[end-2]===1)end-=3;
   const b=a.slice(end-7,end);
   if(b.length!==7 || b[0]!==0x58)return null;
-  if(b[1]!==1 || b[2]!==82 || b[3]!==1 || b[6]!==7)return {unsupported:true};
-  return {version:1,layout:1,command:82,count:b[4]+128*b[5],flags:b[6]};
+  if(b[1]!==1 || b[2]!==82 || b[3]!==1 || b[4]!==118 || b[5]!==0 || b[6]!==7)return {unsupported:true};
+  const full=a.slice(end-14,end-7);
+  if(full.length===7 && full[0]===0x58){
+    if(full[1]!==2 || full[2]!==82 || full[3]!==1 || full[4]!==119 || full[5]!==0 || full[6]!==23)return {unsupported:true};
+    return {version:1,capVersion:2,layout:1,command:82,count:119,flags:23};
+  }
+  return {version:1,capVersion:1,layout:1,command:82,count:118,flags:7};
 }
 function parameterProvenance(marker) {
   if(marker==null)return {kind:"legacy-tail-eight"};
@@ -383,7 +388,7 @@ function legacyCoverage(ids) {
 async function negotiateStable(info, request, nonce) {
   const c=info.stable;
   if(!c)return null; // old firmware: never send the unknown command
-  if(c.unsupported || c.count!==118 || !Number.isInteger(nonce) || nonce<1 || nonce>16383)
+  if(c.unsupported || !((c.count===118 && c.flags===7)||(c.count===119 && c.flags===23)) || !Number.isInteger(nonce) || nonce<1 || nonce>16383)
     throw new Error("Unsupported stable-ID capability; no bulk writes permitted");
   const r=await request([82,[0,1,1,nonce&127,nonce>>7,c.count&127,c.count>>7]]);
   if(r.length!==9 || r[0]!==0 || r[1]!==0 || r[2]!==1 || r[3]!==1 || r[4]+128*r[5]!==nonce || r[6]+128*r[7]!==c.count || r[8]!==c.flags)
@@ -400,6 +405,39 @@ function stableScalarReply(r, session, track, id) {
   if(r.length!==11 || ![1,2].includes(r[0]) || r[1] || r[2]!==1 || r[3]!==1 || r[4]+128*r[5]!==session.nonce || r[6]!==track || r[7]+128*r[8]!==id)
     throw new Error("Stable-ID scalar rejected");
   return {value:r[9]+128*r[10]-8192};
+}
+let stableJobs=Promise.resolve(), stableSequence=1;
+function stableTransaction(info, request, task) {
+  const job=stableJobs.catch(()=>{}).then(async()=>{
+    stableSequence=stableSequence%16383+1;
+    const session=await negotiateStable(info,request,stableSequence);
+    if(!session)throw new Error("Stable-ID negotiation unavailable");
+    return task(session);
+  });
+  stableJobs=job;return job;
+}
+function stableReplyHeader(r, op, session) {
+  if(r.length<6 || r[0]!==op || r[1]!==0 || r[2]!==1 || r[3]!==1 || r[4]+128*r[5]!==session.nonce)
+    throw new Error("Stable-ID read rejected");
+}
+async function stableDump(request, info) {
+  return stableTransaction(info,request,async session=>{
+    const selected=parse[CMD.TRACK](await request(req.track())).sel;
+    const h=[1,1,session.nonce&127,session.nonce>>7];
+    const r=await request([82,[3,...h,selected]]);stableReplyHeader(r,3,session);
+    const count=r[9]+128*r[10];
+    if(r.length!==11+2*count || count!==119 || r[6]!==selected)throw new Error("Invalid stable snapshot");
+    const values=Array.from({length:count},(_,i)=>v14dec(r[11+2*i],r[12+2*i]));
+    if(values[118]<0 || values[118]>100)throw new Error("Invalid personality-C value");
+    const g=await request([82,[5,...h]]);stableReplyHeader(g,5,session);
+    const ng=g[6]+128*g[7];if(ng!==info.gcount || g.length!==8+2*ng)throw new Error("Invalid global snapshot");
+    return {engine:r[7],preset:r[8],p:values.slice(0,118),g:Array.from({length:ng},(_,i)=>v14dec(g[8+2*i],g[9+2*i])),personalityC:values[118]};
+  });
+}
+async function safeLegacyDump(request,info) {
+  const d=info.stable?.count===119 ? await stableDump(request,info) : parse[CMD.DUMP](await request(req.dump()),info);
+  if(d.personalityC)throw new Error("Personality-C library transfer unavailable; use a versioned backup or native LOAD/STORE.");
+  return d;
 }
 /*STABLE-END*/
 
@@ -1317,7 +1355,7 @@ const bank = {
 
 /* the current sound: DUMP + the first 16 steps */
 async function capturePatch(rq, info, name) {
-  const dump = parse[CMD.DUMP](await rq(req.dump()), info);
+  const dump = await safeLegacyDump(rq,info);
   const steps = [];
   for (let i = 0; i < UP.PAT && i < info.nstep; i++) steps.push(parse[CMD.STEP_GET](await rq(req.stepGet(i))));
   const drum = info.engines[dump.engine] === "DRUM";   /* (a DRUM track that strikes a lane: its grid) */
@@ -1347,9 +1385,10 @@ const trackOwn = (i, pe0) => TRACK_OWN.has(i) || (pe0 >= 83 && P_CHORD.includes(
 async function auditionPatch(rq, info, pt, opt = {}) {
   if(parameterProvenance(pt.parameterLayout).kind!=="legacy-tail-eight" || (info.pe0===110 && info.pcount!==118))throw new Error("Unsupported audition provenance");
   if(pt.p.length===119)pt={...pt,p:tailParams(pt.p,info.pcount,info.pe0)};
+  if(info.stable?.count===119)await safeLegacyDump(rq,info);
   if(!engineAllowed(info,pt.engine))throw new Error("GRAIN-only firmware: incompatible preset; original preserved");
   await rq(req.set(1, opt.gEng ?? 20, pt.engine));
-  const dump = parse[CMD.DUMP](await rq(req.dump()), info);
+  const dump = await safeLegacyDump(rq,info);
   const n = Math.min(info.pcount, pt.p.length);
   for (let i = 0; i < n; i++) {
     const v = pt.p[i];
@@ -3087,7 +3126,10 @@ async function sessionRequest(d, r, opt) {
 }
 const rq = (r, opt) => sessionRequest(dev, r, opt);
 async function getDesc(scope, id, d = dev) { return parse[CMD.DESC](await sessionRequest(d, req.desc(scope, id))); }
-async function getDump(d = dev) { const reply = await sessionRequest(d, req.dump()); lastDump = Date.now(); return parse[CMD.DUMP](reply, d.info); }
+async function getDump(d = dev) {
+  const dump=d.info.stable?.count===119 ? await stableDump(r=>sessionRequest(d,r),d.info) : parse[CMD.DUMP](await sessionRequest(d,req.dump()),d.info);
+  lastDump=Date.now();return dump;
+}
 async function getStep(i, d = dev) { return parse[CMD.STEP_GET](await sessionRequest(d, req.stepGet(i))); }
 
 /* the whole connect sequence */
@@ -3398,15 +3440,11 @@ async function sendSet(s, id, k) {
 }
 
 async function stableSet(d,track,id,value) {
-  const previous=d.stableQueue||Promise.resolve();
-  const job=previous.catch(()=>{}).then(async()=>{
-    assertSession(d);
-    d.stableNonce=(d.stableNonce||1)%16383+1;
-    const session=await negotiateStable(d.info,r=>sessionRequest(d,r),d.stableNonce);
+  assertSession(d);
+  return stableTransaction(d.info,r=>sessionRequest(d,r),async session=>{
     const reply=await sessionRequest(d,stableScalarRequest(session,track,id,value));
     return stableScalarReply(reply,session,track,id);
   });
-  d.stableQueue=job; return job;
 }
 
 /* engine / preset browser */
@@ -4605,8 +4643,10 @@ setInterval(() => {
 }, 1000);
 
 /* ------------------------------------------------------------ files --- */
-$("savefile").addEventListener("click", () => {
+$("savefile").addEventListener("click", async () => {
   if (!dev) return;
+  const session=dev;
+  try { if(session.info.stable?.count===119)session.dump=await safeLegacyDump(r=>sessionRequest(session,r),session.info); assertSession(session); } catch(err){report(err);return;}
   const engine = dev.dump.engine, preset = dev.dump.preset;
   try { assertWinLibraryTransfer([{ engine, p: dev.dump.p }], libCtx()); } catch (err) { report(err); return; }
   const data = { format: "felucca-patch", version: 1, firmware: dev.info.version,
@@ -4631,6 +4671,8 @@ $("file").addEventListener("change", async () => {
   } catch (e) { if (e.message !== "closed") sayK("badfile", e.message); return; }
   const releaseBusy = beginBusy();
   try {
+    if(dev.info.stable?.count===119)await safeLegacyDump(r=>sessionRequest(session,r),session.info);
+    assertSession(session);
     selfLoad(true);
     await rq(req.preset(data.engine, data.preset));
     dev.dump = await getDump();

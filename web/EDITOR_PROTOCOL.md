@@ -1443,3 +1443,49 @@ separate acknowledged format and capability, full parameter coverage, WIN/C
 provenance and transactional storage qualification. It must never reinterpret
 old119-value arrays. Current browser clients fail closed on a larger/unknown
 stable capability rather than silently falling back to unsafe bulk writes.
+
+## Personality-C integration (Step240F; supersedes Step240E domain limits)
+
+The internal parameter count is119, but **legacy INFO.P_COUNT stays118**. Legacy
+DESC/GET/SET/TRACK_PARAM/WATCH and array ordering/lengths stay unchanged; they do
+not expose ID118. Unmarked count119 files still use historical tail-eight mapping,
+not stable IDs. WIN library provenance restrictions remain in force.
+
+INFO appends two fixed capability envelopes before the optional final GRAIN tag:
+
+```
+58 02 52 01 77 00 17   # capability version2: command82, layout1, count119, flags23
+58 01 52 01 76 00 07   # unchanged Step240E compatibility envelope
+```
+
+The Step240E parser discovers the final v1 envelope, negotiates118 and retains
+its original framing. Updated clients validate both envelopes and explicitly
+negotiate119. Unknown versions/fields are unsupported. Capability version2 does
+**not** change request version1/layout1, nonce, expiry, rc codes or scalar framing.
+The negotiated count is part of the USB-bound session: an118 lease cannot read or
+write ID118. A119 lease can GET/SET real per-track C, range0..100 for GRAIN; other
+engines reserve it at0. A non-writable descriptor is refused. No MIDI code is used.
+
+SNAPSHOT returns exactly the negotiated count. An118 snapshot of a nonzero-C
+track is refused(rc3), rather than silently omitting state. New op5 GLOBALS takes
+only the common five-byte prefix and returns `G_COUNT:u14, G_COUNT × v14`. It
+requires a119 lease and is advertised by flags16 (GET1+SET2+SNAPSHOT4+GLOBALS16=23).
+Opcode4/bulk replacement remains unsupported. All malformed requests are rejected
+before mutation. There is no extended preset upload or new library format here.
+
+Legacy unrelated scalar edits preserve C. DUMP/TRACK_DUMP/UP_GET refuse data that
+cannot be represented, using their existing no-reply convention. Legacy preset or
+engine replacement, UP_LOAD and occupied-slot UP_STORE/PUT/ERASE refuse when they
+would discard nonzero C. Physical A/B checks also reject a stale/lost cache that would discard adjacent
+C-bearing records during a legacy slot write. Native STORE into an empty slot captures the full marked
+record; native device save/load/undo remain C-aware. WIN restrictions also apply.
+
+Updated browser live reads use negotiated119 snapshots plus GLOBALS, keeping C
+separate from its unchanged118-parameter UI. All transactions serialize negotiation
+and operation. Unmarked librarian export/capture/audition/upload refuses nonzero C
+before replacement. Versioned raw backups preserve C; legacy/unmarked backups and
+bank clears cannot discard C in either physical copy, including an inactive copy.
+An explicit marked FUND or version8/9 replacement can represent C=0 intentionally;
+a blank preset row carries no such provenance and is refused until C is retired
+through a supported native operation. Unknown physical ownership always remains
+read-only. Raw preset-bank exports read physical storage, never a stale cache.

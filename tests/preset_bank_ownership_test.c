@@ -50,8 +50,8 @@ int main(void){
  /* Both banks, both copies, and suspect copy older/newer than readable copy. */
  for(unsigned bank=0;bank<2;bank++)for(unsigned copy=0;copy<2;copy++)for(unsigned newer=0;newer<2;newer++)for(unsigned mode=0;mode<19;mode++){
   start();suspect=known;unsigned len=sizeof suspect;
-  if(mode==0)suspect.r[0].ver=8;
-  if(mode==1)suspect.r[0].ver=9;
+  if(mode==0)suspect.r[0].ver=10;
+  if(mode==1)suspect.r[0].ver=11;
   if(mode==2)suspect.magic^=1;
   if(mode==3)suspect.rsize--;
   if(mode==4)suspect.nslot--;
@@ -77,8 +77,8 @@ int main(void){
   read_mask=0;CHECK(!up_store((1-bank)*16,"ISOLATED"));
  }
  /* All historically accepted record versions retain normal save/recovery. */
- for(unsigned ver=1;ver<=7;ver++)for(unsigned bank=0;bank<2;bank++)for(unsigned copy=0;copy<2;copy++){
-  start();suspect=known;suspect.r[0].ver=ver;
+ for(unsigned ver=1;ver<=9;ver++)for(unsigned bank=0;bank<2;bank++)for(unsigned copy=0;copy<2;copy++){
+  start();suspect=known;suspect.r[0].ver=ver;if(ver==6 || ver==7)suspect.r[0].np=118;
   if(ver<=5){char path[128];snprintf(path,sizeof path,"tests/fixtures/grain-win-i1r/up-v%u-%u.bin",ver,ver>=4?127:0);FILE*f=fopen(path,"rb");CHECK(f);CHECK(fread(&suspect.r[0],1,192,f)==192);fclose(f);}
   CHECK(up_valid(&suspect.r[0]));
   seed(bank,copy,&suspect,sizeof suspect,UINT32_MAX);up_boot();CHECK(up_bank_writable(bank));
@@ -87,7 +87,7 @@ int main(void){
   up_boot();CHECK(up_bank_writable(bank));CHECK(!up_store(bank*16,"AFTER CLEAR"));
  }
  /* Known-source invalid input may not create an unknown bank. */
- start();suspect=known;suspect.r[0].ver=8;capture();unsigned e=erases,p=bridge_programs;
+ start();suspect=known;suspect.r[0].ver=10;capture();unsigned e=erases,p=bridge_programs;
  CHECK(up_put(0,&suspect.r[0])!=0);intact(e,p);CHECK(bank_restore(0,&suspect,sizeof suspect)!=0);intact(e,p);
  flash_ok=0;capture();CHECK(up_store(0,"OFFLINE")!=0);intact(e,p);flash_ok=1;
  /* Runtime INIT/CLEAN do not erase preset banks, even with protected bytes. */

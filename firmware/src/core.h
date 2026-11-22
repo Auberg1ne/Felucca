@@ -75,6 +75,7 @@ enum {                          /* per-track parameters */
     P_GTYPE, P_GA, P_GB,                       /* GRAIN personality and its two personality-specific controls */
     P_GCUT, P_GRES, P_GFILTER_RSVD1, P_GFILTER_RSVD2,                /* GRAIN MS-20-inspired HP/LP filter controls */
     P_E0, P_E1, P_E2, P_E3, P_E4, P_E5, P_E6, P_E7,
+    P_GRC,                                    /* 118: versioned, headless personality C */
     P_COUNT
 };
 
@@ -97,8 +98,8 @@ enum {                          /* global parameters */
     G_COUNT
 };
 
-/* stored parameters of an older layout -> today's P_* order. A store keeps np = the P_COUNT it was
- * written with; common parameters are only ever added just before P_E0, so the first np - 8 are
+/* Historical tail-eight layouts only (including legacy count119), never stable-ID C formats.
+ * Before C, common parameters were added just before P_E0: the first np - 8 are
  * P_LEVEL.. in order and the last 8 are P_E0..P_E7; the parameters a store does not have take def[]
  * (user presets, projects of formats 1 and 2) */
 static void params_by_count(int16_t *out, const int16_t *in, uint32_t np, const int16_t *def)
@@ -108,6 +109,7 @@ static void params_by_count(int16_t *out, const int16_t *in, uint32_t np, const 
         out[i] = i < nc ? in[i] : def[i];
     for (i = 0; i < 8u; i++)
         out[P_E0 + i] = in[nc + i];
+    out[P_GRC] = 0; /* historical counts, including119, never carry C */
 }
 
 /* engine indices the stores name (engines.c ENGINES[]: append-only) */
@@ -324,9 +326,9 @@ typedef struct track {
     uint8_t lfo_wrap;            /* the LFO's phase wrapped this block: its S&H is drawn after the parts (voice.c) */
     uint32_t esync_k[3];         /* ATK's step, DEC's and REL's coefficient (Q16) this block (voice.c esync_coef) */
     uint8_t spread_on;           /* SPREAD this block (fx.c mix_part, voice.c track_render) */
-    uint8_t rsv_sz[7];           /* (sizeof(track_t) a multiple of 16: below) */
+    uint8_t rsv_sz[3];           /* (sizeof(track_t) a multiple of 16: below) */
 #else
-    uint8_t rsv_sz[14];          /* (sizeof(track_t) a multiple of 16: below) */
+    uint8_t rsv_sz[10];          /* (sizeof(track_t) a multiple of 16: below) */
 #endif
     int16_t armp, aholdp;        /* P_AMODE / P_AHOLD as last seen by the ISR */
     /* engine switch (voice.c engine_block): the old engine's voices fade out, then it switches */

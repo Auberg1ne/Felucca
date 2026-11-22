@@ -168,7 +168,7 @@ static uint32_t upf_migrate(const fm6_bank_t *b)
         int32_t s;
         if (!upf_fm6(k) || !upf_get(k, pk))
             continue;
-        s = up_value(r, r->np - 1u) - (int32_t)FM6_NFACTORY;   /* SLOT (P_E7): the record's last value */
+        s = up_value(r, up_engine_base(r) + 7u) - (int32_t)FM6_NFACTORY;   /* SLOT remains E7; C follows it only in marked8/9 records */
         if (s >= 0 && s < (int32_t)FM6_BANK_N && ((b->used >> s) & 1u)) {
             upf_set(k, b->v[s]);
             moved++;

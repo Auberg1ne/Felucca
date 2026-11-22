@@ -9,9 +9,10 @@
  * what would sound without it: the latest automation event of the pass up to that step, else the sound's own value
  * (motion_unlock). A lock lasts the whole step, its RATCH parts too; swing only moves the step's start. */
 static motion_store_t motion;
-static int16_t motion_base[NTRK][P_COUNT];
-static uint32_t motion_active[NTRK][(P_COUNT + 31u) / 32u];
-static uint32_t motion_locked[NTRK][(P_COUNT + 31u) / 32u];   /* the ids a lock holds now (put back at the next step) */
+#define MOTION_PARAM_COUNT 118u /* frozen automation domain; C is storage/control only */
+static int16_t motion_base[NTRK][MOTION_PARAM_COUNT];
+static uint32_t motion_active[NTRK][(MOTION_PARAM_COUNT + 31u) / 32u];
+static uint32_t motion_locked[NTRK][(MOTION_PARAM_COUNT + 31u) / 32u];   /* the ids a lock holds now (put back at the next step) */
 static uint8_t motion_base_valid, motion_full;
 static uint32_t motion_guard(void)
 {
@@ -35,7 +36,7 @@ static int motion_param(uint32_t id)
 {
     /* Sound only: transport, routing, voice allocation and discrete engine
      * changes never become automation. FX sends and continuous mix are safe. */
-    return id < P_COUNT && (id <= P_REL || (id >= P_ED_FLT && id <= P_LD_AMP) ||
+    return id < MOTION_PARAM_COUNT && (id <= P_REL || (id >= P_ED_FLT && id <= P_LD_AMP) ||
         (id >= P_DIST && id <= P_REV) || id == P_GLIDE || id == P_PAN ||
         id == P_DETUNE || (id >= P_FM1_ATK && id <= P_FM4_LEVEL) || (id >= P_LN0 && id <= P_LN7) ||
         id == P_SPRD || (id >= P_ITYPE && id <= P_IMIX) || (id >= P_GTYPE && id <= P_GB) || (id >= P_GCUT && id <= P_GRES) || id == P_GFILTER_RSVD1 || id >= P_E0);   /* (not the chord keys, nor 1.2's LFO SYNC TRIG
@@ -92,10 +93,10 @@ static int motion_lock_get(const track_t *t, uint32_t step, uint32_t id, int16_t
 }
 /* the parameters track k's MOTION will change (PLAY ON, at least one event): a bit per P_* id in m[].
  * Main loop only (the ISR never writes the events); at most MOTION_MAX records, once per card redraw. */
-static uint32_t motion_mask(uint32_t k, uint32_t m[(P_COUNT + 31u) / 32u])
+static uint32_t motion_mask(uint32_t k, uint32_t m[(MOTION_PARAM_COUNT + 31u) / 32u])
 {
     uint32_t i, any = 0;
-    memset(m, 0, ((P_COUNT + 31u) / 32u) * sizeof m[0]);
+    memset(m, 0, ((MOTION_PARAM_COUNT + 31u) / 32u) * sizeof m[0]);
     if (k >= NTRK || !((motion.on >> k) & 1u)) return 0;
     for (i = 0; i < motion.count; i++) {
         const motion_event_t *e = &motion.event[i];
@@ -107,13 +108,14 @@ static uint32_t motion_mask(uint32_t k, uint32_t m[(P_COUNT + 31u) / 32u])
 }
 static int16_t motion_base_value(const track_t *t, uint32_t id)
 {
+    if (id >= MOTION_PARAM_COUNT) return t->p[id];
     uint32_t k = trk_index(t);
     return (motion_active[k][id / 32u] >> (id % 32u)) & 1u ? motion_base[k][id] : t->p[id];
 }
 static void motion_restore(track_t *t)
 {
     uint32_t k = trk_index(t), id, f = motion_guard();
-    for (id = 0; id < P_COUNT; id++)
+    for (id = 0; id < MOTION_PARAM_COUNT; id++)
         if ((motion_active[k][id / 32u] >> (id % 32u)) & 1u) t->p[id] = motion_base[k][id];
     memset(motion_active[k], 0, sizeof motion_active[k]);
     memset(motion_locked[k], 0, sizeof motion_locked[k]);
@@ -123,7 +125,7 @@ static void motion_rebase(track_t *t)
 {
     uint32_t k = trk_index(t), f = motion_guard();
     motion_restore(t);
-    memcpy(motion_base[k], t->p, sizeof t->p);
+    memcpy(motion_base[k], t->p, sizeof motion_base[k]);
     motion_base_valid = (uint8_t)((motion_base_valid & ~(1u << k)) | (song.playing ? 1u << k : 0u));
     motion_unguard(f);
 }
@@ -132,7 +134,7 @@ static void motion_begin(void)
     uint32_t k;
     for (k = 0; k < NTRK; k++) {
         motion_restore(&trk[k]);
-        memcpy(motion_base[k], trk[k].p, sizeof trk[k].p);
+        memcpy(motion_base[k], trk[k].p, sizeof motion_base[k]);
     }
     motion_base_valid = (1u << NTRK) - 1u;
 }
@@ -245,7 +247,7 @@ static int motion_capture(track_t *t, uint32_t id, int16_t value)
 static __attribute__((noinline)) void motion_unlock(track_t *t, uint32_t step, const motion_store_t *m)
 {
     uint32_t k = trk_index(t), id, i;
-    for (id = 0; id < P_COUNT; id++) {
+    for (id = 0; id < MOTION_PARAM_COUNT; id++) {
         int32_t best = -1;
         int16_t v;
         if (!((motion_locked[k][id / 32u] >> (id % 32u)) & 1u))
@@ -269,10 +271,10 @@ static __attribute__((noinline)) void motion_step(track_t *t, uint32_t step, con
     uint32_t k = trk_index(t), i, w, any = 0;
     if (!((m->on >> k) & 1u)) return;
     if (!((motion_base_valid >> k) & 1u)) {
-        memcpy(motion_base[k], t->p, sizeof t->p);
+        memcpy(motion_base[k], t->p, sizeof motion_base[k]);
         motion_base_valid |= (uint8_t)(1u << k);
     }
-    for (w = 0; w < (P_COUNT + 31u) / 32u; w++)
+    for (w = 0; w < (MOTION_PARAM_COUNT + 31u) / 32u; w++)
         any |= motion_locked[k][w];
     if (!step) motion_restore(t);
     else if (any) motion_unlock(t, step, m);
