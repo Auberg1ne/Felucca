@@ -23,7 +23,7 @@ s=s.replace('  gr_part_t*g=gr_of(t);',"""  if(getenv("TEST_FX")){t->p[P_DIST]=40
   if(getenv("TEST_SLICER")){t->p[P_SLCR]=atoi(getenv("TEST_SLICER"));t->p[P_SLDEPTH]=127;}
   gr_part_t*g=gr_of(t);""",1)
 (out/'pcm.c').write_text(s)
-for name,extra in [('base',[f'-DGRANULAR_QUALITY_UI_SOURCE="{a.base_tree.resolve()}/tests/ui_test.c"']),('new',[])]:
+for name,extra in [('base',['-DGRANULAR_QUALITY_EXPECT_D=255',f'-DGRANULAR_QUALITY_UI_SOURCE="{a.base_tree.resolve()}/tests/ui_test.c"']),('new',[])]:
  subprocess.run(f+['-fno-sanitize=signed-integer-overflow,shift','-DGRANULAR_QUALITY_LEGACY_SHORT_PROBE=1']+extra+[str(out/'pcm.c'),'-lm','-o',str(out/name)],check=True)
 records={}
 def render(binary,kind,case,c=0,source=None,**env):

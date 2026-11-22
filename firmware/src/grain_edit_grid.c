@@ -1,4 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+/* Hardware row A=TYPE, B=personality A, C=personality B, D=internal C/118.
+ * Keep the canonical editor/storage name unchanged. */
+static const char *grain_effect_label(const track_t *t)
+{
+    static const char *const labels[]={"SPREAD","DRIFT","CHAOS","SPARKLE"};
+    unsigned type=(unsigned)t->p[P_GTYPE];
+    return labels[type<4?type:0];
+}
 static int grain_grid_active(void)
 {
     return !ui.home && !ui.menu && !ui.layer && !ui.confirm && !ui.uboot &&
@@ -40,7 +48,7 @@ static void draw_grain_grid(void)
         if(selected)cv_rrect(2,2,53,h-4,-5,bg,edge);
         if(id<P_COUNT) {
             const param_desc_t *d=track_desc(TSEL,id);char text[16];const char *unit;
-            const char *label=id==P_E5?"G-SPRD":id==P_SPRD?"V-SPRD":id==P_GRES?"RESON":d->label;
+            const char *label=id==P_GRC?grain_effect_label(TSEL):id==P_E5?"G-SPRD":id==P_SPRD?"V-SPRD":id==P_GRES?"RESON":d->label;
             int split=str_eq(label,"HARMONICS");
             if(split) {
                 cv_text_in(2,1,53,&AF_S,"HARMO",0xffff,bg);

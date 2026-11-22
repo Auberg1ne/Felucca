@@ -4,7 +4,7 @@
 static unsigned checks;
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"WIN UI %u: %s\n",__LINE__,#x);return 1;}}while(0)
 int main(void){
- const unsigned want[2][3][4]={{{110,111,112,113},{114,115,116,117},{108,109,255,255}},{{103,104,105,255},{106,107,255,255},{37,44,95,255}}};
+ const unsigned want[2][3][4]={{{110,111,112,113},{114,115,116,117},{108,109,255,255}},{{103,104,105,118},{106,107,255,255},{37,44,95,255}}};
  for(unsigned p=0;p<2;p++)for(unsigned r=0;r<3;r++)for(unsigned c=0;c<4;c++)CHECK(grain_grid_param(p,r,c)==want[p][r][c]);
  ui_power_on();press(B_EDIT);
  for(unsigned track=0;track<4;track++){

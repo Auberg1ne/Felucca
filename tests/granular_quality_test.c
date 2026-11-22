@@ -10,7 +10,10 @@ static uint64_t state=UINT64_C(14695981039346656037);
 static void field(uint32_t x){for(unsigned j=0;j<4;j++){state^=(x>>(j*8))&255;state*=UINT64_C(1099511628211);}}
 #define REQUIRE(x) do{if(!(x)){fprintf(stderr,"quality line %u: %s\n",__LINE__,#x);return 1;}}while(0)
 static int mapping(void){
- const unsigned row[4]={103,104,105,255};
+#ifndef GRANULAR_QUALITY_EXPECT_D
+#define GRANULAR_QUALITY_EXPECT_D 118
+#endif
+ const unsigned row[4]={103,104,105,GRANULAR_QUALITY_EXPECT_D};
  const int defaults[4][2]={{64,64},{96,8},{64,64},{80,64}};
  const char *names[4][2]={{"DRIFT","WIDTH"},{"HOLD","MOTION"},{"RATE","GATE"},{"INTERVAL","HARMONICS"}};
  REQUIRE(P_COUNT==119 && P_GRC==118 && P_E0==110 && P_GWIN==109);

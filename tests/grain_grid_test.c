@@ -5,7 +5,7 @@ static unsigned checks;
 #define REQUIRE(x) do { checks++; if(!(x)){fprintf(stderr,"grid %u: %s\n",__LINE__,#x);return 1;} }while(0)
 int main(void)
 {
- static const unsigned expected[2][3][4]={{{110,111,112,113},{114,115,116,117},{108,109,255,255}},{{103,104,105,255},{106,107,255,255},{37,44,95,255}}};
+ static const unsigned expected[2][3][4]={{{110,111,112,113},{114,115,116,117},{108,109,255,255}},{{103,104,105,118},{106,107,255,255},{37,44,95,255}}};
  static const unsigned hidden[]={38,41,42,43,39,40};
  ui_power_on();press(B_EDIT);REQUIRE(grain_grid_active() && grain_grid_page(cur_page())==1 && grain_edit_row==0);
  unsigned visible=0;for(unsigned i=0;i<NPAGES;i++)if(PAGES[i].fam==FAM_EDIT && page_visible(i))visible++;
@@ -22,7 +22,7 @@ int main(void)
     REQUIRE(d==track_desc(TSEL,id) && vp==&TSEL->p[id]);
     TSEL->p[id]=d->min;int16_t before[P_COUNT];memcpy(before,TSEL->p,sizeof before);
     int target=param_turn(d,d->min,1);ui.ml.on=1;ui.ml.pick=0;
-    turn(EN_K1+col,1);REQUIRE(TSEL->p[id]==target && (id==P_GWIN?!ui.ml.pick:(ui.ml.pick && ui.ml.id==id)));ui.ml.on=0;
+    turn(EN_K1+col,1);REQUIRE(TSEL->p[id]==target && ((id==P_GWIN||id==P_GRC)?!ui.ml.pick:(ui.ml.pick && ui.ml.id==id)));ui.ml.on=0;
     for(unsigned j=0;j<P_COUNT;j++)if(j!=id)REQUIRE(TSEL->p[j]==before[j]);
     REQUIRE(lock_id(col)==(motion_param(id)?id:255u));
    }
