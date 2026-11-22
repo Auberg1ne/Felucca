@@ -1553,6 +1553,9 @@ static void midi_pc_poll(void)                       /* main loop (ui_input) */
 
 static void track_defaults(track_t *t)
 {
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    gr_lr_test_reset(t); /* reset test control, not audio-owned filter history */
+#endif
     uint32_t i;
     for (i = 0; i < P_E0; i++)
         t->p[i] = i == P_GWIN ? params_win_default(t->eng_req % NENGINES) : TP[i].def;

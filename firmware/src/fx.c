@@ -866,6 +866,38 @@ static __attribute__((noinline)) void mix_spread(track_t *t, int32_t *b, uint32_
     home_level_end((uint32_t)(t - trk), home_pk);
 }
 
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+static void mix_grain_stereo(track_t *t,int32_t *b,uint32_t n SM_DECL)
+{
+    gr_part_t *P=gr_of(t);int32_t *a=P->stereo_side[0],*cside=P->stereo_side[1];
+    int32_t *d=T_SPREAD(t)?SPREAD_BUF(t):0;
+    int32_t pan=t->p[P_PAN],s=T_SPREAD(t)?(t->p[P_SPRD]+1)>>1:0;
+    int32_t pa=clamp(pan-s,-64,63),pb=clamp(pan+s,-64,63);
+    int32_t gla=4096-(pa>0?pa*64:0),gra=4096+(pa<0?pa*64:0);
+    int32_t glb=4096-(pb>0?pb*64:0),grb=4096+(pb<0?pb*64:0);
+    int32_t lvl=LEVEL_Q12[t->p[P_LEVEL]&127],chor=t->p[P_CHOR]*258,delay=t->p[P_DLY]*258,rev=t->p[P_REV]*258,pk=t->peak;
+    int32_t xmax=chor>delay?chor:delay;xmax=0x7fffffff/((xmax>rev?xmax:rev)|1);
+    if(d)for(uint32_t i=0;i<n;i++)d[i]=(int32_t)((int64_t)d[i]*2-b[i]);
+    track_dist(t,b,n);if(t->p[P_ITYPE]|t->ins_run)track_insert(t,b,n);
+    slicer_track_grain(t,b,d,a,cside,n);
+    if((pf.mute>>(t-trk))&1u)perf_mute_grain((uint32_t)(t-trk),b,d,a,cside,n);
+    uint32_t home_pk=0;
+    for(uint32_t i=0;i<n;i++){
+        int32_t x=(int32_t)(((int64_t)(b[i]>>2)*lvl)>>10);
+        int32_t magnitude=x<0?-x:x,xs=clamp(x,-xmax,xmax);if(magnitude>pk)pk=magnitude;
+        if(chor)SM(c)[i]+=mulq15(xs,chor);if(delay)SM(d)[i]+=mulq15(xs,delay);if(rev)SM(v)[i]+=mulq15(xs,rev);
+        /* Reconstruct before rounding: hard-panned components cancel exactly.
+         * Products are bounded by the qualified voice/level ranges, in int64. */
+        int64_t dlane=d?d[i]:0;
+        int64_t nl=(int64_t)b[i]*(gla+glb)+dlane*(gla-glb)+2*(int64_t)a[i]*gla+2*(int64_t)cside[i]*glb;
+        int64_t nr=(int64_t)b[i]*(gra+grb)+dlane*(gra-grb)-2*(int64_t)a[i]*gra-2*(int64_t)cside[i]*grb;
+        int32_t left=(int32_t)((nl*lvl)>>25),right=(int32_t)((nr*lvl)>>25);
+        SM(l)[i]+=left;SM(r)[i]+=right;home_pk=home_level_peak(home_pk,left,right);
+    }
+    t->peak=pk;home_level_end((uint32_t)(t-trk),home_pk);
+}
+#endif
+
 /* a part's cost for the second core's split (mix_split, after Jangada's): its voices x its engine's cost per
  * voice (ENG_VCOST: the host's instructions per sample, tests/regress.c CPU at 8 notes held less the idle mix, over the
  * engine's voices), and the DIST, INSERT and sends while it sounds or its tail runs. ENGINES[] order; DIGITAL as FM6
@@ -883,9 +915,8 @@ static const uint16_t ENG_VCOST[NENGINES] = {163, FELUCCA_FM4 ? 181 : 0, 162, 67
 /* one synth part into the dry mix and the sends of sm (mx[0]; mx[1] on the second core); a part with no voice sounding costs
  * the LFO tick and a cleared buffer only (after the DIST tail has run out) */
 /* Intrinsic GRAIN stereo handoff is track_grain_stereo(t,n), separate from
- * SPREAD_BUF. In this foundation both lanes are guaranteed zero; do not add a
- * second mixer loop or advance filters/gates twice. Nonzero routing requires
- * the separately qualified stereo filter/effects integration (244C). */
+ * SPREAD_BUF. Normal builds retain zero lanes and the mono route; the test-only
+ * integration below consumes normalized side lanes and advances gates once. */
 static void mix_part(track_t *t, uint32_t n SM_DECL)
 {
     int32_t *b = SM(b);
@@ -913,6 +944,11 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
             mod_end(t);
         return;
     }
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    uint32_t grain_stereo=t->engine==ENGI_GRAIN && gr_of(t)->lr_block;
+    if(grain_stereo)mix_grain_stereo(t,b,n SM_ARG(sm));
+    else
+#endif
     if (T_SPREAD(t))
         mix_spread(t, b, n SM_ARG(sm));
     else {
@@ -923,7 +959,11 @@ static void mix_part(track_t *t, uint32_t n SM_DECL)
         if ((pf.mute >> (t - trk)) & 1u)
             perf_mute((uint32_t)(t - trk), b, n);       /* perform.c: a black key in the FX layer */
     }
-    if (!T_SPREAD(t)) {                                /* (the mix's values read after the calls: none is held over
+    if (!T_SPREAD(t)
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+        && !grain_stereo
+#endif
+       ) {                                /* (the mix's values read after the calls: none is held over
                                                          * them, no spill in the loop: the ISR's cost as before 1.5) */
         uint32_t home_pk = 0;
         int32_t lvl = LEVEL_Q12[t->p[P_LEVEL] & 127], pan = t->p[P_PAN];

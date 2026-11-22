@@ -95,6 +95,23 @@ static const int16_t GR_NORM[GR_NG + 1] = {32767, 32767, 23170, 18918, 16384, 14
 #ifndef FELUCCA_GRAIN_STEREO_PROTOTYPE
 #define FELUCCA_GRAIN_STEREO_PROTOTYPE 0
 #endif
+#ifndef FELUCCA_GRAIN_STEREO_INTEGRATION
+#define FELUCCA_GRAIN_STEREO_INTEGRATION 0
+#endif
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+#if !FELUCCA_GRAIN_STEREO_PROTOTYPE
+#error "Stereo integration requires the isolated placement prototype"
+#endif
+#if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
+#error "Stereo integration and experimental fidelity are independently qualified"
+#endif
+typedef struct { int32_t tone_y, last, ic1, ic2; } gr_lr_lane_t;
+typedef struct { gr_lr_lane_t lane[2]; uint16_t mix; uint8_t on, reserved; } gr_lr_voice_t;
+_Static_assert(sizeof(gr_lr_voice_t)==36,"explicit GRAIN-owned LR history");
+#define GR_INTEGRATION_BYTES 880u
+#else
+#define GR_INTEGRATION_BYTES 0u
+#endif
 #if FELUCCA_GRAIN_STEREO_PROTOTYPE
 #define GR_STEREO_STATE_BYTES 16u
 #if defined(FELUCCA_GRAIN_STEREO_ACCOUNTING) && FELUCCA_GRAIN_STEREO_ACCOUNTING
@@ -177,9 +194,14 @@ typedef struct {
     int8_t pan[GR_NG], pan_pending;
     uint8_t pan_pair_pending, pan_reserved[2]; /* explicit 16-byte target/host layout */
 #endif
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    gr_lr_voice_t lr[GR_POLY];
+    uint32_t lr_block;
+    int32_t lr_work[3][CTL], lr_out[3][CTL]; /* owning core, reused serially per voice */
+#endif
 } gr_part_t;
 _Static_assert(sizeof(gr_grain_t) == (sizeof(void *) == 8u ? 64u : 56u), "GRAIN latch must not grow record");
-_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u) + GR_STEREO_STATE_BYTES, "GRAIN stereo foundation: 256 bytes within reserved engine region");
+_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u) + GR_STEREO_STATE_BYTES + GR_INTEGRATION_BYTES, "GRAIN stereo layout within reserved engine region");
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
 /* No producer is enabled in 244B. Clear full capacity, including short-block tails.
  * Only the owning part's render core may write these buffers. Never share V-SPRD. */
@@ -629,7 +651,7 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     return g->left != 0;
 }
 
-#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE && !FELUCCA_GRAIN_STEREO_INTEGRATION
 /* One decoder traversal into bounded scratch; no filter/effect or scheduler.
  * Doubled components M2=L+R, S2=L-R preserve exact integer reconstruction.
  * Signed attenuation truncates toward zero, so neither channel exceeds x. */
@@ -705,6 +727,9 @@ static void grain_note_on(track_t *t, voice_t *v)
     P->head_zl[vi] = 0xFFu;
     v->s[1] = 0;                                    /* the first grain at once */
     v->ph[0] = 0;                                   /* (the sine's phase: no data) */
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    if (!v->env && vi<GR_POLY) memset(&P->lr[vi],0,sizeof P->lr[vi]);
+#endif
     if (!v->env) {                                  /* a fresh voice: no grains left from before */
         for (i = 0; i < GR_NG; i++)
             if (P->g[i].owner == vi + 1u)
@@ -739,6 +764,9 @@ static void grain_block(track_t *t)
         if ((P->drift[i].phase || P->drift[i].displacement) &&
             (!t->v[i].active || t->v[i].s[0] < 0 || t->v[i].s[0] >= P->nz ||
              (uint32_t)t->p[P_GTYPE] != 1u)) gr_drift_reset(&P->drift[i]);
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    for (i=0;i<GR_POLY;i++) if (!t->v[i].active) memset(&P->lr[i],0,sizeof P->lr[i]);
+#endif
     gr_build(P, t);
     /* track_render calls this once after mod_begin, before all voices. Main
      * control writers cannot run during the audio ISR/C1 job; TIMER5 defers
@@ -847,6 +875,10 @@ static void gr_stutter_gate(int32_t *acc, uint32_t n, uint32_t start,
     }
 }
 
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+#include "grain_stereo_integrated.h"
+#endif
+
 static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const vmod_t *m)
 {
     gr_part_t *P = gr_of(t);
@@ -861,6 +893,10 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
     if (n > CTL)
         n = CTL;
 
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    uint32_t stereo=gr_lr_begin(t,v,vi);
+    if(stereo) memset(P->lr_work,0,sizeof P->lr_work);
+#endif
     for (i = 0; i < n; i++)
         acc[i] = 0;
 
@@ -876,6 +912,9 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
         if (zl < 0 || zl >= P->nz || P->src != (uint32_t)p[P_E0] % SMP_NALL + 1u) {
             if (zl < 0)
                 v->active = 0;
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+            if(vi<GR_POLY) memset(&P->lr[vi],0,sizeof P->lr[vi]);
+#endif
             return;
         }
 
@@ -887,7 +926,10 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
             nact += t->v[i].active;
         for (i = 0; i < GR_NG; i++)
             if (P->g[i].owner == vi + 1u)
-#if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+                if(stereo) mine+=gr_run_lr(P,&P->g[i],acc,n);
+                else mine+=gr_run(P,&P->g[i],acc,n);
+#elif defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
 #if defined(FELUCCA_GRAIN_HYBRID_EXPERIMENT) && FELUCCA_GRAIN_HYBRID_EXPERIMENT
                 mine += gr_run_envelope(P,&P->g[i],acc,n,gr_test_fidelity[gr_part(t)],gr_test_fidelity[gr_part(t)]==3u?gr_test_hybrid_cap[gr_part(t)]:gr_test_fidelity_cap[gr_part(t)],gr_test_hybrid_threshold[gr_part(t)],gr_test_hybrid_opt[gr_part(t)]);
 #else
@@ -941,6 +983,18 @@ static void grain_render(track_t *t, voice_t *v, int32_t *out, uint32_t n, const
         }
     }
 
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+    if(stereo) {
+        if(fallback) for(i=0;i<n;i++)P->lr_work[0][i]=P->lr_work[1][i]=acc[i];
+        if((uint32_t)p[P_GTYPE]==2u) {
+            uint32_t period=128u+(127u-(uint32_t)p[P_GA])*12u,on=period*(uint32_t)p[P_GB]/127u;
+            gr_stutter_gate(P->lr_work[0],n,v->ph[1]-n,period,on);
+            gr_stutter_gate(P->lr_work[1],n,v->ph[1]-n,period,on);
+        }
+        gr_lr_finish(t,v,out,acc,n,m,cutoff);
+        return;
+    }
+#endif
     gr_tone(v, acc, n, gr_tone_coef(p[P_E7]));
 
     gr_filter(v, acc, out, n, m, cutoff, p[P_GRES]);
@@ -964,7 +1018,7 @@ static void grain_render_transport(track_t *t, voice_t *v, int32_t *mono,
     grain_render(t, v, mono, n, m);
 }
 
-#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE && !FELUCCA_GRAIN_STEREO_INTEGRATION
 /* Isolated dry test entry, never called by track_render or a shipping callback.
  * Caller clears mid2; side lane is additive after gr_stereo_clear. Only this
  * part's render owner may call; transport views have their usual lifetime. */

@@ -801,3 +801,15 @@ static __attribute__((noinline)) void perf_block(int32_t *bl, int32_t *br, uint3
     pf.busy = pf.act || pf.mode != BM_NONE || pf.w || pf.la || pf.ha || pf.cw || pf.td || pf.mute || pf.fw || pf.pw || pf.thr ||
               pf.fn || perf_k[0] || perf_k[1] || perf_k[2];
 }
+
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+static void perf_mute_grain(uint32_t k,int32_t *b,int32_t *d,int32_t *a,int32_t *c,uint32_t n)
+{
+    int32_t g=pf.mg[k],target=(pf.act>>(PF_M1+k))&1u?0:32768;
+    for(uint32_t i=0;i<n;i++){
+        g+=clamp(target-g,-SL_SLOPE,SL_SLOPE);uint32_t q=(uint32_t)g<<1;
+        b[i]=mulq16(b[i],q);if(d)d[i]=mulq16(d[i],q);a[i]=mulq16(a[i],q);c[i]=mulq16(c[i],q);
+    }
+    pf.mg[k]=g;
+}
+#endif

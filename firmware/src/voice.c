@@ -660,7 +660,8 @@ static __attribute__((noinline)) void spread_sum(int32_t *out)
 
 /* Mixer handoff: borrowed read-only lanes valid until this part's next render.
  * group 0 = V-SPRD left-voice group, group 1 = remaining voices. No
- * producer/active flag exists yet: the mixer must retain its mono route.
+ * production producer exists: only the explicit integration gate may consume
+ * normalized M/S; the isolated probe profile uses doubled components.
  * Non-GRAIN engines expose no pointer into memory they now own. */
 typedef struct { const int32_t *group[2]; uint32_t frames; } grain_stereo_view_t;
 static grain_stereo_view_t track_grain_stereo(const track_t *t, uint32_t n)
@@ -703,7 +704,12 @@ static uint32_t track_render(track_t *t, int32_t *out, uint32_t n)
     int16_t pe_new[8];
     for (i = 0; i < n; i++)
         out[i] = 0;
-    if (e == &ENG_GRAIN) gr_stereo_clear(gr_of(t));
+    if (e == &ENG_GRAIN) {
+        gr_stereo_clear(gr_of(t));
+#if FELUCCA_GRAIN_STEREO_INTEGRATION
+        gr_of(t)->lr_block=0;
+#endif
+    }
     if (MOD(t).on && MOD(t).ldep < 32767)                     /* the matrix's DEPTH (mod.c) */
         lfo = mulq15(lfo, MOD(t).ldep);
     if (T_SPREAD(t))
