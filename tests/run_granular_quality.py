@@ -96,15 +96,15 @@ with tempfile.TemporaryDirectory(prefix='grain-quality-') as tmp:
     r=run([exe,'0','0',str(pcm)],capture_output=True,text=True)
     record=json.loads(r.stdout);record['pcm_sha256']=sha(pcm)
     assert record==result['cases']['CLOUD/low-density']
-    # Only SHIMMER SPARKLE is active. Other single-personality C100 cases stay exact;
-    # SHIMMER/four-track differences have a dedicated base-comparison gate.
+    # SHIMMER SPARKLE and STUTTER CHAOS are active. CLOUD/FREEZE stay exact;
+    # Each active personality has a dedicated exact-base comparison gate.
     for kind,name in enumerate(['CLOUD','FREEZE','STUTTER','SHIMMER']):
         for scenario,mode in enumerate(['low-density','high-density','minimum-size','reverse','mod-filter','four-track']):
             r=run([exe,str(kind),str(scenario),str(pcm)],capture_output=True,text=True,env={**os.environ,'GRC_VALUE':'100'})
             c=json.loads(r.stdout);c['pcm_sha256']=sha(pcm)
-            if kind!=3 and scenario!=5:
+            if kind not in (2,3) and scenario!=5:
                 assert c==result['cases'][f'{name}/{mode}'],('inactive C changed audio/state',name,mode)
             else:
-                assert c['pcm_sha256']!=result['cases'][f'{name}/{mode}']['pcm_sha256'],('SPARKLE silent/no difference',name,mode)
-    print('Actual C100: 15 non-SHIMMER PCM/state cases identical; 9 SHIMMER/four-track cases intentionally changed',flush=True)
+                assert c['pcm_sha256']!=result['cases'][f'{name}/{mode}']['pcm_sha256'],('active C silent/no difference',name,mode)
+    print('Actual C100: 10 CLOUD/FREEZE PCM/state cases identical; 14 CHAOS/SPARKLE/four-track cases intentionally changed',flush=True)
 print('24 frozen cases + independent process repeat passed; mappings, short windows, RNG, admission and load checked')

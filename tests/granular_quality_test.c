@@ -62,7 +62,7 @@ int main(int argc,char**argv){
  for(unsigned b=0;b<2048;b++){
   uint32_t before[4];for(unsigned p=0;p<tracks;p++)before[p]=gr_rng[gr_part(&trk[p])];
   if(scenario==4||scenario==5)for(unsigned p=0;p<tracks;p++)trk[p].p[P_GCUT]=(int[]){0,-1,-25,-50,0,1,25,50}[b/32%8];
-  if(getenv("GRC_LIVE"))for(unsigned p=0;p<tracks;p++)trk[p].p[P_GRC]=(int[]){0,100,25,50}[b/128%4];
+  if(getenv("GRC_LIVE"))for(unsigned p=0;p<tracks;p++)trk[p].p[P_GRC]=!strcmp(getenv("GRC_LIVE"),"chaos")?(int[]){0,100,0,25,50,100,0,50}[b/128%8]:(int[]){0,100,25,50}[b/128%4];
   int32_t out[CTL*2];mix_block(out,CTL);
   for(unsigned i=0;i<CTL*2;i++){audio_stats_push(&stats,out[i]);uint32_t x=(uint32_t)out[i];for(unsigned j=0;j<4;j++)REQUIRE(fputc((x>>(8*j))&255,f)!=EOF);}
   for(unsigned p=0;p<tracks;p++){

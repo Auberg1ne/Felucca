@@ -366,6 +366,14 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     else if ((uint32_t)p[P_GTYPE] == 1u)
         sp = gr_scale(n, (uint32_t)p[P_GB] * (uint32_t)p[P_GB] * 4u);
     pos = (int32_t)c + (int32_t)gr_scale(sp, r2 & 0xFFFFu) - (int32_t)(sp >> 1);
+    /* CHAOS: bounded, quadratic source fragmentation, never timing or pitch.
+     * Reuse r2's high bits; legacy SPRD uses its low bits. Existing forward/
+     * reverse fitting below owns the final bounds. C0 is the exact old path. */
+    if ((uint32_t)p[P_GTYPE] == 2u && p[P_GRC] > 0) {
+        uint32_t chaos = p[P_GRC] > 100 ? 100u : (uint32_t)p[P_GRC];
+        uint32_t width = gr_scale(n, chaos * chaos * 32768u / 10000u);
+        pos += (int32_t)gr_scale(width, r2 >> 16) - (int32_t)(width >> 1);
+    }
     if (rev)
         pos = clamp(pos, (int32_t)span, (int32_t)n - 2);
     else
