@@ -882,6 +882,10 @@ static const uint16_t ENG_VCOST[NENGINES] = {163, FELUCCA_FM4 ? 181 : 0, 162, 67
 
 /* one synth part into the dry mix and the sends of sm (mx[0]; mx[1] on the second core); a part with no voice sounding costs
  * the LFO tick and a cleared buffer only (after the DIST tail has run out) */
+/* Intrinsic GRAIN stereo handoff is track_grain_stereo(t,n), separate from
+ * SPREAD_BUF. In this foundation both lanes are guaranteed zero; do not add a
+ * second mixer loop or advance filters/gates twice. Nonzero routing requires
+ * the separately qualified stereo filter/effects integration (244C). */
 static void mix_part(track_t *t, uint32_t n SM_DECL)
 {
     int32_t *b = SM(b);

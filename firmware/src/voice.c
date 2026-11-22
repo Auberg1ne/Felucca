@@ -658,6 +658,23 @@ static __attribute__((noinline)) void spread_sum(int32_t *out)
 }
 #endif
 
+/* Mixer handoff: borrowed read-only lanes valid until this part's next render.
+ * group 0 = V-SPRD left-voice group, group 1 = remaining voices. No
+ * producer/active flag exists yet: the mixer must retain its mono route.
+ * Non-GRAIN engines expose no pointer into memory they now own. */
+typedef struct { const int32_t *group[2]; uint32_t frames; } grain_stereo_view_t;
+static grain_stereo_view_t track_grain_stereo(const track_t *t, uint32_t n)
+{
+    grain_stereo_view_t view = {{0, 0}, 0};
+    if (n <= CTL && ENGINES[t->engine] == &ENG_GRAIN &&
+        eng_mem_owner[gr_part(t)] == t->engine + 1u) {
+        view.group[0] = gr_of(t)->stereo_side[0];
+        view.group[1] = gr_of(t)->stereo_side[1];
+        view.frames = n;
+    }
+    return view;
+}
+
 /* render one block of a part into out (cleared here); returns the voices rendered */
 /* Channel bend is live performance state, outside projects/presets. Q8 semitones. */
 static int32_t midi_bend_q8[NTRK], midi_bend_target[NTRK];
@@ -686,6 +703,7 @@ static uint32_t track_render(track_t *t, int32_t *out, uint32_t n)
     int16_t pe_new[8];
     for (i = 0; i < n; i++)
         out[i] = 0;
+    if (e == &ENG_GRAIN) gr_stereo_clear(gr_of(t));
     if (MOD(t).on && MOD(t).ldep < 32767)                     /* the matrix's DEPTH (mod.c) */
         lfo = mulq15(lfo, MOD(t).ldep);
     if (T_SPREAD(t))
@@ -753,7 +771,11 @@ static uint32_t track_render(track_t *t, int32_t *out, uint32_t n)
         m.shape = (64 << 8) + ((lfo * p[P_LD_SHP]) >> 7) + ((m.envq15 * p[P_ED_SHP]) >> 7);
         if (MOD(t).on)                                  /* the modulation matrix (mod.c) */
             mod_voice(t, v, &m, v->fine + tune_fine + bend_fine);
-        e->render(t, v, T_SPREAD(t) > v->side ? SPREAD_BUF(t) : out, n, &m);   /* (SPREAD: the left ones) */
+        if (e == &ENG_GRAIN)
+            grain_render_transport(t, v, T_SPREAD(t) > v->side ? SPREAD_BUF(t) : out,
+                                   n, &m, T_SPREAD(t) > v->side ? 0u : 1u);
+        else
+            e->render(t, v, T_SPREAD(t) > v->side ? SPREAD_BUF(t) : out, n, &m);   /* (SPREAD: the left ones) */
         nr++;
     }
     if (T_SPREAD(t))

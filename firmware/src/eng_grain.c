@@ -158,10 +158,20 @@ typedef struct {
     uint8_t head_zl[GR_POLY];    /* zone associated with each source head */
     uint8_t win_snapshot;        /* audio-owned block snapshot; existing tail padding */
     gr_drift_t drift[GR_POLY];    /* separate from scanning head, RNG and voice ph/s */
+    int32_t stereo_side[2][CTL]; /* audio-owned intrinsic side, separate V-SPRD voice groups */
 } gr_part_t;
 _Static_assert(sizeof(gr_grain_t) == (sizeof(void *) == 8u ? 64u : 56u), "GRAIN latch must not grow record");
-_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7320u : 7224u), "GRAIN DRIFT foundation: exactly 24 bytes of reserved engine region");
+_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u), "GRAIN stereo foundation: 256 bytes within reserved engine region");
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
+/* No producer is enabled in 244B. Clear full capacity, including short-block tails.
+ * Only the owning part's render core may write these buffers. Never share V-SPRD. */
+static void gr_stereo_clear(gr_part_t *P)
+{
+    uint32_t group, i;
+    for (group = 0; group < 2; group++)
+        for (i = 0; i < CTL; i++) P->stereo_side[group][i] = 0;
+}
+
 static int32_t gr_rng[NPART];
 
 static uint32_t gr_part(const track_t *t) { return (uint32_t)(t - trk) % NPART; }
@@ -263,6 +273,7 @@ static int32_t gr_find(uint32_t src, uint32_t note)
 static void gr_reset(gr_part_t *P, uint32_t src, uint32_t stamp)
 {
     uint32_t i, tot = 0, nz = gr_nz(src);
+    gr_stereo_clear(P);
     P->src = (uint8_t)(src + 1u);
     P->stamp = stamp;
     P->nz = (uint8_t)(nz < GR_MAXZ ? nz : GR_MAXZ);
@@ -870,6 +881,16 @@ static const preset_t GRAIN_PRESETS[] = {
     {"FROZEN", {14, 40, 108, 72, 0, 0, 10, 92}, {50, 100, 127, 100}, 0, 0, FX(0, 30, 20, 95), PAT(5)},
     {"SHIMMER", {13, 30, 70, 100, 12, 30, 24, 110}, {30, 90, 110, 90}, 0, 0, FX(0, 50, 40, 90), PAT(7)},
 };
+
+/* Private adapter: mono adds n frames; group selects the future intrinsic-side
+ * lane (not L/R interleaving). Invalid lengths/groups are rejected without writes.
+ * All controls, including positive C, still use the original mono renderer. */
+static void grain_render_transport(track_t *t, voice_t *v, int32_t *mono,
+                                   uint32_t n, const vmod_t *m, uint32_t group)
+{
+    if (n > CTL || group > 1u) return;
+    grain_render(t, v, mono, n, m);
+}
 
 static const engine_t ENG_GRAIN = {
     .name = "GRAIN",

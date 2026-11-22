@@ -17,7 +17,7 @@ static int scheduler(track_t*t,unsigned mode,uint64_t *signature){
  *signature=h;return 0;
 }
 int main(void){
- ui_power_on();track_t*t=&trk[0];const unsigned sources[]={0,2,3,13,14};CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7320&&sizeof(track_t)==1840);
+ ui_power_on();track_t*t=&trk[0];const unsigned sources[]={0,2,3,13,14};CHECK(sizeof(gr_grain_t)==64&&sizeof(gr_part_t)==7576&&sizeof(track_t)==1840);
  for(unsigned s=0;s<8;s++){
   unsigned source=s<5?sources[s]:5;
   if(s>=5){usr_nz[0]=1;usr_zone[0][0]=*gr_zone(13,0);usr_zone[0][0].n=(unsigned[]){32,257,65535}[s-5];}
