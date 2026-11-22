@@ -329,6 +329,15 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
     /* rate: the note against the zone's root, PITCH, the random detune (RAND^2, up to +-1 oct) */
     amt = p[P_E6] * p[P_E6] * 192 / (127 * 127);
     d16 = m->pitch16 - z->root16 + p[P_E4] * 16 + pitch_offset + (((int32_t)(r1 & 0xFFFFu) - 32768) * amt >> 15);
+    /* SPARKLE: replace occasional base grains with an octave accent, never
+     * add a grain or boost gain. Reuse r2's unused high bits (position uses low
+     * bits), so C0 and other personalities retain the exact RNG stream.
+     * Probability C/200: 0..50%; the existing harmony interval is untouched.
+     * Captured in step at spawn; live edits cannot retune active grains. */
+    if ((uint32_t)p[P_GTYPE] == 3u && !pitch_offset && p[P_GRC] > 0) {
+        uint32_t sparkle = p[P_GRC] > 100 ? 100u : (uint32_t)p[P_GRC];
+        if ((r2 >> 16) * 200u < sparkle * 65536u) d16 += 12 * 16;
+    }
     step = (pow2_q16(clamp(d16, -1536, 576)) >> 8) * (z->rate >> 8);
     /* Allocator UNISON fine is a rate factor in 1/4096, not a semitone offset.
      * Use only its voice term: m->fine also includes unrelated TUNE/bend residuals.

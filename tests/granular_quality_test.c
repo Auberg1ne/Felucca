@@ -45,7 +45,7 @@ int main(int argc,char**argv){
  unsigned tracks=scenario==5?4:1,source[]={0,2,14,13},draws[4]={0},admitted=0,reverse=0,maxload=0,maxactive=0;
  for(unsigned p=0;p<4;p++){
   track_t*t=&trk[p];host_preset(t,ENGI_GRAIN,0);
-  unsigned kind=scenario==5?(type+p)%4:type,src=source[kind];
+  unsigned kind=scenario==5?(type+p)%4:type,src=getenv("GRAIN_SOURCE")?atoi(getenv("GRAIN_SOURCE")):source[kind];
   t->p[P_MUTE]=p>=tracks;t->p[P_LEVEL]=100;t->p[P_ATK]=t->p[P_DEC]=t->p[P_REL]=0;t->p[P_SUS]=127;
   t->p[P_DIST]=t->p[P_CHOR]=t->p[P_DLY]=t->p[P_REV]=t->p[P_ITYPE]=0;
   t->p[P_ED_FLT]=t->p[P_LD_FLT]=t->p[P_ED_SHP]=t->p[P_LD_SHP]=t->p[P_LD_AMP]=0;t->p[P_PAN]=t->p[P_SPRD]=0;
@@ -62,6 +62,7 @@ int main(int argc,char**argv){
  for(unsigned b=0;b<2048;b++){
   uint32_t before[4];for(unsigned p=0;p<tracks;p++)before[p]=gr_rng[gr_part(&trk[p])];
   if(scenario==4||scenario==5)for(unsigned p=0;p<tracks;p++)trk[p].p[P_GCUT]=(int[]){0,-1,-25,-50,0,1,25,50}[b/32%8];
+  if(getenv("GRC_LIVE"))for(unsigned p=0;p<tracks;p++)trk[p].p[P_GRC]=(int[]){0,100,25,50}[b/128%4];
   int32_t out[CTL*2];mix_block(out,CTL);
   for(unsigned i=0;i<CTL*2;i++){audio_stats_push(&stats,out[i]);uint32_t x=(uint32_t)out[i];for(unsigned j=0;j<4;j++)REQUIRE(fputc((x>>(8*j))&255,f)!=EOF);}
   for(unsigned p=0;p<tracks;p++){
