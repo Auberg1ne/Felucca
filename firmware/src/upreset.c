@@ -48,6 +48,7 @@
 #define UP_PER_BANK 16u
 #define UP_PMAX 72u                              /* room for P_COUNT to grow */
 #define UP_USED 0xA5u
+#define UP_LEGACY_WIRE_COUNT 118u /* fixed unmarked editor arrays, never a native layout marker */
 #define UP_VER 6u                                /* explicit WIN provenance; legacy 1..5 remain readable */
 #define UP_VER_GRID 7u                           /* WIN-aware grid; legacy grids were 3 and 5 */
 #define UP_LEGACY_PACKED 4u
@@ -256,7 +257,7 @@ static int up_parse(const uint8_t *a, uint32_t na, up_rec_t *r, uint32_t *slot)
     for (n = 0; 2u + n < na && a[2 + n]; n++)
         ;
     k = 3u + n;                                  /* after the name's 0 */
-    end = k + 2u * P_COUNT + 32u;
+    end = k + 2u * UP_LEGACY_WIRE_COUNT + 32u;
     if (a[0] >= UP_SLOTS || a[1] >= NENGINES || 2u + n >= na || !up_name_ok(a + 2, n) ||
         (na != end && ((na != end + 17u && na != end + 18u) || a[end] > 1u)) || (na == end + 18u && a[end + 17u] >= CAT_N))
         return 1;
@@ -266,10 +267,10 @@ static int up_parse(const uint8_t *a, uint32_t na, up_rec_t *r, uint32_t *slot)
     r->used = UP_USED;
     r->ver = UP_LEGACY_PACKED; /* unchanged bulk wire arrays have no WIN provenance */
     r->engine = a[1];
-    r->np = P_COUNT;
+    r->np = UP_LEGACY_WIRE_COUNT;
     for (i = 0; i < n; i++)
         r->name[i] = (char)a[2 + i];
-    for (i = 0; i < P_COUNT; i++, k += 2u)
+    for (i = 0; i < UP_LEGACY_WIRE_COUNT; i++, k += 2u)
         {
             int32_t value = (int32_t)((a[k] & 127u) | (a[k + 1] & 127u) << 7) - 8192;
             if (value < -64 || value > 127) return 1;

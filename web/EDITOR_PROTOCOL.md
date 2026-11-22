@@ -1355,3 +1355,91 @@ reply (the existing failed-operation convention for commands without an error
 field). Backup commit rejects incompatible objects with status 2 before writing.
 Legacy backup reads remain available. See `docs/grain-only.md` for autosave,
 read-only storage, per-object restore and older-client limitations.
+
+## Stable-ID foundation (Step240E)
+
+This is an optional extension, NOT a parameter-count/storage revision.
+`INFO.P_COUNT` and all existing unmarked arrays remain **118**, with the same
+IDs/order/lengths. `P_COUNT`, presets, projects, MIDI codes and UI are unchanged.
+Command82 and tag58(hex) were unused in the editor registry (commands68..81 and
+all existing INFO tags were audited). INFO now appends this fixed seven-byte
+capability immediately before the existing optional final `47 01 engine` tag:
+
+```
+58 01 52 01 76 00 07
+```
+
+Here52(hex)=command82, layout1 is the stable-ID namespace, count76(hex)=118 and
+flags7 means scalar GET(1), scalar SET(2), snapshot(4). No bulk replacement or
+personality-C support is advertised. Older clients ignore the additional tag.
+The seven-byte capability envelope is fixed; unknown versions/layouts/flags are
+unsupported, not permission to infer a layout from INFO or array length.
+
+All command82 arguments are seven-bit bytes. `u14` is low then high seven bits;
+values use existing signed `v14` (offset8192). Common request prefix:
+
+```
+op, version=1, layout=1, clientNonce:u14
+```
+
+| op | Additional arguments | Success data after common reply |
+|---|---|---|
+|0 NEGOTIATE|requestedCount:u14 (must be118 today)|count:u14, flags=7|
+|1 GET|track, stableId:u14|track, stableId:u14, value:v14|
+|2 SET|track, stableId:u14, value:v14|track, stableId:u14, resultingValue:v14|
+|3 SNAPSHOT|track|track, engine, preset, count:u14, count×v14|
+|4 / other|not implemented|unsupported; never mutates|
+
+Replies start `op, rc, version=1, layout=1, echoedNonce:u14`. Data is omitted on
+failure. rc0=success,1=malformed,2=negotiation missing/expired,3=unsupported,
+4=invalid track/ID/value or non-writable descriptor,5=busy/owned by song.
+Requests over10 argument bytes are malformed. SET validates the complete frame,
+ID, descriptor range and ownership before changing anything; unlike legacy SET,
+it rejects out-of-range values rather than clamping. Existing enum aliases,
+motion eligibility and selected/targeted track semantics remain authoritative.
+
+A nonzero nonce1..16383 must first complete NEGOTIATE. A new negotiation attempt
+revokes the previous lease even if malformed/unsupported. The lease is bound to
+USB reset generation and configured state and expires5000ms after negotiation,
+using existing wrap-safe monotonic fm1_ms. No timer or audio callback is added.
+Requests echo the negotiated nonce/version/layout. The nonce is a correlation
+cookie, not authentication, replay protection or a multi-client security token.
+The USB transport is serialized; competing clients may invalidate each other's
+lease and must negotiate again. Failed extended writes never retry via legacy
+SET. The browser serializes its extended writes, renegotiating before each.
+
+Today only IDs0..117 exist. ID118, requested count119 and unknown versions are
+rejected. Stable IDs use u14 and do NOT reuse MIDI's seven-bit learn codes.
+No invented C value is read, cached in firmware or stored. The browser uses the
+extension for targeted WIN scalar changes only after successful negotiation;
+old firmware receives ordinary legacy commands, with no command82 probe.
+
+### Provenance and future-C refusal contract
+
+Unmarked119-value files are historical tail-eight layouts: input111 is E0 and
+input118 is E7. They are never stable-ID119 solely because of length, labels or
+firmware version. Firmware legacy UP_PUT still accepts only its original118-value
+array. The browser's legacy import/audition/upload paths map unmarked119 arrays
+historically. An explicit JSON `parameterLayout` marker
+`{layout:"stable-id",version:1,count:119}` denotes a different provenance, but
+current library/patch storage does NOT support that format: it is refused before
+any request. Unknown marker/file versions are refused too. This task does not
+introduce a WIN/C-aware library file version or enable non-Hann library transfers.
+
+Existing WIN descriptor checks, scalar access and non-Hann library restrictions
+remain. A negotiated snapshot does not authorize bulk storage. Opcode4 and all
+long bulk messages are rejected with no writes. A future native schema larger
+than the legacy view is fail-closed for legacy engine/preset replacement,
+UP_PUT, UP_LOAD and UP_ERASE until explicit loss policy is integrated. The
+coverage predicate is tested with a test-only119-value model; it is not evidence
+of live C persistence. Unrelated scalar writes retain their single-ID semantics.
+
+Step240F must implement C's canonical descriptor, versioned storage/migrations,
+real nonzero-C coverage checks at every replacement path, raw backup/restore and
+retained state. Only then may the negotiated supported-ID domain increase.
+A compile-time assertion forces review before any native P_COUNT growth; legacy
+INFO/array constants remain118. Future stable-ID bulk replacement needs a
+separate acknowledged format and capability, full parameter coverage, WIN/C
+provenance and transactional storage qualification. It must never reinterpret
+old119-value arrays. Current browser clients fail closed on a larger/unknown
+stable capability rather than silently falling back to unsafe bulk writes.

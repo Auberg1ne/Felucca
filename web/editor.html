@@ -360,7 +360,49 @@ const CMD = { INFO: 1, GET: 2, SET: 3, DUMP: 4, DESC: 5, STEP_GET: 6, STEP_SET: 
   TRACK_PARAM: 31, TRACK_CHANGED: 32, SONG: 33,
   UI_STATE: 34, UI_SET: 35, UI_PALETTES: 36, FAV_GET: 37, FAV_SET: 38,
   MOTION: 64, BACKUP_LIST: 65, BACKUP_GET: 66, BACKUP_PUT: 67,
-  FM6_GET: 68, FM6_PUT: 69, FM6_LIST: 70, FM6_ERASE: 71 };
+  FM6_GET: 68, FM6_PUT: 69, FM6_LIST: 70, FM6_ERASE: 71, STABLE: 82 };
+/*STABLE-BEGIN*/
+/* Explicit stable-ID transport; no negotiation or schema is inferred from pcount. */
+function stableCapability(a) {
+  let end=a.length;
+  if(end>=3 && a[end-3]===0x47 && a[end-2]===1)end-=3;
+  const b=a.slice(end-7,end);
+  if(b.length!==7 || b[0]!==0x58)return null;
+  if(b[1]!==1 || b[2]!==82 || b[3]!==1 || b[6]!==7)return {unsupported:true};
+  return {version:1,layout:1,command:82,count:b[4]+128*b[5],flags:b[6]};
+}
+function parameterProvenance(marker) {
+  if(marker==null)return {kind:"legacy-tail-eight"};
+  if(!marker || marker.layout!=="stable-id" || marker.version!==1 || !Number.isInteger(marker.count) || marker.count<1 || marker.count>16383)
+    throw new Error("Unsupported parameter layout provenance");
+  return {kind:"stable-id",version:1,count:marker.count};
+}
+function legacyCoverage(ids) {
+  return Array.isArray(ids) && ids.every(id=>Number.isInteger(id) && id>=0 && id<118);
+}
+async function negotiateStable(info, request, nonce) {
+  const c=info.stable;
+  if(!c)return null; // old firmware: never send the unknown command
+  if(c.unsupported || c.count!==118 || !Number.isInteger(nonce) || nonce<1 || nonce>16383)
+    throw new Error("Unsupported stable-ID capability; no bulk writes permitted");
+  const r=await request([82,[0,1,1,nonce&127,nonce>>7,c.count&127,c.count>>7]]);
+  if(r.length!==9 || r[0]!==0 || r[1]!==0 || r[2]!==1 || r[3]!==1 || r[4]+128*r[5]!==nonce || r[6]+128*r[7]!==c.count || r[8]!==c.flags)
+    throw new Error("Stable-ID negotiation rejected");
+  return {...c,nonce,negotiated:true};
+}
+function stableScalarRequest(session, track, id, value) {
+  if(!session?.negotiated || !Number.isInteger(track) || track<0 || track>3 || !Number.isInteger(id) || id<0 || id>=session.count)
+    throw new Error("Stable-ID request unavailable");
+  if(value!=null && (!Number.isInteger(value)||value< -8192 || value>8191))throw new Error("Invalid stable-ID value");
+  return [82,[value==null?1:2,1,1,session.nonce&127,session.nonce>>7,track,id&127,id>>7,...(value==null?[]:v14enc(value))]];
+}
+function stableScalarReply(r, session, track, id) {
+  if(r.length!==11 || ![1,2].includes(r[0]) || r[1] || r[2]!==1 || r[3]!==1 || r[4]+128*r[5]!==session.nonce || r[6]!==track || r[7]+128*r[8]!==id)
+    throw new Error("Stable-ID scalar rejected");
+  return {value:r[9]+128*r[10]-8192};
+}
+/*STABLE-END*/
+
 /* frames the device sends on its own (while WATCH is on); never replies */
 const PUSH = new Set([CMD.CHANGED, CMD.RELOAD, CMD.STEP_CHANGED, CMD.TRACK_CHANGED]);
 /* user preset bank: name 1..12 printable ASCII, a 16-step pattern of (note, flags 1 acc 2 slide 4 tie) */
@@ -455,6 +497,7 @@ const parse = {
       if (o.syncCaps && trailer[r] === 0x52 && trailer[r + 1] === 1) o.ratchet = trailer[r + 2];   /* RATCH: max hits */
     }
     o.engineOnly = a.length>=3 && a[a.length-3]===0x47 && a[a.length-2]===1 ? a[a.length-1] : null;
+    o.stable = stableCapability(a);
     return o;
   },
   [CMD.UI_STATE](a) {
@@ -640,11 +683,14 @@ const req = {
   upList: (start, count) => [CMD.UP_LIST, [start & 0x7F, Math.max(1, Math.min(UP.LIST_MAX, count | 0))]],
   upGet: (s) => [CMD.UP_GET, [s & 0x7F]],
   /* patch: {engine, name, p: P_COUNT values, pattern: 16 x [note, flags] or grid: 16 x [hit, acc] (v5: kind 1)} */
-  upPut: (s, pt) => [CMD.UP_PUT, [s & 0x7F, pt.engine & 0x7F, ...strEnc(upName(pt.name)), ...pt.p.flatMap((v) => v14enc(v ?? 0)),
+  upPut: (s, pt) => {
+    if(parameterProvenance(pt.parameterLayout).kind!=="legacy-tail-eight")throw new Error("Stable-ID bulk storage unavailable");
+    return [CMD.UP_PUT, [s & 0x7F, pt.engine & 0x7F, ...strEnc(upName(pt.name)), ...pt.p.flatMap((v) => v14enc(v ?? 0)),
     ...(pt.grid
       ? [...Array.from({ length: UP.PAT }, (_, i) => hitsEnc(...(pt.grid[i] || [0, 0])).slice(0, 2)).flat(), 1,
          ...Array.from({ length: UP.PAT }, (_, i) => hitsEnc(...(pt.grid[i] || [0, 0]))[2])]
-      : Array.from({ length: UP.PAT }, (_, i) => { const x = (pt.pattern || [])[i] || [0, 0]; return [x[0] & 0x7F, x[1] & 7]; }).flat())]],
+      : Array.from({ length: UP.PAT }, (_, i) => { const x = (pt.pattern || [])[i] || [0, 0]; return [x[0] & 0x7F, x[1] & 7]; }).flat())]];
+  },
   upStore: (s, name) => [CMD.UP_STORE, [s & 0x7F, ...strEnc(name ? upName(name) : "")]],   /* "": the device names it ("ANALOG 07") */
   upLoad: (s) => [CMD.UP_LOAD, [s & 0x7F]],
   upErase: (s) => [CMD.UP_ERASE, [s & 0x7F]],
@@ -668,6 +714,7 @@ const req = {
 /* which reply belongs to which request (the device echoes these) */
 function replyMatches(cmd, args, a) {
   switch (cmd) {
+    case CMD.STABLE: return a.length>=6 && a[0]===args[0] && a[4]===args[3] && a[5]===args[4];
     case CMD.MOTION: return a[0] === args[0];
     case CMD.BACKUP_GET: return a[0] === args[0] && a.slice(2, 7).every((v, i) => v === args[i + 1]);
     case CMD.BACKUP_PUT: return a[0] === args[0] && a[1] === args[1];
@@ -1084,6 +1131,7 @@ function paramKeys(pdesc, pe0, pcount) {
 const sameKeys = (a, b) => !!a && !!b && a.length === b.length && a.every((k, i) => stableParamKey(k, i) === stableParamKey(b[i], i));
 /* values by fromKeys -> values by toKeys (null where the source has no such key) */
 function remapParams(p, fromKeys, toKeys, pe0) {
+  if (p.length===119 && toKeys && pe0) return tailParams(p,toKeys.length,pe0); // unmarked119 is ALWAYS historical
   if (!fromKeys && toKeys && pe0 && p.length !== toKeys.length) return tailParams(p, toKeys.length, pe0);
   if (!fromKeys || !toKeys || sameKeys(fromKeys, toKeys)) return p.slice();
   const at = new Map(fromKeys.map((k, i) => [stableParamKey(k, i), i]));
@@ -1152,6 +1200,7 @@ function cleanPatch(pt) {
    Check layout, not a cached engine-dependent key label; a reserved label from
    another track must never permit non-Hann export/upload/audition. */
 function assertWinLibraryTransfer(patches, ctx) {
+  if (ctx.pe0===110 && ctx.keys && ctx.keys.length!==118) throw new Error("Unsupported parameter layout; use a versioned backup");
   if (ctx.pe0 !== 110 || ctx.keys?.length !== 118) return;
   if (patches.some(p => (p.engineName === "GRAIN" || ctx.engines?.[p.engine] === "GRAIN") && p.p?.[109] != null && p.p[109] !== 64))
     throw new Error("WIN library transfer unavailable; use a versioned backup or native LOAD/STORE.");
@@ -1179,6 +1228,7 @@ function libraryFile(kind, patches, ctx) {
    one (the set retired after 1.0.2) as DRUM's kit (fromPerc) */
 function readLibraryFile(obj, ctx) {
   if (!obj || typeof obj !== "object") throw new Error("not JSON");
+  if(parameterProvenance(obj.parameterLayout).kind!=="legacy-tail-eight")throw new Error("Stable-ID library storage is not supported yet");
   const noFm4 = !(ctx.engines || []).includes("DIGITAL");
   const perc = (pt, pe0) => (pt && fromPerc(pt, ctx.engines, pe0)) || pt;
   const fm4 = (pt, nm, pe0) => (nm === "DIGITAL" && noFm4 ? fromDigital(pt, ctx.engines, pe0) : perc(pt, pe0));
@@ -1191,6 +1241,7 @@ function readLibraryFile(obj, ctx) {
     return idx;
   };
   if (obj.format === "felucca-patch") {               /* "Save to file": the whole current sound */
+    if(obj.version!=null && obj.version!==1)throw new Error("unsupported patch version");
     if (!Array.isArray(obj.p) || !Number.isInteger(obj.engine)) throw new Error("felucca-patch without engine / p");
     const digital = obj.engineName === "DIGITAL" && noFm4;
     const e = digital ? 1 : engIndex(obj.engineName, obj.engine);
@@ -1203,13 +1254,14 @@ function readLibraryFile(obj, ctx) {
     return pt ? { patches: [cleanPatch(pt)], skipped: 0, keys: null } : { patches: [], skipped: 1, keys: null };
   }
   if (obj.format !== LIB.FORMAT) throw new Error("unknown format");
-  if (!(obj.version >= 1)) throw new Error("version");
+  if (obj.version !== LIB.VERSION) throw new Error("unsupported library version");
   if (!Array.isArray(obj.patches)) throw new Error("no patches");
   const fileKeys = Array.isArray(obj.paramLabels) && obj.paramLabels.length ? obj.paramLabels.map(String) : null;
   const out = [];
   let skipped = 0;
   for (const x of obj.patches) {
     if (!x || !Array.isArray(x.params)) { skipped++; continue; }
+    if(parameterProvenance(x.parameterLayout).kind!=="legacy-tail-eight")throw new Error("Stable-ID library storage is not supported yet");
     const nm = x.engineName || (obj.engines || [])[x.engine | 0];
     const digital = nm === "DIGITAL" && noFm4;
     const e = digital ? 1 : engIndex(x.engineName, x.engine | 0, obj.engines);
@@ -1249,6 +1301,11 @@ const bank = {
   },
   /* -> rc (0 ok); with info, an FM6 sound's patch (pt.fm6) goes with it */
   async put(rq, slot, pt, info) {
+    if(parameterProvenance(pt.parameterLayout).kind!=="legacy-tail-eight")throw new Error("Stable-ID bulk storage unavailable");
+    if(pt.p.length===119){
+      if(!info)throw new Error("Legacy119 requires an explicit destination layout");
+      pt={...pt,p:tailParams(pt.p,info.pcount,info.pe0)};
+    }
     const rc = parse[CMD.UP_PUT](await rq(req.upPut(slot, pt), FLASH_OPT)).rc;
     if (rc || !pt.fm6 || !presetPatches(info) || info.engines[pt.engine] !== "FM6") return rc;
     return parse[CMD.FM6_PUT](await rq(req.fm6Put(FM6.TARGET.USER, slot, pt.fm6), FLASH_OPT)).rc;
@@ -1288,6 +1345,8 @@ const trackOwn = (i, pe0) => TRACK_OWN.has(i) || (pe0 >= 83 && P_CHORD.includes(
    there = undo) and treats the SETs right after G_ENGSEL as part of this load (EDITOR_PROTOCOL.md "undo").
    opt: {gEng: G_ENGSEL id, progress(i, n)} */
 async function auditionPatch(rq, info, pt, opt = {}) {
+  if(parameterProvenance(pt.parameterLayout).kind!=="legacy-tail-eight" || (info.pe0===110 && info.pcount!==118))throw new Error("Unsupported audition provenance");
+  if(pt.p.length===119)pt={...pt,p:tailParams(pt.p,info.pcount,info.pe0)};
   if(!engineAllowed(info,pt.engine))throw new Error("GRAIN-only firmware: incompatible preset; original preserved");
   await rq(req.set(1, opt.gEng ?? 20, pt.engine));
   const dump = parse[CMD.DUMP](await rq(req.dump()), info);
@@ -3037,6 +3096,7 @@ async function load(d) {
   try {
     /* the first frame after opening the port can be lost: a few tries */
     d.info = parse[CMD.INFO](await sessionRequest(d, req.info(), { timeout: 500, retries: 3 }));
+    d.stable = await negotiateStable(d.info, (r)=>sessionRequest(d,r), 1);
     $("version").textContent = d.info.version;
     const total = d.info.pcount + d.info.gcount;
     for (let i = 0; i < d.info.pcount; i++) { sayK("reading", `${i + 1}/${total}`); d.pdesc[i] = await getDescOrNull(0, i, d); }
@@ -3328,13 +3388,25 @@ async function sendSet(s, id, k) {
   const message = targeted ? req.trackParam(track, id, v) : req.set(s, id, v);
   const queueKey = targeted ? `${k}:${track}` : k;
   try {
-    const r = parse[command](await rq(message, { key: queueKey }));
+    const r = targeted && d.stable ? await stableSet(d,track,id,v) : parse[command](await rq(message, { key: queueKey }));
     if (dev === d && (!win || d.sel === track) && dragging !== k && st.sent === v && !d.link.hasQueued(queueKey)) {   /* the device's value after clamping */
       (s ? dev.dump.g : dev.dump.p)[id] = r.value;
       showValue(k, r.value, false);
       mixFromDump();
     }
   } catch (e) { if (e.message !== "closed") console.warn(e); }
+}
+
+async function stableSet(d,track,id,value) {
+  const previous=d.stableQueue||Promise.resolve();
+  const job=previous.catch(()=>{}).then(async()=>{
+    assertSession(d);
+    d.stableNonce=(d.stableNonce||1)%16383+1;
+    const session=await negotiateStable(d.info,r=>sessionRequest(d,r),d.stableNonce);
+    const reply=await sessionRequest(d,stableScalarRequest(session,track,id,value));
+    return stableScalarReply(reply,session,track,id);
+  });
+  d.stableQueue=job; return job;
 }
 
 /* engine / preset browser */
@@ -4552,6 +4624,8 @@ $("file").addEventListener("change", async () => {
   try {
     data = JSON.parse(await f.text());
     assertSession(session);
+    if(parameterProvenance(data.parameterLayout).kind!=="legacy-tail-eight" || (data.version!=null && data.version!==1))throw new Error("Unsupported patch provenance");
+    if(Array.isArray(data.p) && data.p.length===119)data.p=tailParams(data.p,dev.info.pcount,dev.info.pe0);
     if (!Number.isInteger(data.engine) || !Number.isInteger(data.preset) || !Array.isArray(data.p)) throw new Error("engine / preset / p");
     if (data.engine < 0 || data.engine >= dev.info.nengines || !engineAllowed(dev.info, data.engine)) throw new Error("incompatible engine " + data.engine);
   } catch (e) { if (e.message !== "closed") sayK("badfile", e.message); return; }

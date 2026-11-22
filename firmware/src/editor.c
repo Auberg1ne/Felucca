@@ -8,6 +8,7 @@
  * Every request gets a reply with the same cmd; 23/24/26 are also pushed
  * while watched. Frames arrive through sx_frame (usb.c), replies leave
  * through ota_wire_send(). */
+#define ED_LEGACY_COUNT UP_LEGACY_WIRE_COUNT /* frozen unmarked wire view, independent of future native storage */
 #define ED_HDR0 0x7D
 #define ED_HDR1 0x46
 #define ED_HDR2 0x4C
@@ -18,7 +19,7 @@ enum { ED_INFO = 1, ED_GET, ED_SET, ED_DUMP, ED_DESC, ED_STEP_GET, ED_STEP_SET, 
        ED_TRACK, ED_TRACK_MIX, ED_TRACK_DUMP, ED_TRACK_STEP,                    /* v3: tracks */
        ED_TRACK_PARAM, ED_TRACK_CHANGED, ED_SONG,
        ED_UI_STATE, ED_UI_SET, ED_UI_PALETTES, ED_FAV_GET, ED_FAV_SET,
-       ED_MOTION = 64, ED_BACKUP_LIST, ED_BACKUP_GET, ED_BACKUP_PUT };                              /* v6: song chain */
+       ED_MOTION = 64, ED_BACKUP_LIST, ED_BACKUP_GET, ED_BACKUP_PUT, ED_STABLE = 82 };                              /* v6: song chain */
 
 static uint8_t ed_out[664] __attribute__((section(".pool")));   /* (MOTION op 8: 128 records and their kinds, 653 bytes) */
 static uint32_t ed_n;
@@ -450,6 +451,7 @@ static void ed_sync(void)                                /* main loop */
     }
     for (i = 0; i < ED_NV && n < ED_PUSH_MAX; i++) {    /* round robin: nothing starves */
         uint32_t k = (ed_w.pos + i) % ED_NV;
+        if (k >= ED_LEGACY_COUNT && k < P_COUNT) continue; /* never publish extended IDs on legacy WATCH */
         int16_t v = *ed_val(k);
         if (v == ed_w.v[k] || (uint16_t)(now - ed_w.t[k]) < 20u)
             continue;                                    /* coalesced: the latest value goes out later */
@@ -490,7 +492,7 @@ static const param_desc_t *ed_tdesc(const track_t *t, uint32_t id) { return para
 /* descriptor and value slot of (scope, id): scope 0 = the selected track, 1 = global */
 static const param_desc_t *ed_desc(uint32_t scope, uint32_t id, int16_t **vp)
 {
-    if (scope == 0 && id < P_COUNT) {
+    if (scope == 0 && id < ED_LEGACY_COUNT) {
         *vp = &TSEL->p[id];
         return ed_tdesc(TSEL, id);
     }
@@ -594,6 +596,8 @@ static void ed_motion_reply(uint32_t k, uint32_t rc, uint32_t kinds, uint32_t fu
             j++;
         }
 }
+#include "editor_stable.c"
+
 static int ed_args_ok(uint32_t cmd, const uint8_t *a, uint32_t n)
 {
     switch (cmd) {
@@ -655,6 +659,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         (cmd >= ED_FM6B_BEGIN && cmd <= ED_FM6B_END))
         autosave_hold();                                /* (a transfer: no autosave meanwhile, project.c) */
     ed_begin(cmd);
+    if (ed_stable_handle(cmd, a, na)) { ed_send(); return; }
     if (ed_ui_handle(cmd, a, na)) { ed_send(); return; }
     if (ed_backup_handle(cmd, a, na)) { ed_send(); return; }
     if (ed_fm6_handle(cmd, a, na)) { ed_send(); return; }
@@ -683,7 +688,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
     case ED_INFO:
         ed_str("FELUCCA " FELUCCA_VERSION, 24);
         ed_b(NENGINES);
-        ed_b(P_COUNT);
+        ed_b(ED_LEGACY_COUNT);
         ed_b(G_COUNT);
         ed_b(NSTEP);
         ed_b(P_E0);
@@ -708,6 +713,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(0x43); ed_b(1); ed_b(ML_N);   /* 1.5: MIDI LEARN's map (cmds 78, 79; editor_learn.c) */
         ed_b(0x4B); ed_b(1); ed_b(NCOND);   /* 1.5.5: a step's condition (1..11) after its nudge */
         ed_b(0x45); ed_b(1); ed_b(ED_PAL_N);   /* 1.6: CUSTOM, the user's palette: 5 colours (cmds 80, 81; editor_palette.c) */
+        ed_b(0x58); ed_b(1); ed_b(ED_STABLE); ed_b(1); ed_b(ED_STABLE_COUNT); ed_b(ED_STABLE_COUNT >> 7); ed_b(ED_STABLE_FLAGS);
         if(FELUCCA_GRAIN_ONLY){ed_b(0x47);ed_b(1);ed_b(ENGI_GRAIN);} /* optional, appended policy tag */
         break;
     case ED_GET:
@@ -715,8 +721,8 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         if (na < 2u || !(d = ed_desc(a[0], a[1], &vp)))
             return;
         if (cmd == ED_SET && na >= 4u && !(chain_busy() && !a[0] && chain_owns(a[1]))) {
-            if (a[0] == 1 && a[1] == G_ENGSEL) {          /* engine change: the safe path (1 without FELUCCA_FM4:
-                                                           * DIGITAL's first preset, as FM6) */
+            if (a[0] == 1 && a[1] == G_ENGSEL) {          /* engine defaults: a potentially lossy replacement */
+                if (!ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT)) return;
                 if (!grain_engine_allowed((uint32_t)ed_rv(a+2))) {
                     ui_message("GRAIN ONLY: ENGINE REFUSED");
                     return;
@@ -744,7 +750,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
             ed_w.v[i] = *ed_val(i);
         ed_b(ed_eng(TSEL));
         ed_b(TSEL->preset);
-        for (i = 0; i < P_COUNT; i++)
+        for (i = 0; i < ED_LEGACY_COUNT; i++)
             ed_v(motion_base_value(TSEL, i));
         for (i = 0; i < G_COUNT; i++)
             ed_v(song.g[i]);
@@ -779,6 +785,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         break;
     }
     case ED_PRESET: {                                      /* engine, preset */
+        if (!ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT)) return;
         ed_load_t b;
         if (na < 2u || a[0] >= NENGINES)
             return;
@@ -935,7 +942,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(u);
         ed_b(u ? r->engine : 0u);
         ed_str(nm, 12);
-        for (i = 0; i < P_COUNT; i++)
+        for (i = 0; i < ED_LEGACY_COUNT; i++)
             ed_v(u ? v[i] : 0);
         for (i = 0; i < 16u; i++) {
             ed_b(u ? r->note[i] & 0x7Fu : 0u);
@@ -952,13 +959,13 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         uint32_t slot = 0, rc;
         if (na < 1u)
             return;
-        rc = (uint32_t)up_parse(a, na, &r, &slot);
+        rc = ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT) ? (uint32_t)up_parse(a, na, &r, &slot) : 1u;
         if (!rc && ed_flash_stop())
             rc = 2;
         if (!rc) {
             int16_t v[P_COUNT];
             up_values(&r, v);                              /* each value inside its range */
-            for (i = 0; i < P_COUNT; i++)
+            for (i = 0; i < ED_LEGACY_COUNT; i++)
                 up_set_value(&r, i, v[i]);                 /* the record's own form (v4: a byte each) */
             rc = up_put(slot, &r) ? 2u : 0u;
         }
@@ -989,13 +996,13 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         if (na < 1u)
             return;
         ed_b(a[0]);
-        ed_b(a[0] < UP_SLOTS && !up_load(a[0]) ? 0u : 1u);
+        ed_b(ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT) && a[0] < UP_SLOTS && !up_load(a[0]) ? 0u : 1u);
         break;
     case ED_UP_ERASE:
         if (na < 1u)
             return;
         ed_b(a[0]);
-        ed_b(a[0] >= UP_SLOTS ? 1u : ed_flash_stop() || up_put(a[0], 0) ? 2u : 0u);
+        ed_b(!ed_legacy_coverage(P_COUNT, ED_LEGACY_COUNT) || a[0] >= UP_SLOTS ? 1u : ed_flash_stop() || up_put(a[0], 0) ? 2u : 0u);
         break;
     case ED_WATCH: {                                       /* on -> on */
         uint32_t keep, v4was = ed_w.v4;
@@ -1057,7 +1064,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
         ed_b(a[0]);
         ed_b(ed_eng(&trk[a[0]]));
         ed_b(trk[a[0]].preset);
-        for (i = 0; i < P_COUNT; i++)
+        for (i = 0; i < ED_LEGACY_COUNT; i++)
             ed_v(motion_base_value(&trk[a[0]], i));
         break;
     case ED_TRACK_STEP: {                                  /* track, index [, step] -> track, index, step (as STEP_GET) */
@@ -1076,7 +1083,7 @@ static void ed_handle(const uint8_t *f, uint32_t n)   /* f: the bytes between F0
     }
     case ED_TRACK_PARAM: {                                 /* track, id [, v14] -> track, id, v14 */
         track_t *t;
-        if (na < 2u || a[0] >= NTRK || a[1] >= P_COUNT)
+        if (na < 2u || a[0] >= NTRK || a[1] >= ED_LEGACY_COUNT)
             return;
         t = &trk[a[0]];
         d = ed_tdesc(t, a[1]);
@@ -1144,6 +1151,7 @@ static void ed_service(void)
 {
     const uint8_t *p;
     uint32_t n;
+    ed_stable_expire();                                    /* existing main-loop cadence, no timer */
     ed_sync();                                             /* v2 pushes (while watched) */
     if (!ota_frame_get(&p, &n) || n < 4u || p[0] != ED_HDR0 || p[1] != ED_HDR1 || p[2] != ED_HDR2)
         return;
