@@ -91,6 +91,20 @@ static const int16_t GR_HANN[257] = {
 static const int16_t GR_NORM[GR_NG + 1] = {32767, 32767, 23170, 18918, 16384, 14654, 13377,
                                            12385, 11585, 10922, 10362, 9880, 9459};
 
+/* Isolated host prototype only: not enabled by any shipping build profile. */
+#ifndef FELUCCA_GRAIN_STEREO_PROTOTYPE
+#define FELUCCA_GRAIN_STEREO_PROTOTYPE 0
+#endif
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+#define GR_STEREO_STATE_BYTES 16u
+#if defined(FELUCCA_GRAIN_STEREO_ACCOUNTING) && FELUCCA_GRAIN_STEREO_ACCOUNTING
+static uint32_t gr_test_decode_calls, gr_test_invalid_reads;
+#endif
+static uint8_t gr_test_spread[NPART]; /* explicit test selector; not parameter C */
+#else
+#define GR_STEREO_STATE_BYTES 0u
+#endif
+
 typedef struct {
     const smp_zone_t *z;
     uint32_t pos;                /* forward: the next sample to decode; reverse: the index of a */
@@ -159,9 +173,13 @@ typedef struct {
     uint8_t win_snapshot;        /* audio-owned block snapshot; existing tail padding */
     gr_drift_t drift[GR_POLY];    /* separate from scanning head, RNG and voice ph/s */
     int32_t stereo_side[2][CTL]; /* audio-owned intrinsic side, separate V-SPRD voice groups */
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+    int8_t pan[GR_NG], pan_pending;
+    uint8_t pan_pair_pending, pan_reserved[2]; /* explicit 16-byte target/host layout */
+#endif
 } gr_part_t;
 _Static_assert(sizeof(gr_grain_t) == (sizeof(void *) == 8u ? 64u : 56u), "GRAIN latch must not grow record");
-_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u), "GRAIN stereo foundation: 256 bytes within reserved engine region");
+_Static_assert(sizeof(gr_part_t) == (sizeof(void *) == 8u ? 7576u : 7480u) + GR_STEREO_STATE_BYTES, "GRAIN stereo foundation: 256 bytes within reserved engine region");
 ENG_MEM_FITS("GRAIN", sizeof(gr_part_t));
 /* No producer is enabled in 244B. Clear full capacity, including short-block tails.
  * Only the owning part's render core may write these buffers. Never share V-SPRD. */
@@ -240,6 +258,10 @@ static void gr_head_advance(gr_head_t *h, uint32_t domain, uint32_t move)
 /* one IMA ADPCM sample of zone z at index pos */
 static inline int32_t gr_dec(const smp_zone_t *z, uint32_t pos, int32_t *pred, int32_t *idx)
 {
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE && defined(FELUCCA_GRAIN_STEREO_ACCOUNTING) && FELUCCA_GRAIN_STEREO_ACCOUNTING
+    gr_test_decode_calls++;
+    gr_test_invalid_reads += pos >= z->n;
+#endif
     uint32_t b = SMP_DATA[z->off + (pos >> 1)], code = (pos & 1u) ? (b >> 4) : (b & 15u);
     int32_t step = IMA_STEP[*idx], vd = step >> 3;
     if (code & 4u)
@@ -274,6 +296,11 @@ static void gr_reset(gr_part_t *P, uint32_t src, uint32_t stamp)
 {
     uint32_t i, tot = 0, nz = gr_nz(src);
     gr_stereo_clear(P);
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+    memset(P->pan, 0, sizeof P->pan);
+    P->pan_pending = 0;
+    P->pan_pair_pending = 0;
+#endif
     P->src = (uint8_t)(src + 1u);
     P->stamp = stamp;
     P->nz = (uint8_t)(nz < GR_MAXZ ? nz : GR_MAXZ);
@@ -431,6 +458,27 @@ static void gr_spawn_one(gr_part_t *P, const track_t *t, uint32_t vi, uint32_t z
             c += P->g[i].step << P->g[i].rev;
     if (c > GR_LOAD_MAX)
         return;
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+    /* Commit placement only after all admission checks. The next admitted
+     * CLOUD grain mirrors the first; rejection never consumes a pair. */
+    {
+        uint32_t width = gr_test_spread[gr_part(t)];
+        int32_t pan = 0;
+        if ((uint32_t)p[P_GTYPE] == 0u && width && width <= 100u) {
+            if (P->pan_pair_pending) {
+                pan = P->pan_pending;
+                P->pan_pending = 0;
+                P->pan_pair_pending = 0;
+            } else {
+                pan = (int32_t)(((r2 >> 16) & 63u) + 1u) * (int32_t)width / 100;
+                if (r2 & 0x80000000u) pan = -pan;
+                P->pan_pending = (int8_t)-pan;
+                P->pan_pair_pending = 1;
+            }
+        } else { P->pan_pending = 0; P->pan_pair_pending = 0; }
+        P->pan[g - P->g] = (int8_t)pan; /* always replace stale slot placement */
+    }
+#endif
     P->head[vi] = head;
     P->head_zl[vi] = (uint8_t)zl;
     g->z = z;
@@ -580,6 +628,30 @@ static int gr_run(gr_part_t *P, gr_grain_t *g, int32_t *acc, uint32_t n)
     }
     return g->left != 0;
 }
+
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+/* One decoder traversal into bounded scratch; no filter/effect or scheduler.
+ * Doubled components M2=L+R, S2=L-R preserve exact integer reconstruction.
+ * Signed attenuation truncates toward zero, so neither channel exceeds x. */
+static int gr_run_stereo_probe(gr_part_t *P, gr_grain_t *g, int32_t *mid2,
+                               int32_t *side2, uint32_t n)
+{
+    int32_t sample[CTL] = {0};
+    uint32_t i;
+    if (n > CTL) return 0;
+    int32_t pan = clamp(P->pan[g - P->g], -64, 64);
+    int alive = gr_run(P, g, sample, n);
+    for (i = 0; i < n; i++) {
+        int32_t x = sample[i], q = x * (pan < 0 ? -pan : pan);
+        int32_t attenuation = q < 0 ? -((-q) >> 6) : q >> 6;
+        int32_t l = x - (pan > 0 ? attenuation : 0);
+        int32_t r = x - (pan < 0 ? attenuation : 0);
+        mid2[i] += l + r;
+        side2[i] += l - r;
+    }
+    return alive;
+}
+#endif
 
 #if defined(FELUCCA_GRAIN_FIDELITY_EXPERIMENT) && FELUCCA_GRAIN_FIDELITY_EXPERIMENT
 #include "grain_fidelity.h"
@@ -891,6 +963,22 @@ static void grain_render_transport(track_t *t, voice_t *v, int32_t *mono,
     if (n > CTL || group > 1u) return;
     grain_render(t, v, mono, n, m);
 }
+
+#if FELUCCA_GRAIN_STEREO_PROTOTYPE
+/* Isolated dry test entry, never called by track_render or a shipping callback.
+ * Caller clears mid2; side lane is additive after gr_stereo_clear. Only this
+ * part's render owner may call; transport views have their usual lifetime. */
+static void grain_stereo_probe_transport(track_t *t, uint32_t owner,
+                                         int32_t *mid2, uint32_t n, uint32_t group)
+{
+    if (n > CTL || group > 1u || owner < 1u || owner > GR_POLY ||
+        t->engine != ENGI_GRAIN || eng_mem_owner[gr_part(t)] != ENGI_GRAIN + 1u) return;
+    gr_part_t *P = gr_of(t);
+    for (uint32_t i = 0; i < GR_NG; i++)
+        if (P->g[i].owner == owner)
+            gr_run_stereo_probe(P, &P->g[i], mid2, P->stereo_side[group], n);
+}
+#endif
 
 static const engine_t ENG_GRAIN = {
     .name = "GRAIN",
